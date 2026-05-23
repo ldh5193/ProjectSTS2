@@ -1,29 +1,32 @@
-"""Smoke-test the locally-installed STS2_MCP mod (v0.4.0).
+"""Smoke-test the locally-installed STS2_MCP mod (v0.4.0+).
 
 Prereq: launch the game once, accept the mod consent dialog,
         and confirm the mod toggle is ON under Settings -> Mods.
 
 Run inside the repo venv:
-    /Users/dhlee/workspace/ProjectSTS2/.venv/bin/python scripts/smoke_test_mcp.py
+    macOS:   .venv/bin/python scripts/smoke_test_mcp.py
+    Windows: .\\.venv\\Scripts\\python.exe scripts\\smoke_test_mcp.py
 """
 from __future__ import annotations
 
-import json
 import sys
-from typing import Any
 
 import requests
 
 BASE = "http://localhost:15526"
 TIMEOUT = 3.0
 
-# (method, path, expect_status) — only endpoints safe to hit while in the main menu.
-PROBES: list[tuple[str, str, int]] = [
-    ("GET", "/",                       200),
-    ("GET", "/api/v1/profile",         200),
-    ("GET", "/api/v1/profiles",        200),
-    ("GET", "/api/v1/compendium",      200),
-    ("GET", "/api/v1/singleplayer",    200),
+# (method, path, expect_status, required?)
+# - required=True probes must return exactly expect_status.
+# - required=False probes warn-only (some endpoints depend on profile/run state
+#   that isn't met in a fresh main-menu session).
+PROBES: list[tuple[str, str, int, bool]] = [
+    ("GET", "/",                       200, True),
+    ("GET", "/api/v1/profile",         200, True),
+    ("GET", "/api/v1/profiles",        200, True),
+    ("GET", "/api/v1/singleplayer",    200, True),
+    ("GET", "/api/v1/compendium",      200, False),  # may 404 with empty profile
+    ("GET", "/api/v1/wiki?query=strike&item_type=card&limit=1", 200, False),
 ]
 
 
@@ -46,21 +49,31 @@ def probe(method: str, path: str, expect: int) -> tuple[bool, str]:
 
 def main() -> int:
     print(f"Probing STS2_MCP at {BASE}\n")
-    fails = 0
-    for method, path, expect in PROBES:
+    required_fails = 0
+    optional_warns = 0
+    for method, path, expect, required in PROBES:
         ok, info = probe(method, path, expect)
-        mark = "PASS" if ok else "FAIL"
-        print(f"  [{mark}] {method:4s} {path:30s} -> {info}")
-        if not ok:
-            fails += 1
+        if ok:
+            mark = "PASS"
+        elif required:
+            mark = "FAIL"
+            required_fails += 1
+        else:
+            mark = "WARN"
+            optional_warns += 1
+        print(f"  [{mark}] {method:4s} {path:46s} -> {info}")
 
     print()
-    if fails == 0:
+    if required_fails == 0 and optional_warns == 0:
         print("All probes passed. Mod is reachable and responding.")
         return 0
-    print(f"{fails} probe(s) failed. Common causes:")
+    if required_fails == 0:
+        print(f"All required probes passed. {optional_warns} optional probe(s) warn-only "
+              "(usually means profile is fresh or feature not exercised yet).")
+        return 0
+    print(f"{required_fails} required probe(s) failed. Common causes:")
     print("  1) Game not launched, or you have not enabled the mod under Settings -> Mods.")
-    print("  2) Mod consent dialog still pending — accept it on first launch.")
+    print("  2) Mod consent dialog still pending - accept it on first launch.")
     print("  3) Another process is bound to port 15526.")
     return 1
 
