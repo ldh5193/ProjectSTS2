@@ -17,15 +17,24 @@ from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
 
 from sim.env import SludgeSpinnerEnv
+from sim.env_full import SludgeSpinnerEnvFull
 
 
 def _mask_fn(env):
     return env.action_masks()
 
 
-def evaluate(model_path: Path, n_episodes: int, seed_base: int = 200_000) -> dict:
+def _make_env(kind: str):
+    if kind == "mvp":
+        return SludgeSpinnerEnv()
+    if kind == "full":
+        return SludgeSpinnerEnvFull()
+    raise ValueError(f"unknown env kind: {kind!r}")
+
+
+def evaluate(model_path: Path, n_episodes: int, env_kind: str, seed_base: int = 200_000) -> dict:
     model = MaskablePPO.load(model_path)
-    env = ActionMasker(SludgeSpinnerEnv(), _mask_fn)
+    env = ActionMasker(_make_env(env_kind), _mask_fn)
 
     wins = 0
     rewards: list[float] = []
@@ -62,9 +71,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path, default=Path("models/mvp_ppo.zip"))
     parser.add_argument("--episodes", type=int, default=500)
+    parser.add_argument("--env", choices=["mvp", "full"], default="mvp",
+                        help="mvp = Discrete(6) SludgeSpinnerEnv, full = Discrete(61) SludgeSpinnerEnvFull")
     args = parser.parse_args()
 
-    res = evaluate(args.model, args.episodes)
+    res = evaluate(args.model, args.episodes, args.env)
     print(f"Eval {args.model} over {res['episodes']} episodes:")
     print(f"  Win rate:     {res['win_rate']:.1%}")
     print(f"  Mean reward:  {res['mean_reward']:+.3f}")
