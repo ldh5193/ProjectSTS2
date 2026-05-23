@@ -130,6 +130,7 @@ $$\text{Reward} = R_{\text{win}} + R_{\text{lose}} + R_{\text{hp\_penalty}}$$
 
 ### 5.1 Quick Start (clone 후 로컬 작업 재개)
 
+**macOS / Linux**
 ```bash
 git clone git@github.com:ldh5193/ProjectSTS2.git
 cd ProjectSTS2
@@ -140,6 +141,17 @@ python3 -m venv .venv
 .venv/bin/python scripts/train_mvp.py --env full --steps 30000   # 단축 학습 (~1분)
 ```
 
+**Windows (PowerShell)**
+```powershell
+git clone git@github.com:ldh5193/ProjectSTS2.git
+cd ProjectSTS2
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e '.[dev]'
+.\.venv\Scripts\python.exe -m pytest                            # 33/33 PASS 확인
+.\.venv\Scripts\python.exe scripts\random_baseline.py
+.\.venv\Scripts\python.exe scripts\train_mvp.py --env full --steps 30000
+```
+
 `decompiled/` · `pck_extracted/` · `tools/STS2MCP-{bin,src}/`는 .gitignore되어 clone에 포함되지 않는다. 필요 시 §6.2(디컴파일), §6.3(.pck 추출), §6.4(모드 다운로드/설치) 절차로 재생성한다.
 
 ---
@@ -148,37 +160,37 @@ python3 -m venv .venv
 
 작업 기준 환경은 다음과 같다. 게임 업데이트 시 §6과 §4의 산출물(`decompiled/`, `pck_extracted/`)을 재생성해야 한다.
 
-| 항목 | 값 |
-| :--- | :--- |
-| 게임 버전 | `v0.103.2` (release 2026-04-16, commit `89765e1e`) |
-| 메인 어셈블리 해시 | `-2128802502` (`release_info.json` 기준 무결성 검증값) |
-| 엔진 | Godot 4 (.NET / Mono Build) |
-| 호스트 OS / Arch | macOS (Darwin 25.x) / arm64 (Apple Silicon) |
-| 게임 설치 경로 | `/Users/dhlee/Library/Application Support/Steam/steamapps/common/Slay the Spire 2/` |
-| 핵심 바이너리 | `SlayTheSpire2.app/Contents/Resources/data_sts2_macos_arm64/sts2.dll` |
-| 리소스 팩 | `SlayTheSpire2.app/Contents/Resources/Slay the Spire 2.pck` (≈1.85 GB) |
-| 모딩 후보 | 동봉된 `0Harmony.dll`, `MonoMod.*` → 런타임 IL 패치 가능 |
+| 항목 | macOS arm64 | Windows x86_64 |
+| :--- | :--- | :--- |
+| 게임 버전 | `v0.103.2` (commit `89765e1e`) | `v0.103.2` (commit `89765e1e`) |
+| 메인 어셈블리 해시 | `-2128802502` | `1832700724` (플랫폼 빌드 차이; IL 본체는 동일) |
+| 엔진 | Godot 4 (.NET / Mono Build) | Godot 4 (.NET / Mono Build) |
+| 게임 설치 경로 | `/Users/dhlee/Library/Application Support/Steam/steamapps/common/Slay the Spire 2/` | `D:\Games\Steam\steamapps\common\Slay the Spire 2\` |
+| 핵심 바이너리 | `SlayTheSpire2.app/Contents/Resources/data_sts2_macos_arm64/sts2.dll` | `data_sts2_windows_x86_64\sts2.dll` |
+| 리소스 팩 | `SlayTheSpire2.app/Contents/Resources/Slay the Spire 2.pck` (≈1.85 GB) | `SlayTheSpire2.pck` (게임 루트, ≈1.85 GB) |
+| 모딩 후보 | 동봉된 `0Harmony.dll`, `MonoMod.*` → 런타임 IL 패치 가능 | 동일 |
 
 ### 6.1 레포 디렉토리 규약
 
 ```
-/Users/dhlee/workspace/ProjectSTS2/
-├── README.md                 # 본 문서
-├── .venv/                    # Python 격리 환경 (Python 3.13)
-├── tools/                    # 레포 로컬 도구 (ilspycmd, 래퍼 스크립트)
-│   ├── ilspycmd              # dotnet tool install --tool-path 로 설치된 본체
-│   └── ilspy                 # DOTNET_ROLL_FORWARD=Major 적용 래퍼
-├── decompiled/               # Phase 1 산출물: sts2.dll → C# 프로젝트 (3,369 .cs)
-├── pck_extracted/            # Phase 2 산출물: .pck → 원본 리소스 (GDRE Tools 필요)
-├── notes/                    # 분석 노트 (서브시스템별)
-├── scripts/                  # 통신/검증 스크립트 (smoke_test_mcp.py 등)
-├── tools/STS2MCP-bin/        # 다운로드한 모드 바이너리 (v0.4.0)
-├── tools/STS2MCP-src/        # 모드 소스 트리 (참조용 git clone)
-└── sim/                      # Phase 5+ : Python 시뮬레이터 소스 (미생성)
+ProjectSTS2/                       # macOS: ~/workspace/ProjectSTS2,  Windows: D:\workspace\ProjectSTS2
+├── README.md                      # 본 문서
+├── .venv/                         # Python 격리 환경 (Python 3.10+; macOS 3.13 / Windows 3.12 검증)
+├── tools/                         # 레포 로컬 도구
+│   ├── ilspycmd / ilspycmd.exe    # dotnet tool install --tool-path 로 설치된 본체
+│   └── ilspy                      # DOTNET_ROLL_FORWARD=Major 적용 bash 래퍼 (Windows에선 ilspycmd.exe 직접 호출)
+├── decompiled/                    # Phase 1 산출물: sts2.dll → C# 프로젝트 (~3,370 .cs)
+├── pck_extracted/                 # Phase 2 산출물: .pck → 원본 리소스 (GDRE Tools 필요)
+├── notes/                         # 분석 노트 (서브시스템별)
+├── scripts/                       # 통신/검증 스크립트 (smoke_test_mcp.py 등)
+├── tools/STS2MCP-bin/             # 다운로드한 모드 바이너리 (v0.4.0)
+├── tools/STS2MCP-src/             # 모드 소스 트리 (참조용 git clone)
+└── sim/                           # Phase 5+ : Python 시뮬레이터 소스
 ```
 
 ### 6.2 도구 호출 표준 명령
 
+**macOS / Linux (bash)**
 ```bash
 # 디컴파일 (Phase 1)
 ./tools/ilspy -p \
@@ -193,6 +205,23 @@ gdre_tools --headless --recover \
   "/Users/dhlee/Library/Application Support/Steam/steamapps/common/Slay the Spire 2/SlayTheSpire2.app/Contents/Resources/Slay the Spire 2.pck" \
   --output-dir ./pck_extracted/
 ```
+
+**Windows (PowerShell)**
+
+`tools/ilspy`는 bash 스크립트이므로 PowerShell에서는 ilspycmd를 직접 호출한다.
+
+```powershell
+# 도구 설치 (1회): 9.0.0.7889는 .NET 9 SDK에서 검증 완료. 10.x 일부 릴리스는 NuGet 패키징 오류로 설치 실패.
+dotnet tool install ilspycmd --tool-path .\tools --version 9.0.0.7889
+
+# 디컴파일 (Phase 1) — .NET 8 빌드를 .NET 9 런타임에서 강제 실행
+$env:DOTNET_ROLL_FORWARD = 'Major'
+.\tools\ilspycmd.exe -p `
+  "D:\Games\Steam\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64\sts2.dll" `
+  -o .\decompiled\
+```
+
+Windows 디컴파일 결과는 macOS와 .cs 파일 수 ±1 수준으로 동일하다 (3370 ↔ 3369). `MegaCrit.Sts2.Core.*` 네임스페이스 및 핵심 클래스 위치는 동일.
 
 > **참고**: GDRE Tools (`gdsdecomp`)는 NuGet/brew 배포가 없어, GitHub 릴리스에서 macOS arm64 빌드를 받아 `tools/` 하위에 배치한다. 설치 후 본 문서의 명령 경로를 보정한다.
 
@@ -213,10 +242,14 @@ Phase 2(`.pck` 추출)의 전제 조건. 배포 채널이 GitHub 릴리스뿐이
 | :--- | :--- |
 | 모드 | `Gennadiyev/STS2MCP` v0.4.0 (released 2026-05-05) |
 | 채널 | REST API on `http://localhost:15526` |
-| 배치 경로 | `…/SlayTheSpire2.app/Contents/MacOS/mods/` (배치 완료) |
+| 배치 경로 (macOS) | `…/SlayTheSpire2.app/Contents/MacOS/mods/` |
+| 배치 경로 (Windows) | `D:\Games\Steam\steamapps\common\Slay the Spire 2\mods\` |
 | 바이너리 백업 | `tools/STS2MCP-bin/{STS2_MCP.dll,STS2_MCP.json,STS2_MCP.pdb}` |
 | 소스 클론 | `tools/STS2MCP-src/` |
-| 스모크 테스트 | `.venv/bin/python scripts/smoke_test_mcp.py` (게임 실행·모드 활성화 후) |
+| 스모크 테스트 (macOS) | `.venv/bin/python scripts/smoke_test_mcp.py` (게임 실행·모드 활성화 후) |
+| 스모크 테스트 (Windows) | `.\.venv\Scripts\python.exe scripts\smoke_test_mcp.py` |
+
+> **참고**: STS2_MCP의 `STS2_MCP.dll`은 플랫폼 비종속 .NET 어셈블리이므로 macOS/Windows/Linux 모두 동일 바이너리를 사용한다 (모드 README 명시).
 
 활성화 절차: Steam에서 게임 실행 → 첫 실행 시 모드 consent 다이얼로그 수락 → **Settings → Mods**에서 `STS2 MCP` 토글 ON.
 
@@ -311,7 +344,9 @@ sim/
 
 다음 두 항목은 사용자의 명시적 액션이 필요:
 
-- **스모크 테스트 (Task #12)** — Steam에서 게임 실행 → 모드 consent 수락 → Settings → Mods에서 `STS2 MCP` 토글 ON → `./venv/bin/python scripts/smoke_test_mcp.py`로 5-prob 검증
-- **GDRE Tools 다운로드 (Phase 2, Task #3)** — `notes/` 외에 추가로 필요한 게임 리소스 데이터가 있을 경우 `https://github.com/bruvzg/gdsdecomp/releases`에서 macOS arm64 빌드 받아 `tools/` 하위 배치. **MVP 단계에서는 필수가 아님**(C# 코드에서 모든 수치 확보됨)
+- **스모크 테스트** — Steam에서 게임 실행 → 첫 실행 시 모드 consent 다이얼로그 수락 → **Settings → Mods**에서 `STS2 MCP` 토글 ON → 스모크 테스트 실행:
+  - macOS: `.venv/bin/python scripts/smoke_test_mcp.py`
+  - Windows: `.\.venv\Scripts\python.exe scripts\smoke_test_mcp.py`
+- **GDRE Tools 다운로드 (Phase 2, 선택)** — `notes/` 외에 추가로 필요한 게임 리소스 데이터가 있을 경우 `https://github.com/bruvzg/gdsdecomp/releases`에서 플랫폼별 빌드 받아 `tools/` 하위 배치. **MVP 단계에서는 필수가 아님** (C# 코드에서 모든 수치 확보됨).
 
 스모크 테스트가 통과되면 `notes/07_validation.md`의 V01~V10 시나리오를 차례로 실행해 시뮬레이터를 실게임과 정합화하면 됩니다.
