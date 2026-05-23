@@ -1,4 +1,5 @@
-"""PRNG port — bit-exact mirror of .NET 9 `System.Random(int seed)`.
+"""PRNG port — bit-exact mirror of .NET 9 `System.Random(int seed)` plus
+the game's MegaCrit.Sts2.Core.Random.Rng convenience methods.
 
 Background (notes/04_prng.md §1, corrected by the Phase 4 oracle in
 tools/RngOracle/): in .NET 6+, only the **seedless** `Random()` constructor
@@ -225,9 +226,84 @@ class Rng:
         return min_inclusive + u
 
     def next_item(self, items):
-        if not items:
+        """Rng.NextItem<T> — uniform pick from non-empty collection.
+        Consumes one counter slot (delegates to next_int)."""
+        seq = list(items) if not isinstance(items, list) else items
+        n = len(seq)
+        if n == 0:
             return None
-        return items[self.next_int(0, len(items))]
+        return seq[self.next_int(0, n)]
+
+    def next_bool(self) -> bool:
+        """Rng.NextBool — `_random.Next(2) == 0`. One counter slot."""
+        self.counter += 1
+        return self._random.next_max(2) == 0
+
+    def shuffle(self, lst: list) -> None:
+        """Rng.Shuffle<T>(IList<T>) — Fisher-Yates from N-1 down to 1.
+        Mutates in place. Each iteration consumes one counter slot via
+        the inner next_int call, matching the .NET implementation."""
+        for i in range(len(lst) - 1, 0, -1):
+            j = self.next_int(0, i + 1)
+            lst[i], lst[j] = lst[j], lst[i]
+
+    def next_gaussian_double(self, mean: float = 0.0, std_dev: float = 1.0,
+                             min_value: float = 0.0, max_value: float = 1.0) -> float:
+        """Rng.NextGaussianDouble — Box-Muller (cos branch) with rejection
+        until the *unscaled* value lies in [0, 1], then linearly mapped to
+        [min, max]. One counter slot per call, but each loop iteration
+        consumes two raw NextDouble samples from the underlying stream."""
+        if min_value > max_value:
+            raise ValueError("min must not exceed max")
+        self.counter += 1
+        import math
+        while True:
+            d = self._random.next_double()
+            u2 = self._random.next_double()
+            magnitude = math.sqrt(-2.0 * math.log(d)) if d > 0 else 0.0
+            z = magnitude * math.cos(2.0 * math.pi * u2)
+            v = mean + z * std_dev
+            if 0.0 <= v <= 1.0:
+                break
+        return v * (max_value - min_value) + min_value
+
+    def next_gaussian_float(self, mean: float = 0.0, std_dev: float = 1.0,
+                            min_value: float = 0.0, max_value: float = 1.0) -> float:
+        return self.next_gaussian_double(mean, std_dev, min_value, max_value)
+
+    def next_gaussian_int(self, mean: int, std_dev: int,
+                          min_value: int, max_value: int) -> int:
+        """Rng.NextGaussianInt — Box-Muller (sin branch), inverted NextDouble,
+        rounded to int, rejection until in [min, max]. Note: this method does
+        NOT increment Counter in the decompile (counter++ omitted), so the
+        Python port matches that quirk to preserve replay parity."""
+        import math
+        while True:
+            d = 1.0 - self._random.next_double()
+            u2 = 1.0 - self._random.next_double()
+            z = math.sqrt(-2.0 * math.log(d)) * math.sin(2.0 * math.pi * u2) if d > 0 else 0.0
+            v = mean + std_dev * z
+            n = int(round(v))
+            if min_value <= n <= max_value:
+                return n
+
+    def weighted_next_item(self, items, weight_fn):
+        """Rng.WeightedNextItem — pick proportionally to `weight_fn(item)`.
+        Burns one NextFloat (the `randInput` parameter in the static form).
+        Returns the last item touched as a fallback if weights sum to zero."""
+        seq = list(items)
+        if not seq:
+            return None
+        rand_input = self.next_float()
+        total = sum(weight_fn(it) for it in seq)
+        if total <= 0:
+            return seq[-1]
+        cursor = rand_input * total
+        for it in seq:
+            cursor -= weight_fn(it)
+            if cursor <= 0:
+                return it
+        return seq[-1]
 
 
 # Category names — notes/04_prng.md §2.
