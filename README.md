@@ -128,6 +128,20 @@ $$\text{Reward} = R_{\text{win}} + R_{\text{lose}} + R_{\text{hp\_penalty}}$$
 - **Search & Analysis**: ripgrep, Python `.venv` (레포 로컬 격리)
 - **Game Modding & Bridge**: Godot 4 (.NET Build), 0Harmony / MonoMod (게임 내장), STS2_MCP (C# Mod via REST API Server)
 
+### 5.1 Quick Start (clone 후 로컬 작업 재개)
+
+```bash
+git clone git@github.com:ldh5193/ProjectSTS2.git
+cd ProjectSTS2
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/python -m pytest                              # 33/33 PASS 확인
+.venv/bin/python scripts/random_baseline.py             # 무작위 베이스라인
+.venv/bin/python scripts/train_mvp.py --env full --steps 30000   # 단축 학습 (~1분)
+```
+
+`decompiled/` · `pck_extracted/` · `tools/STS2MCP-{bin,src}/`는 .gitignore되어 clone에 포함되지 않는다. 필요 시 §6.2(디컴파일), §6.3(.pck 추출), §6.4(모드 다운로드/설치) 절차로 재생성한다.
+
 ---
 
 ## 6. 대상 환경 (Target Environment Snapshot)

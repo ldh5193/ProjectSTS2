@@ -3,6 +3,19 @@ name = "projectsts2"
 version = "0.1.0"
 description = "ProjectSTS2 — Slay the Spire 2 RL agent: headless simulator + training pipeline"
 requires-python = ">=3.10"
+dependencies = [
+  "gymnasium>=1.2,<2",
+  "numpy>=2",
+  "requests>=2.31",
+  "sb3-contrib>=2.7",  # pulls stable-baselines3 + torch
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+# Versions known to work as of last verified run:
+#   gymnasium 1.2.3, numpy 2.4.6, requests 2.34.2, sb3-contrib 2.8.0,
+#   torch 2.12.0, pytest 9.0.3, Python 3.13.2.
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
