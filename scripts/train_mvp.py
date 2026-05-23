@@ -7,6 +7,7 @@ on mean final HP (defensive play) and mean turns (efficient kills).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -15,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
+from stable_baselines3.common.callbacks import BaseCallback
 
 from sim.env import SludgeSpinnerEnv
 from sim.env_full import SludgeSpinnerEnvFull
@@ -67,6 +69,36 @@ def evaluate(model, n_episodes: int, kind: str = "mvp", seed_base: int = 100_000
     }
 
 
+class PeriodicEvalCallback(BaseCallback):
+    """Run a deterministic evaluation every `eval_every` steps and log scalars.
+
+    Logging keys are written via SB3's logger so they land in TensorBoard
+    when `tensorboard_log` is set on the model. Also returns a per-eval
+    history dict for offline plotting via scripts/visualize.py.
+    """
+
+    def __init__(self, env_kind: str, eval_every: int, eval_episodes: int):
+        super().__init__()
+        self.env_kind = env_kind
+        self.eval_every = eval_every
+        self.eval_episodes = eval_episodes
+        self.history: list[dict] = []
+        self._next = eval_every
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps < self._next:
+            return True
+        self._next += self.eval_every
+        res = evaluate(self.model, self.eval_episodes, self.env_kind)
+        res["timesteps"] = self.num_timesteps
+        self.history.append(res)
+        self.logger.record("eval/win_rate", res["win_rate"])
+        self.logger.record("eval/mean_reward", res["mean_reward"])
+        self.logger.record("eval/mean_turns", res["mean_turns"])
+        self.logger.record("eval/mean_final_hp", res["mean_final_hp"])
+        return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=30_000)
@@ -74,15 +106,35 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("models/mvp_ppo.zip"))
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--env", choices=list(_ENV_CLASSES), default="mvp")
+    parser.add_argument("--tensorboard", type=Path, default=None,
+                        help="TensorBoard log dir, e.g. runs/mvp. Disabled when omitted.")
+    parser.add_argument("--eval-every", type=int, default=0,
+                        help="Periodic evaluation step interval (0 disables; ~steps/10 is reasonable).")
+    parser.add_argument("--history-out", type=Path, default=None,
+                        help="If set with --eval-every, dump JSON history for visualize.py.")
     args = parser.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)
 
     env = make_env(args.env)
-    model = MaskablePPO("MlpPolicy", env, verbose=0, seed=args.seed)
-    print(f"Training MaskablePPO on env={args.env} for {args.steps} steps...")
-    model.learn(total_timesteps=args.steps)
+    tb_log = str(args.tensorboard) if args.tensorboard else None
+    model = MaskablePPO(
+        "MlpPolicy", env, verbose=0, seed=args.seed, tensorboard_log=tb_log,
+    )
+    print(f"Training MaskablePPO on env={args.env} for {args.steps} steps"
+          f"{f' (TB->{tb_log})' if tb_log else ''}...")
+
+    callback = None
+    if args.eval_every > 0:
+        callback = PeriodicEvalCallback(args.env, args.eval_every, args.eval_episodes)
+
+    model.learn(total_timesteps=args.steps, callback=callback)
     model.save(args.out)
     print(f"Saved model to {args.out}")
+
+    if callback is not None and args.history_out is not None:
+        args.history_out.parent.mkdir(parents=True, exist_ok=True)
+        args.history_out.write_text(json.dumps(callback.history, indent=2))
+        print(f"Saved eval history to {args.history_out} ({len(callback.history)} points)")
 
     res = evaluate(model, args.eval_episodes, args.env)
     print(f"\nMaskablePPO ({args.env}) eval over {res['episodes']} episodes:")

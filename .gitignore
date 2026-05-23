@@ -16,6 +16,9 @@ decompiled/
 pck_extracted/
 *.sln
 
+# Training / visualization outputs — reproducible via scripts/train_mvp.py
+runs/
+
 # Tools — most are downloaded/cloned; keep only the local wrapper script.
 tools/*
 !tools/ilspy

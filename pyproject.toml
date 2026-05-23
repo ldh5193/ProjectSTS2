@@ -8,6 +8,8 @@ dependencies = [
   "numpy>=2",
   "requests>=2.31",
   "sb3-contrib>=2.7",  # pulls stable-baselines3 + torch
+  "matplotlib>=3.8",   # visualize: training curves, episode traces, histograms
+  "tensorboard>=2.15", # train_mvp.py --tensorboard logs to runs/
 ]
 
 [project.optional-dependencies]
@@ -15,7 +17,8 @@ dev = ["pytest>=8"]
 
 # Versions known to work as of last verified run:
 #   gymnasium 1.2.3, numpy 2.4.6, requests 2.34.2, sb3-contrib 2.8.0,
-#   torch 2.12.0, pytest 9.0.3, Python 3.13.2.
+#   torch 2.12.0, matplotlib 3.10.9, pytest 9.0.3,
+#   Python 3.13.2 (macOS) / Python 3.12.10 (Windows).
 
 [tool.setuptools.packages.find]
 include = ["sim*"]
