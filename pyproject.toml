@@ -17,6 +17,9 @@ dev = ["pytest>=8"]
 #   gymnasium 1.2.3, numpy 2.4.6, requests 2.34.2, sb3-contrib 2.8.0,
 #   torch 2.12.0, pytest 9.0.3, Python 3.13.2.
 
+[tool.setuptools.packages.find]
+include = ["sim*"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
