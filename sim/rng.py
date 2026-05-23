@@ -1,17 +1,29 @@
-"""PRNG port — notes/04_prng.md.
+"""PRNG port — bit-exact mirror of .NET 9 `System.Random(int seed)`.
 
-Implements xoshiro256** with SplitMix64 seed expansion (the standard pattern
-.NET 6+ adopted for System.Random) plus the project's deterministic string
-hash + per-category Rng wrapper.
+Background (notes/04_prng.md §1, corrected by the Phase 4 oracle in
+tools/RngOracle/): in .NET 6+, only the **seedless** `Random()` constructor
+uses xoshiro256**. The **seeded** `Random(int seed)` constructor — which is
+what `MegaCrit.Sts2.Core.Random.Rng` uses — continues to run the legacy
+Knuth subtractive 55-element generator for compatibility with .NET 1.0.
+The full source lives in dotnet/runtime under
+`Random.CompatImpl.cs`; this module reproduces it integer-for-integer.
 
-This module is algorithmically correct (matches the xoshiro256** spec) but
-has not yet been validated against bit-exact game output. Validation requires
-extracting test vectors via the running mod (Phase 7 L6, see notes/07_validation.md).
-Until then, treat it as "structurally faithful, not byte-exact."
+Once the core matches, the `Rng` / `PlayerRngSet` / `RunRngSet` wrappers
+layer on top: per-category seed splitting via the deterministic string
+hash, counter tracking, and snapshot/restore.
+
+Verified by `tests/test_rng_oracle.py` against test vectors emitted by
+`tools/RngOracle/` (a .NET 9 console app that calls the same APIs the
+game does).
 """
 from __future__ import annotations
 
-MASK64 = 0xFFFFFFFFFFFFFFFF
+
+MASK32 = 0xFFFFFFFF
+INT32_MIN = -(1 << 31)
+INT32_MAX = (1 << 31) - 1
+MBIG = INT32_MAX          # = 2_147_483_647
+MSEED = 161803398
 
 
 def get_deterministic_hash_code(s: str) -> int:
@@ -21,86 +33,145 @@ def get_deterministic_hash_code(s: str) -> int:
     n = len(s)
     i = 0
     while i < n:
-        num = (((num << 5) + num) ^ ord(s[i])) & 0xFFFFFFFF
+        num = (((num << 5) + num) ^ ord(s[i])) & MASK32
         if i + 1 >= n:
             break
-        num2 = (((num2 << 5) + num2) ^ ord(s[i + 1])) & 0xFFFFFFFF
+        num2 = (((num2 << 5) + num2) ^ ord(s[i + 1])) & MASK32
         i += 2
 
-    result = (num + num2 * 1566083941) & 0xFFFFFFFF
-    if result >= 2 ** 31:
-        result -= 2 ** 32
+    result = (num + num2 * 1566083941) & MASK32
+    if result >= 1 << 31:
+        result -= 1 << 32
     return result
 
 
-def _split_mix_64(state: int) -> tuple[int, int]:
-    """One step of SplitMix64. Returns (new_state, output)."""
-    state = (state + 0x9E3779B97F4A7C15) & MASK64
-    z = state
-    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E7B5) & MASK64
-    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & MASK64
-    return state, z ^ (z >> 31)
+def _to_int32(x: int) -> int:
+    """C# unchecked (int) cast, used at seed conversion boundaries."""
+    x &= MASK32
+    if x >= 1 << 31:
+        x -= 1 << 32
+    return x
 
 
-def _rotl64(x: int, k: int) -> int:
-    return ((x << k) | (x >> (64 - k))) & MASK64
+class DotNetSeededRandom:
+    """Knuth subtractive 55-element generator — bit-exact to .NET 6+
+    `Random(int Seed)` (the CompatImpl path).
 
+    Public surface mirrors the game's `Rng.cs` needs:
+        sample()      -> [0.0, 1.0)
+        next()        -> [0, int.MaxValue)
+        next_max(m)   -> [0, m)
+        next_double() -> alias for sample()
+        advance()     -> consume one sample, discard (for FastForwardCounter)
+    """
 
-class Xoshiro256StarStar:
-    """xoshiro256** core. Bit-exact to the standard spec."""
-
-    __slots__ = ("s0", "s1", "s2", "s3")
+    __slots__ = ("_seed_array", "_inext", "_inextp")
 
     def __init__(self, seed: int):
-        s = seed & MASK64
-        s, self.s0 = _split_mix_64(s)
-        s, self.s1 = _split_mix_64(s)
-        s, self.s2 = _split_mix_64(s)
-        s, self.s3 = _split_mix_64(s)
-        # SplitMix64 never produces an all-zero quadruplet for non-zero seed.
+        seed = _to_int32(seed)
+        # `int mj = (Seed == int.MinValue) ? int.MaxValue : Math.Abs(Seed);`
+        if seed == INT32_MIN:
+            mj = INT32_MAX
+        else:
+            mj = -seed if seed < 0 else seed
+        # mj = MSEED - mj — may wrap; C# silently truncates to int32.
+        mj = _to_int32(MSEED - mj)
+        self._seed_array = [0] * 56
+        self._seed_array[55] = mj
+        mk = 1
+        ii = 0
+        for i in range(1, 55):
+            ii += 21
+            if ii >= 55:
+                ii -= 55
+            self._seed_array[ii] = mk
+            # `mk = mj - mk` — int32 subtraction with wraparound. With mj
+            # potentially as low as ~-2*10^9, this expression *will* overflow
+            # for seeds near int.MaxValue / int.MinValue; the wraparound is
+            # part of the algorithm.
+            mk = _to_int32(mj - mk)
+            if mk < 0:
+                mk += MBIG
+            mj = self._seed_array[ii]
+        for _ in range(1, 5):
+            for i in range(1, 56):
+                n = i + 30
+                if n >= 55:
+                    n -= 55
+                self._seed_array[i] = _to_int32(self._seed_array[i] - self._seed_array[1 + n])
+                if self._seed_array[i] < 0:
+                    self._seed_array[i] += MBIG
+        self._inext = 0
+        self._inextp = 21
 
-    def next_uint64(self) -> int:
-        result = (_rotl64((self.s1 * 5) & MASK64, 7) * 9) & MASK64
-        t = (self.s1 << 17) & MASK64
-        self.s2 ^= self.s0
-        self.s3 ^= self.s1
-        self.s1 ^= self.s2
-        self.s0 ^= self.s3
-        self.s2 ^= t
-        self.s3 = _rotl64(self.s3, 45)
-        return result
+    def _internal_sample(self) -> int:
+        locINext = self._inext + 1
+        if locINext >= 56:
+            locINext = 1
+        locINextp = self._inextp + 1
+        if locINextp >= 56:
+            locINextp = 1
+        retVal = self._seed_array[locINext] - self._seed_array[locINextp]
+        if retVal == MBIG:
+            retVal -= 1
+        if retVal < 0:
+            retVal += MBIG
+        self._seed_array[locINext] = retVal
+        self._inext = locINext
+        self._inextp = locINextp
+        return retVal
 
-    def next_int_max(self, max_exclusive: int) -> int:
-        # Multiplicative reduction (Lemire-style, no rejection) — matches the .NET 9
-        # System.Random fast-path and guarantees exactly one next_uint64() call per
-        # invocation, which is critical for counter-based save/load determinism.
-        # Tiny bias when max_exclusive is not a power of two; acceptable for sim use.
-        if max_exclusive <= 0:
-            raise ValueError("max_exclusive must be > 0")
-        if max_exclusive == 1:
-            return 0
-        return (self.next_uint64() * max_exclusive) >> 64
+    def sample(self) -> float:
+        return self._internal_sample() * (1.0 / MBIG)
 
+    # Aliases mirroring .NET API names that the game uses.
     def next_double(self) -> float:
-        # 53-bit precision (matches .NET 6+ NextDouble).
-        return (self.next_uint64() >> 11) * (1.0 / (1 << 53))
+        return self.sample()
+
+    def next(self) -> int:
+        """Next() — returns [0, int.MaxValue)."""
+        return self._internal_sample()
+
+    def next_max(self, max_exclusive: int) -> int:
+        """Next(int maxValue) — returns [0, maxValue). max=0 returns 0; max<0 is an error."""
+        if max_exclusive < 0:
+            raise ValueError("maxValue must be non-negative")
+        if max_exclusive <= 1:
+            return 0
+        # .NET: (int)(Sample() * maxValue)
+        return int(self.sample() * max_exclusive)
+
+    def next_bytes(self, n: int) -> bytes:
+        """NextBytes — one Next() per byte, truncated to low 8 bits.
+
+        .NET 6+ for the seeded path writes `(byte)Next()` per byte
+        (CompatImpl), i.e. `_internal_sample() & 0xFF`.
+        """
+        return bytes(self._internal_sample() & 0xFF for _ in range(n))
+
+    def advance(self) -> None:
+        """Discard one sample (for FastForwardCounter)."""
+        self._internal_sample()
 
 
 class Rng:
-    """Counter-tracked, category-aware wrapper. Mirrors decompiled MegaCrit.Sts2.Core.Random.Rng.
+    """Counter-tracked, category-aware wrapper. Mirrors decompiled
+    `MegaCrit.Sts2.Core.Random.Rng`.
 
-    Construct with a base seed and optional category name; the name's deterministic
-    hash is folded in so each category has an independent stream.
+    Construct with a uint seed and optional category name; the name's
+    deterministic hash is folded in (unchecked uint arithmetic) so each
+    category has an independent stream.
     """
 
-    __slots__ = ("seed", "counter", "_rng")
+    __slots__ = ("seed", "counter", "_random")
 
     def __init__(self, seed: int, name: str = "", counter: int = 0):
         if name:
-            seed = (seed + get_deterministic_hash_code(name)) & 0xFFFFFFFF
-        self.seed = seed
+            seed = (seed + get_deterministic_hash_code(name)) & MASK32
+        self.seed = seed & MASK32
         self.counter = 0
-        self._rng = Xoshiro256StarStar(seed)
+        # `new System.Random((int) seed)` — cast back to signed Int32.
+        self._random = DotNetSeededRandom(_to_int32(self.seed))
         if counter:
             self.fast_forward(counter)
 
@@ -110,18 +181,48 @@ class Rng:
                 f"cannot rewind RNG (have {self.counter}, asked {target_counter})"
             )
         while self.counter < target_counter:
-            self._rng.next_uint64()
+            self._random.advance()
             self.counter += 1
 
     def next_int(self, min_inclusive: int, max_exclusive: int) -> int:
+        """Mirrors `Rng.NextInt(min, max)`:
+            return min + _random.Next(max - min)
+        """
         if max_exclusive <= min_inclusive:
             raise ValueError("max must exceed min")
         self.counter += 1
-        return min_inclusive + self._rng.next_int_max(max_exclusive - min_inclusive)
+        return min_inclusive + self._random.next_max(max_exclusive - min_inclusive)
 
     def next_float(self, lo: float = 0.0, hi: float = 1.0) -> float:
+        """Mirrors `Rng.NextFloat(min, max)`:
+            return (float)(_random.NextDouble() * (max - min) + min)
+        Python returns a 64-bit float so we don't downcast — callers
+        comparing against in-game float32 results should round explicitly.
+        """
         self.counter += 1
-        return self._rng.next_double() * (hi - lo) + lo
+        return self._random.next_double() * (hi - lo) + lo
+
+    def next_double(self, lo: float = 0.0, hi: float = 1.0) -> float:
+        self.counter += 1
+        return self._random.next_double() * (hi - lo) + lo
+
+    def next_bool(self) -> bool:
+        """Mirrors `Rng.NextBool()` which calls `_random.Next(2) == 0`."""
+        self.counter += 1
+        return self._random.next_max(2) == 0
+
+    def next_unsigned_int(self, min_inclusive: int, max_exclusive: int) -> int:
+        """Mirrors `Rng.NextUnsignedInt` (notes/04_prng.md §1.2):
+            double f = _random.NextDouble();
+            uint u  = (uint)(f * (max - min));
+            return min + u;
+        """
+        if max_exclusive <= min_inclusive:
+            raise ValueError("max must exceed min")
+        self.counter += 1
+        f = self._random.next_double()
+        u = int(f * (max_exclusive - min_inclusive)) & MASK32
+        return min_inclusive + u
 
     def next_item(self, items):
         if not items:
@@ -143,8 +244,8 @@ class _RngSet:
     """Bag of named Rngs sharing a base seed."""
 
     def __init__(self, seed: int, categories: tuple[str, ...]):
-        self.seed = seed
-        self.rngs: dict[str, Rng] = {c: Rng(seed, c) for c in categories}
+        self.seed = seed & MASK32
+        self.rngs: dict[str, Rng] = {c: Rng(self.seed, c) for c in categories}
 
     def __getattr__(self, name: str) -> Rng:
         try:
@@ -157,7 +258,6 @@ class _RngSet:
 
     @classmethod
     def restore(cls, snapshot: dict) -> "_RngSet":
-        # cls is a subclass (PlayerRngSet / RunRngSet) which fixes the category list.
         s = cls(snapshot["seed"])
         for k, c in snapshot["counters"].items():
             s.rngs[k].fast_forward(c)

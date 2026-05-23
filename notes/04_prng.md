@@ -1,6 +1,27 @@
 # Slay the Spire 2 — PRNG & Seed System (Phase 4 Deep Dive)
 
-*Target framework: .NET 9.0 (Arm64). Key goal: bit-exact Python port for deterministic replay.*
+*Target framework: .NET 9.0 (Arm64 / x86_64). Key goal: bit-exact Python port for deterministic replay.*
+
+---
+
+## 0. Phase 4 Resolution Update (sprint after the document was first drafted)
+
+**The earlier conclusion in §1.4 that "in .NET 6.0+ System.Random uses xoshiro256\*\*" is incomplete and was misleading the Python port.**
+
+The .NET 6 redesign split `System.Random` into two implementations:
+
+| Constructor | Internal impl | Algorithm |
+| :--- | :--- | :--- |
+| `new Random()` (seedless) | `XoshiroImpl` | xoshiro256\*\* |
+| `new Random(int seed)` (seeded) | `CompatImpl` | **Knuth subtractive 55-element** (the .NET 1.0 algorithm, preserved for backward compatibility) |
+
+The game's `MegaCrit.Sts2.Core.Random.Rng` always goes through `new System.Random((int)seed)` — so the **Knuth subtractive generator** is the one we must port, not xoshiro256\*\*.
+
+The Python port (`sim/rng.py`) now implements `CompatImpl` line-for-line and is checked bit-exact against vectors emitted by a standalone .NET 9 console app at `tools/RngOracle/` (committed JSON at `tools/RngOracle/oracle.json`, regenerable with `dotnet run --project tools/RngOracle/RngOracle.csproj > tools/RngOracle/oracle.json`). The full sweep is in `tests/test_rng_oracle.py` (54 cases, all green).
+
+Critical gotcha during the port: the init loop has lines like `mk = mj - mk` and `_seedArray[i] -= _seedArray[1+n]`. When the seed is near `int.MaxValue` / `int.MinValue` these expressions overflow the 32-bit signed range; C# silently wraps, Python doesn't. The Python port has to clamp each intermediate via `_to_int32(...)` to reproduce the wraparound exactly. Without that, seeds 0..1B happen to work but `int.MaxValue` / `int.MinValue` diverge by ~1 ULP starting at the second or third sample.
+
+The rest of the §1 / §2 / §3 / §5 content below is still useful as field reference (counter semantics, category split, fast-forward) and remains accurate. **Treat §1.4's algorithm claim and §5's xoshiro256\*\* sketch as historical context, not as a port spec.**
 
 ---
 

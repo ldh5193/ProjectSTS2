@@ -1,23 +1,21 @@
-"""Tests for the PRNG port — sim/rng.py.
+"""Structural tests for sim/rng.py (the .NET seeded Knuth subtractive port).
 
-These tests verify structural correctness (determinism, range, counter advance,
-category independence). Bit-exact agreement with the real game's .NET
-xoshiro256** stream is NOT verified here — it requires test vectors that can
-only be extracted from a running game (Phase 7 L6).
+Bit-exact agreement with .NET 9 `System.Random(int)` lives in
+tests/test_rng_oracle.py, which checks the same Python implementation
+against vectors emitted by `tools/RngOracle/`.
 """
 from __future__ import annotations
 
 from sim.rng import (
+    DotNetSeededRandom,
     PlayerRngSet,
     Rng,
     RunRngSet,
-    Xoshiro256StarStar,
     get_deterministic_hash_code,
 )
 
 
 def test_deterministic_hash_is_stable():
-    # Hash function must be deterministic; values themselves are arbitrary but stable.
     a = get_deterministic_hash_code("monster_ai")
     b = get_deterministic_hash_code("monster_ai")
     assert a == b
@@ -30,35 +28,35 @@ def test_deterministic_hash_returns_signed_int32():
         assert -(2 ** 31) <= h < 2 ** 31
 
 
-def test_xoshiro_is_deterministic_for_same_seed():
-    a = Xoshiro256StarStar(42)
-    b = Xoshiro256StarStar(42)
+def test_random_is_deterministic_for_same_seed():
+    a = DotNetSeededRandom(42)
+    b = DotNetSeededRandom(42)
     for _ in range(100):
-        assert a.next_uint64() == b.next_uint64()
+        assert a.next() == b.next()
 
 
-def test_xoshiro_different_seeds_diverge():
-    a = Xoshiro256StarStar(1)
-    b = Xoshiro256StarStar(2)
-    assert a.next_uint64() != b.next_uint64()
+def test_random_different_seeds_diverge():
+    a = DotNetSeededRandom(1)
+    b = DotNetSeededRandom(2)
+    assert a.next() != b.next()
 
 
-def test_xoshiro_uint64_range():
-    r = Xoshiro256StarStar(123)
+def test_random_next_in_int32_range():
+    r = DotNetSeededRandom(123)
     for _ in range(1000):
-        v = r.next_uint64()
-        assert 0 <= v < 2 ** 64
+        v = r.next()
+        assert 0 <= v < 2 ** 31
 
 
-def test_xoshiro_next_int_in_range():
-    r = Xoshiro256StarStar(7)
+def test_random_next_max_in_range():
+    r = DotNetSeededRandom(7)
     for _ in range(10_000):
-        v = r.next_int_max(10)
+        v = r.next_max(10)
         assert 0 <= v < 10
 
 
-def test_xoshiro_next_double_in_unit_interval():
-    r = Xoshiro256StarStar(7)
+def test_random_next_double_in_unit_interval():
+    r = DotNetSeededRandom(7)
     for _ in range(1000):
         v = r.next_double()
         assert 0.0 <= v < 1.0
@@ -76,8 +74,6 @@ def test_rng_counter_advances_per_call():
 
 
 def test_rng_fast_forward_reproduces_stream():
-    # Create an Rng, advance by 5 calls, then create a new Rng and fast-forward 5,
-    # both should produce the same next number.
     r1 = Rng(42, "shuffle")
     for _ in range(5):
         r1.next_int(0, 1000)
@@ -90,7 +86,6 @@ def test_rng_categories_are_independent():
     rs = RunRngSet(seed=42)
     a = rs.monster_ai.next_int(0, 1_000_000)
     b = rs.shuffle.next_int(0, 1_000_000)
-    # Independent streams should almost always disagree on the first sample.
     assert a != b
 
 
@@ -110,7 +105,6 @@ def test_rng_set_snapshot_restore_roundtrip():
         rs.shuffle.next_int(0, 100)
     snap = rs.snapshot()
     restored = RunRngSet.restore(snap)
-    # After restore, the next draw must match the original's continuation.
     assert restored.monster_ai.next_int(0, 100) == rs.monster_ai.next_int(0, 100)
     assert restored.shuffle.next_int(0, 100) == rs.shuffle.next_int(0, 100)
 

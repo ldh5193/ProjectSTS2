@@ -19,6 +19,10 @@ pck_extracted/
 # Training / visualization outputs — reproducible via scripts/train_mvp.py
 runs/
 
-# Tools — most are downloaded/cloned; keep only the local wrapper script.
+# Tools — most are downloaded/cloned; keep only the local wrapper script,
+# the bit-exact PRNG oracle project, and its committed test vectors.
 tools/*
 !tools/ilspy
+!tools/RngOracle/
+tools/RngOracle/bin/
+tools/RngOracle/obj/
