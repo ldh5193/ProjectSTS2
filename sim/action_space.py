@@ -278,9 +278,13 @@ def decode(idx: int, state: dict) -> dict:
     if r.name == "relic_select":
         if local == 5:
             return {"action": "skip_relic_selection"}
-        # Treasure rooms use claim_treasure_relic; ordinary relic picks use
-        # select_relic. Disambiguate by state.relic_select source if needed;
-        # default to select_relic.
+        # Treasure rooms use claim_treasure_relic; ordinary relic picks
+        # (event-spawned, boss-relic style) use select_relic. The mod
+        # exposes both via state_type — treasure rooms set state_type to
+        # "treasure" rather than reusing relic_select, so we route by
+        # state_type to keep the right verb on the wire.
+        if state.get("state_type") == "treasure":
+            return {"action": "claim_treasure_relic", "relic_index": local}
         return {"action": "select_relic", "relic_index": local}
 
     if r.name == "map":
@@ -306,6 +310,34 @@ def decode(idx: int, state: dict) -> dict:
         if local < 6:
             return {"action": "discard_potion", "slot": local - 3}
         return {"action": "invalid", "reason": "potion slot reserved"}
+
+    if r.name == "hand_select":
+        if local == 10:
+            return {"action": "combat_confirm_selection"}
+        return {"action": "combat_select_card", "card_index": local}
+
+    if r.name == "bundle_select":
+        if local == 10:
+            return {"action": "confirm_bundle_selection"}
+        if local == 11:
+            return {"action": "cancel_bundle_selection"}
+        return {"action": "select_bundle", "bundle_index": local}
+
+    if r.name == "select_card":
+        if local == 10:
+            return {"action": "confirm_selection"}
+        if local == 11:
+            return {"action": "cancel_selection"}
+        return {"action": "select_card", "option_index": local}
+
+    if r.name == "crystal_sphere":
+        if local < 8:
+            tools = ["red", "orange", "yellow", "green",
+                     "blue", "purple", "rainbow", "reset"]
+            return {"action": "crystal_sphere_set_tool", "tool": tools[local]}
+        cell = local - 8
+        return {"action": "crystal_sphere_click_cell",
+                "coord": {"row": cell // 6, "col": cell % 6}}
 
     if r.name == "menu_select":
         opts = state.get("options") or []
