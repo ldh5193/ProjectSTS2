@@ -1,4 +1,4 @@
-"""Phase 7 validation harness — sim/ ↔ real-game-via-STS2MCP cross-check.
+"""Phase 7 validation harness -sim/ ↔ real-game-via-STS2MCP cross-check.
 
 Implements V01–V05 from notes/07_validation.md. V06+ are stubs to be
 expanded after the simpler scenarios pass.
@@ -202,13 +202,38 @@ SCENARIOS = {
 # ---------- driver ----------
 
 
+def _wait_for_combat(timeout_s: float, poll_s: float = 1.0) -> dict | None:
+    """Poll state until the game enters a combat encounter (state_type in
+    {'monster', 'elite'}) or the timeout elapses. Returns the first combat
+    state observed, or None on timeout."""
+    deadline = time.monotonic() + timeout_s
+    last_kind = None
+    while time.monotonic() < deadline:
+        state = get_state()
+        kind = state.get("state_type")
+        if kind in ("monster", "elite"):
+            return state
+        if kind != last_kind:
+            last_kind = kind
+            print(f"  waiting for combat... (state={kind})")
+        time.sleep(poll_s)
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--scenario", choices=sorted(SCENARIOS), default=None,
         help="Run a single scenario; default runs all in order."
     )
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Simulator seed. NOTE: until we can derive the same "
+                             "uint seed the game's RunRngSet was built with, the "
+                             "monster HP roll and hand order will diverge from the "
+                             "real game -those fields are soft-diff for now.")
+    parser.add_argument("--wait", type=float, default=0.0,
+                        help="Seconds to wait for the game to enter combat before "
+                             "giving up. Default 0 = require combat already active.")
     args = parser.parse_args()
 
     if not _check_reachable():
@@ -219,15 +244,33 @@ def main() -> int:
 
     real0 = get_state()
     if real0.get("state_type") not in ("monster", "elite"):
-        print(f"FAIL: not in a combat state (got state_type={real0.get('state_type')}).",
-              file=sys.stderr)
-        print("Navigate to a SludgeSpinner Weak fight, then re-run.", file=sys.stderr)
-        return 2
-    print("Real engine reachable, combat in progress.\n")
+        if args.wait <= 0:
+            print(f"FAIL: not in a combat state (got state_type={real0.get('state_type')}).",
+                  file=sys.stderr)
+            print("Navigate to a SludgeSpinner Weak fight, then re-run, or pass "
+                  "--wait <seconds> to poll until combat starts.", file=sys.stderr)
+            return 2
+        print(f"Waiting up to {args.wait}s for combat to start...")
+        real0 = _wait_for_combat(args.wait)
+        if real0 is None:
+            print("FAIL: timeout waiting for combat.", file=sys.stderr)
+            return 2
 
-    # Build a sim combat in lockstep. NOTE: monster HP roll uses the simulator's
-    # placeholder RNG, not the real game's xoshiro256** stream. HP and hand-order
-    # mismatches at V01 are expected until Phase 4 PRNG port is verified.
+    # Surface the actual encounter we landed in -V01-V05 are written against
+    # SludgeSpinnerWeak, so a different encounter means the hard fields will
+    # diverge and the failure mode should look obvious.
+    enemies = real0.get("battle", {}).get("enemies") or []
+    encounter_ids = [e.get("id") or e.get("model_id") or "?" for e in enemies]
+    print(f"Real engine reachable, combat in progress: {encounter_ids}.\n")
+    if not any("SludgeSpinner" in str(eid) for eid in encounter_ids):
+        print(f"WARNING: simulator only models SludgeSpinnerWeak; current encounter "
+              f"is {encounter_ids}. Hard-diff failures are expected.\n")
+
+    # Build a sim combat in lockstep. The PRNG core is now bit-exact to .NET's
+    # seeded Random (tests/test_rng_oracle.py), but the simulator's combat
+    # currently still uses Python's `random.Random` and a Python-side seed; the
+    # category/seed plumbing from RunRngSet hasn't been wired in yet. So HP
+    # rolls and hand order may still diverge -those are tracked as soft fields.
     cs = CombatState.new_combat(seed=args.seed)
     cs.start_player_turn()
 
@@ -242,7 +285,7 @@ def main() -> int:
             fails += 1
             continue
         if mismatches:
-            print(f"[{name}] FAIL — {len(mismatches)} field(s) diverge:")
+            print(f"[{name}] FAIL -{len(mismatches)} field(s) diverge:")
             for field, rv, sv in mismatches:
                 print(f"    {field:24s}  real={rv!r:20s}  sim={sv!r}")
             fails += 1
