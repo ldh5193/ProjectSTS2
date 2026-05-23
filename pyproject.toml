@@ -1,0 +1,9 @@
+[project]
+name = "projectsts2"
+version = "0.1.0"
+description = "ProjectSTS2 — Slay the Spire 2 RL agent: headless simulator + training pipeline"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

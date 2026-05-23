@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Wrapper for ilspycmd installed via `dotnet tool install --tool-path ./tools`.
+# Forces .NET 8-targeted binary to roll forward to the installed .NET 9 runtime.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec env DOTNET_ROLL_FORWARD=Major "$SCRIPT_DIR/ilspycmd" "$@"

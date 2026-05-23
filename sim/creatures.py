@@ -1,0 +1,51 @@
+"""Creature base + Player/Monster.
+
+Cites: notes/05_mvp_combat_spec.md §C (player), §B (monster).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from .powers import Power
+
+
+@dataclass
+class Creature:
+    name: str
+    hp: int
+    max_hp: int
+    block: int = 0
+    powers: list[Power] = field(default_factory=list)
+    alive: bool = True
+
+    def get_power(self, power_id: str) -> Power | None:
+        for p in self.powers:
+            if p.id == power_id:
+                return p
+        return None
+
+    def add_or_stack_power(self, new_power: Power) -> None:
+        existing = self.get_power(new_power.id)
+        if existing is None:
+            self.powers.append(new_power)
+        else:
+            existing.amount += new_power.amount
+
+    def lose_hp(self, amount: int) -> int:
+        actual = min(self.hp, amount)
+        self.hp -= actual
+        if self.hp <= 0:
+            self.hp = 0
+            self.alive = False
+        return actual
+
+
+@dataclass
+class Player(Creature):
+    energy: int = 0
+    max_energy: int = 3
+
+
+@dataclass
+class Monster(Creature):
+    pass

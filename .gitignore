@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Build artifacts — regenerable from the game's sts2.dll / .pck
+decompiled/
+pck_extracted/
+*.sln
+
+# Tools — most are downloaded/cloned; keep only the local wrapper script.
+tools/*
+!tools/ilspy
