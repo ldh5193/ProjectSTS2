@@ -225,6 +225,16 @@ class Rng:
         u = int(f * (max_exclusive - min_inclusive)) & MASK32
         return min_inclusive + u
 
+    def randint(self, min_inclusive: int, max_inclusive: int) -> int:
+        """Python `random.Random.randint`-style helper — inclusive on both
+        ends. Built on top of next_int (exclusive upper)."""
+        return self.next_int(min_inclusive, max_inclusive + 1)
+
+    def choice(self, items):
+        """`random.Random.choice` alias for next_item; useful when porting
+        code that was originally written against `random.Random`."""
+        return self.next_item(items)
+
     def next_item(self, items):
         """Rng.NextItem<T> — uniform pick from non-empty collection.
         Consumes one counter slot (delegates to next_int)."""
