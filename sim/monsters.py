@@ -1,7 +1,12 @@
-"""SludgeSpinnerWeak — MVP monster.
+"""Monsters porting from `decompiled/MegaCrit.Sts2.Core.Models.Monsters/*`.
 
-Cites: notes/05_mvp_combat_spec.md §B
-File:line refs into the decompile are kept in the spec, not duplicated here.
+Currently modeled:
+  - SludgeSpinnerWeak — MVP, RandomBranch with CannotRepeat (notes/05).
+  - NibbitWeak — solo Nibbit, deterministic BUTT -> SLICE -> HISS cycle
+    (Nibbit.cs + NibbitsWeak.cs, IsAlone=true branch).
+
+Both expose `spawn(rng) -> Self` and `take_turn(rng, player) -> dict` so
+sim/combat.py can hold a `Monster` and call them polymorphically.
 """
 from __future__ import annotations
 
@@ -61,6 +66,74 @@ class SludgeSpinnerWeak(Monster):
             event.update(damage=6, blocked=blocked, hp_loss=hp_loss)
             # Grant +3 Strength to self.
             strength = StrengthPower(amount=3)
+            strength._owner = self
+            self.add_or_stack_power(strength)
+
+        self.last_move = move
+        self.next_move = self.roll_next_move(rng)
+        return event
+
+
+# --- NibbitWeak (NIBBIT_0, IsAlone) -----------------------------------------
+# Cites:
+#   decompiled/MegaCrit.Sts2.Core.Models.Monsters/Nibbit.cs
+#   decompiled/MegaCrit.Sts2.Core.Models.Encounters/NibbitsWeak.cs
+
+
+class NibbitMove(str, Enum):
+    BUTT = "butt"    # 12 dmg
+    SLICE = "slice"  # 6 dmg + self block 5
+    HISS = "hiss"    # self Strength +2
+
+
+NIBBIT_HP_MIN = 42
+NIBBIT_HP_MAX = 46  # inclusive (non-Ascension)
+
+_NIBBIT_BUTT_DAMAGE = 12
+_NIBBIT_SLICE_DAMAGE = 6
+_NIBBIT_SLICE_BLOCK = 5
+_NIBBIT_HISS_STRENGTH = 2
+
+# Solo Nibbit (IsAlone branch in NibbitsWeak.cs) opens with BUTT.
+# The state machine threads BUTT.FollowUp=SLICE, SLICE.FollowUp=HISS,
+# HISS.FollowUp=BUTT — a fixed cycle, no RNG branching.
+_NIBBIT_SOLO_FOLLOWUP = {
+    NibbitMove.BUTT: NibbitMove.SLICE,
+    NibbitMove.SLICE: NibbitMove.HISS,
+    NibbitMove.HISS: NibbitMove.BUTT,
+}
+
+
+@dataclass
+class NibbitWeak(Monster):
+    last_move: NibbitMove | None = None
+    next_move: NibbitMove | None = None
+
+    @classmethod
+    def spawn(cls, rng: random.Random) -> "NibbitWeak":
+        hp = rng.randint(NIBBIT_HP_MIN, NIBBIT_HP_MAX)
+        m = cls(name="Nibbit", hp=hp, max_hp=hp)
+        m.next_move = NibbitMove.BUTT  # IsAlone branch
+        return m
+
+    def roll_next_move(self, rng: random.Random) -> NibbitMove:
+        if self.last_move is None:
+            return NibbitMove.BUTT
+        return _NIBBIT_SOLO_FOLLOWUP[self.last_move]
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        move = self.next_move or self.roll_next_move(rng)
+        event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
+
+        if move is NibbitMove.BUTT:
+            blocked, hp_loss = deal_damage(_NIBBIT_BUTT_DAMAGE, self, player)
+            event.update(damage=_NIBBIT_BUTT_DAMAGE, blocked=blocked, hp_loss=hp_loss)
+        elif move is NibbitMove.SLICE:
+            blocked, hp_loss = deal_damage(_NIBBIT_SLICE_DAMAGE, self, player)
+            event.update(damage=_NIBBIT_SLICE_DAMAGE, blocked=blocked, hp_loss=hp_loss)
+            self.block += _NIBBIT_SLICE_BLOCK
+        elif move is NibbitMove.HISS:
+            strength = StrengthPower(amount=_NIBBIT_HISS_STRENGTH)
             strength._owner = self
             self.add_or_stack_power(strength)
 

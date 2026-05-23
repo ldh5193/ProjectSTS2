@@ -10,7 +10,7 @@ import random
 from dataclasses import dataclass, field
 
 from .cards import build_starting_deck
-from .creatures import Player
+from .creatures import Monster, Player
 from .damage import deal_damage, gain_block
 from .dsl import CardDef, EffectOp, Target
 from .monsters import SludgeSpinnerWeak
@@ -25,7 +25,7 @@ HAND_SIZE = 5
 @dataclass
 class CombatState:
     player: Player
-    monster: SludgeSpinnerWeak
+    monster: Monster
     draw_pile: list[CardDef]
     discard_pile: list[CardDef] = field(default_factory=list)
     hand: list[CardDef] = field(default_factory=list)
@@ -35,7 +35,12 @@ class CombatState:
     is_player_turn: bool = True
 
     @classmethod
-    def new_combat(cls, seed: int | None = None) -> "CombatState":
+    def new_combat(cls, seed: int | None = None, monster_factory=None) -> "CombatState":
+        """Build a fresh combat. `monster_factory(rng) -> Monster` defaults to
+        SludgeSpinnerWeak (the MVP encounter) so existing callers keep working;
+        pass NibbitWeak.spawn (or any other monster's classmethod) to validate
+        against a different act-1 encounter.
+        """
         rng = random.Random(seed)
         deck = build_starting_deck()
         rng.shuffle(deck)
@@ -46,7 +51,9 @@ class CombatState:
             energy=PLAYER_ENERGY_PER_TURN,
             max_energy=PLAYER_ENERGY_PER_TURN,
         )
-        monster = SludgeSpinnerWeak.spawn(rng)
+        if monster_factory is None:
+            monster_factory = SludgeSpinnerWeak.spawn
+        monster = monster_factory(rng)
         return cls(player=player, monster=monster, draw_pile=deck, rng=rng)
 
     # ---- pile management ----
