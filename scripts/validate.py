@@ -22,6 +22,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import requests
 
 from sim.combat import CombatState
+from sim.monsters import NibbitMove, NibbitWeak, SludgeMove, SludgeSpinnerWeak
+
+
+# Each entry: real-API enemy id prefix -> (sim Monster spawn factory, sim move -> intent type).
+# Real intent type strings are taken from the live API ("Attack", "Defend", "Buff", etc.).
+# A SLICE_MOVE prints two intents (Attack + Defend); we report the first.
+_INTENT_BY_SIM_MOVE: dict[type, dict[str, str]] = {
+    SludgeMove: {  # SludgeSpinner intent is always an attack of some flavor
+        "oil_spray": "Attack",
+        "slam": "Attack",
+        "rage": "Attack",
+    },
+    NibbitMove: {
+        "butt": "Attack",
+        "slice": "Attack",      # SLICE also has Defend; we match the first intent slot
+        "hiss": "Buff",
+    },
+}
+
+_MONSTER_FACTORY_BY_ID_PREFIX: list[tuple[str, callable]] = [
+    ("NIBBIT", NibbitWeak.spawn),
+    ("SLUDGE_SPINNER", SludgeSpinnerWeak.spawn),
+]
+
+
+def _factory_for(real_state: dict):
+    enemies = real_state.get("battle", {}).get("enemies") or []
+    if not enemies:
+        return None, None
+    eid = str(enemies[0].get("entity_id") or "")
+    for prefix, fact in _MONSTER_FACTORY_BY_ID_PREFIX:
+        if eid.startswith(prefix):
+            return fact, eid
+    return None, eid
 
 BASE = "http://localhost:15526"
 TIMEOUT = 3.0
@@ -92,8 +126,9 @@ def project_real(state: dict) -> dict:
 def project_sim(cs: CombatState) -> dict:
     intent = None
     if cs.monster.next_move is not None:
-        intent_map = {"oil_spray": "attack", "slam": "attack", "rage": "attack"}
-        intent = intent_map.get(cs.monster.next_move.value, cs.monster.next_move.value)
+        move = cs.monster.next_move
+        mapping = _INTENT_BY_SIM_MOVE.get(type(move), {})
+        intent = mapping.get(move.value, move.value)
     weak = cs.player.get_power("weak")
     vuln = cs.monster.get_power("vulnerable")
     strg = cs.monster.get_power("strength")
@@ -256,22 +291,22 @@ def main() -> int:
             print("FAIL: timeout waiting for combat.", file=sys.stderr)
             return 2
 
-    # Surface the actual encounter we landed in -V01-V05 are written against
-    # SludgeSpinnerWeak, so a different encounter means the hard fields will
-    # diverge and the failure mode should look obvious.
-    enemies = real0.get("battle", {}).get("enemies") or []
-    encounter_ids = [e.get("id") or e.get("model_id") or "?" for e in enemies]
-    print(f"Real engine reachable, combat in progress: {encounter_ids}.\n")
-    if not any("SludgeSpinner" in str(eid) for eid in encounter_ids):
-        print(f"WARNING: simulator only models SludgeSpinnerWeak; current encounter "
-              f"is {encounter_ids}. Hard-diff failures are expected.\n")
+    # Auto-pick the right sim monster factory from the live enemy id.
+    factory, encounter_eid = _factory_for(real0)
+    print(f"Real engine reachable, combat in progress: enemy={encounter_eid}.")
+    if factory is None:
+        modeled = ", ".join(p for p, _ in _MONSTER_FACTORY_BY_ID_PREFIX)
+        print(f"FAIL: sim does not model encounter '{encounter_eid}'. Modeled: {modeled}.",
+              file=sys.stderr)
+        return 2
+    print(f"Using sim factory: {factory.__qualname__}\n")
 
     # Build a sim combat in lockstep. The PRNG core is now bit-exact to .NET's
-    # seeded Random (tests/test_rng_oracle.py), but the simulator's combat
-    # currently still uses Python's `random.Random` and a Python-side seed; the
-    # category/seed plumbing from RunRngSet hasn't been wired in yet. So HP
-    # rolls and hand order may still diverge -those are tracked as soft fields.
-    cs = CombatState.new_combat(seed=args.seed)
+    # seeded Random (tests/test_rng_oracle.py), but combat.py still uses
+    # `random.Random` driven by a Python-side seed and the run-side category
+    # seeds aren't wired in. So HP rolls and hand order may still diverge,
+    # and those fields stay soft-diff for now.
+    cs = CombatState.new_combat(seed=args.seed, monster_factory=factory)
     cs.start_player_turn()
 
     targets = [args.scenario] if args.scenario else ["V01", "V02", "V03", "V04", "V05"]
