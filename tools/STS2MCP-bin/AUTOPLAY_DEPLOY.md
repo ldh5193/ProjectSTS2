@@ -67,8 +67,35 @@ While the toggle is OFF the sidecar just polls and prints
 the F12 hotkey hook lands in the mod, by pressing F12 in-game) to
 resume auto-play.
 
-## Next step (deferred)
+## F8 in-game hotkey
 
-The mod doesn't bind F12 yet — that needs a Godot Input hook on the
-main loop. For now the POST endpoint is the working toggle; the
-hotkey label in the GET response is just a TODO marker.
+The mod spawns a background thread that polls `GetAsyncKeyState(VK_F8)`
+every 50 ms (Windows-only). Each F8 press toggles
+`AutoPlayEnabled`. The hotkey thread is started lazily when the mod
+sees the first `/api/v1/autoplay` request, so call GET once after a
+game restart to arm it. After that, F8 alone is enough — no need
+for the sidecar to POST.
+
+Console line `[STS2 MCP] AutoPlay ON|OFF (F8)` confirms each toggle.
+
+On Linux/macOS the `GetAsyncKeyState` p/invoke fails silently; the
+toggle there has to go through the POST endpoint instead.
+
+## Starting from any mid-run state
+
+The sidecar (scripts/play_live.py) does NOT initialize a fresh sim
+state. Every step it does:
+
+  1. GET /api/v1/singleplayer (live game state)
+  2. translate that state into the 64-d observation the model
+     trained on (sim/env_run.py shape)
+  3. build the action mask from the live state
+  4. model.predict -> action index
+  5. action_space.decode -> mod-API body
+  6. POST
+
+So you can flip autoplay ON at any point — opening a card reward
+overlay, mid-combat after manually playing two cards, on the map
+between rooms — and the policy picks up from there. The `Initial
+state_type: <...>` line at startup confirms which screen the sidecar
+saw first.

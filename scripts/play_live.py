@@ -199,6 +199,12 @@ def main() -> None:
 
     state = _get_state()
     print(f"Initial state_type: {state.get('state_type')}")
+    if state.get("run"):
+        r = state["run"]
+        print(f"Run context: act={r.get('act')} floor={r.get('floor')} "
+              f"ascension={r.get('ascension')}")
+    print("Mid-run start is fine — the policy reads the live state every step "
+          "and never assumes a clean sim start.")
     print(f"Logging to {args.log}")
     log_f = args.log.open("a", encoding="utf-8")
 

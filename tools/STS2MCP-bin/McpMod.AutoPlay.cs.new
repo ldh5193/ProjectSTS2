@@ -11,7 +11,10 @@
 // pauses POSTs when disabled.
 
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading;
+using Godot;
 
 namespace STS2_MCP;
 
@@ -19,27 +22,63 @@ public static partial class McpMod
 {
     public static bool AutoPlayEnabled { get; private set; }
 
-    // Called once from McpMod.Initialize() (we hook it via a no-op
-    // call site at the bottom of McpMod.cs's existing init path).
+    // Hotkey: F8 (VK 0x77). Polled in a dedicated background thread via
+    // GetAsyncKeyState so the toggle works whether or not the game window
+    // has focus, without needing a Harmony patch on the game's input loop.
+    private const int VK_F8 = 0x77;
     private static bool _hotkeyInstalled;
+    private static Thread? _hotkeyThread;
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
+
     internal static void EnsureAutoPlayHotkey()
     {
         if (_hotkeyInstalled) return;
         _hotkeyInstalled = true;
-        // Polling the input from the listener thread isn't ideal but
-        // mirrors how the existing settings UI handles things: we don't
-        // touch the main thread at all; we just flip a bool.
-        // For a true keyboard hook this needs to live on the game's
-        // main loop — see Godot Engine.Singleton input polling. For
-        // first slice, the toggle is also reachable via POST.
+        _hotkeyThread = new Thread(_HotkeyLoop)
+        {
+            IsBackground = true,
+            Name = "STS2MCP-AutoPlayHotkey",
+        };
+        _hotkeyThread.Start();
+        GD.Print("[STS2 MCP] AutoPlay hotkey installed (F8 toggles enabled).");
+    }
+
+    private static void _HotkeyLoop()
+    {
+        // Edge-triggered: only toggle when the key transitions from up to down.
+        bool wasDown = false;
+        while (true)
+        {
+            try
+            {
+                short s = GetAsyncKeyState(VK_F8);
+                bool isDown = (s & 0x8000) != 0;
+                if (isDown && !wasDown)
+                {
+                    AutoPlayEnabled = !AutoPlayEnabled;
+                    GD.Print($"[STS2 MCP] AutoPlay {(AutoPlayEnabled ? "ON" : "OFF")} (F8)");
+                }
+                wasDown = isDown;
+            }
+            catch
+            {
+                // GetAsyncKeyState only works on Windows. On other OSes
+                // the hotkey thread silently no-ops; the POST endpoint
+                // still works.
+            }
+            Thread.Sleep(50);
+        }
     }
 
     internal static Dictionary<string, object?> HandleAutoPlayGet()
     {
+        EnsureAutoPlayHotkey();
         return new Dictionary<string, object?>
         {
             ["enabled"] = AutoPlayEnabled,
-            ["hotkey"] = "F12 (polled via POST until in-game keybind hook lands)",
+            ["hotkey"] = "F8",
         };
     }
 
