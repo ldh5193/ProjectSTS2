@@ -12,6 +12,8 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
@@ -143,6 +145,7 @@ public static partial class McpMod
                 AutoPlayEnabled = !AutoPlayEnabled;
                 GD.Print($"[STS2 MCP] AutoPlay {(AutoPlayEnabled ? "ON" : "OFF")} (button)");
                 _QueueTitleUpdate();
+                EnsureSidecarRunning();
             };
             _overlayCanvas.AddChild(_overlayButton);
             tree.Root.AddChild(_overlayCanvas);

@@ -1,8 +1,20 @@
 diff --git a/McpMod.cs b/McpMod.cs
-index 3b5ed64..0dba71c 100644
+index 3b5ed64..b660660 100644
 --- a/McpMod.cs
 +++ b/McpMod.cs
-@@ -260,6 +260,35 @@ public static partial class McpMod
+@@ -104,6 +104,11 @@ public static partial class McpMod
+             _serverThread.Start();
+ 
+             GD.Print($"[STS2 MCP] v{Version} server started on http://localhost:{port}/");
++
++            // Eagerly install the AutoPlay hotkey + overlay button so the
++            // user doesn't need to hit any endpoint first. EnsureAutoPlayHotkey
++            // queues a main-thread refresh that EnsureOverlayButton picks up.
++            EnsureAutoPlayHotkey();
+         }
+         catch (Exception ex)
+         {
+@@ -260,6 +265,35 @@ public static partial class McpMod
                  else
                      SendError(response, 405, "Method not allowed");
              }
