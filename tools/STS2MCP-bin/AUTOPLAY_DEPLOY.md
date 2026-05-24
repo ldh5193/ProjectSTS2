@@ -5,6 +5,9 @@ The vanilla STS2MCP v0.4.0 mod has no autoplay. We extended it to:
 - expose `GET/POST /api/v1/autoplay` on `localhost:15526`
 - bind **F8** as a global in-game hotkey
 - show **`[AUTOPLAY ON]`** in the OS window title bar while enabled
+- pin an **on-screen toggle button** (top-left corner, green when ON,
+  white when OFF) so you can flip autoplay with the mouse from any
+  screen — main menu, map, combat, rewards, events
 
 The actual trained policy still runs as a Python sidecar
 (`scripts/play_live.py`). The mod just publishes a flag; the sidecar

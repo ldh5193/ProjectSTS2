@@ -30,6 +30,13 @@ public static partial class McpMod
     private static bool _hotkeyInstalled;
     private static Thread? _hotkeyThread;
 
+    // Persistent on-screen button. Set once on the first SceneTree
+    // ProcessFrame we can find a root for; reused across all scene
+    // transitions because CanvasLayer sits above the SceneTree's
+    // viewports.
+    private static CanvasLayer? _overlayCanvas;
+    private static Button? _overlayButton;
+
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
 
@@ -44,6 +51,9 @@ public static partial class McpMod
         };
         _hotkeyThread.Start();
         GD.Print("[STS2 MCP] AutoPlay hotkey installed (F8 toggles enabled).");
+        // Force a title + overlay refresh on the next frame so the button
+        // shows up immediately (before the user touches anything).
+        _QueueTitleUpdate();
     }
 
     private static void _HotkeyLoop()
@@ -84,7 +94,7 @@ public static partial class McpMod
     {
         // Window title must change on the main thread (Godot SceneTree is
         // not thread-safe). Push a closure onto the mod's existing main-
-        // thread queue.
+        // thread queue. Also lazily install the on-screen overlay button.
         _mainThreadQueue.Enqueue(() =>
         {
             try
@@ -98,7 +108,69 @@ public static partial class McpMod
             {
                 GD.PrintErr($"[STS2 MCP] Title update failed: {ex.Message}");
             }
+            EnsureOverlayButton();
+            UpdateOverlayButtonText();
         });
+    }
+
+    internal static void EnsureOverlayButton()
+    {
+        if (_overlayButton != null && IsInstanceValid(_overlayButton)) return;
+        try
+        {
+            var tree = Engine.GetMainLoop() as SceneTree;
+            if (tree?.Root == null) return;
+            _overlayCanvas = new CanvasLayer
+            {
+                Layer = 100,             // above gameplay HUD
+                Name = "STS2MCP_AutoPlayOverlay",
+            };
+            _overlayButton = new Button
+            {
+                Text = AutoPlayEnabled ? "AUTO: ON" : "AUTO: OFF",
+                FocusMode = Control.FocusModeEnum.None,
+                // Anchor top-right via OffsetLeft/Top isn't enough without
+                // setting anchors; cheap option: absolute Position in the
+                // root viewport. 10 px padding from top-left works on every
+                // screen we care about.
+                Position = new Vector2(10, 10),
+                CustomMinimumSize = new Vector2(140, 36),
+            };
+            // Color the button so the state is obvious.
+            _overlayButton.AddThemeColorOverride("font_color", new Color(1f, 1f, 1f));
+            _overlayButton.Pressed += () =>
+            {
+                AutoPlayEnabled = !AutoPlayEnabled;
+                GD.Print($"[STS2 MCP] AutoPlay {(AutoPlayEnabled ? "ON" : "OFF")} (button)");
+                _QueueTitleUpdate();
+            };
+            _overlayCanvas.AddChild(_overlayButton);
+            tree.Root.AddChild(_overlayCanvas);
+            GD.Print("[STS2 MCP] AutoPlay overlay button installed (top-left).");
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[STS2 MCP] Overlay install failed: {ex.Message}");
+        }
+    }
+
+    private static void UpdateOverlayButtonText()
+    {
+        if (_overlayButton == null || !IsInstanceValid(_overlayButton)) return;
+        try
+        {
+            _overlayButton.Text = AutoPlayEnabled ? "AUTO: ON" : "AUTO: OFF";
+            // Background tint via modulate makes ON/OFF unambiguous.
+            _overlayButton.Modulate = AutoPlayEnabled
+                ? new Color(0.2f, 1f, 0.4f)   // green when ON
+                : new Color(1f, 1f, 1f);
+        }
+        catch { /* button may have been freed during scene reload */ }
+    }
+
+    private static bool IsInstanceValid(GodotObject obj)
+    {
+        return GodotObject.IsInstanceValid(obj);
     }
 
     internal static Dictionary<string, object?> HandleAutoPlayGet()
