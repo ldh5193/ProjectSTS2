@@ -25,6 +25,12 @@ namespace STS2_MCP;
 public static partial class McpMod
 {
     public static bool AutoPlayEnabled { get; private set; }
+    // Recommend mode: when ON (and AutoPlay is OFF) the thinker still runs
+    // the policy each tick and writes the suggested action into the
+    // _recommendLabel on screen, but does NOT execute. Lets the player drive
+    // the run manually with an AI suggestion overlay. If AutoPlay is also
+    // ON, AutoPlay wins (executes); Recommend is ignored.
+    public static bool RecommendEnabled { get; private set; }
 
     // Hotkey: F8 (VK 0x77). Polled in a dedicated background thread via
     // GetAsyncKeyState so the toggle works whether or not the game window
@@ -43,14 +49,28 @@ public static partial class McpMod
     private static CanvasLayer? _overlayCanvas;
     private static Button? _overlayButton;
     private static MegaRichTextLabel? _overlayLabel;
+    // REC toggle button (sits directly above AUTO).
+    private static Button? _overlayRecButton;
+    private static MegaRichTextLabel? _overlayRecLabel;
+    // Free-floating advisory label above the buttons — only visible while
+    // Recommend is ON; shows the human-readable action the policy chose.
+    private static MegaRichTextLabel? _overlayRecMessage;
 
-    // Anchored offsets from the bottom-right corner of the viewport. ~24 px
-    // padding gives breathing room over any HUD background, and the 184x44
-    // size matches the visual weight of the game's native menu buttons.
+    // The bottom-right corner is reserved for the game's discard/exhaust
+    // pile icons + the right-edge confirm/end-turn button. We anchor our
+    // toggle column to the TOP-CENTER instead, where STS2 leaves the area
+    // between the top edge and any popup notification banner empty.
+    // 24 px top padding clears the window chrome on every resolution.
     private const int OverlayWidth  = 184;
     private const int OverlayHeight = 44;
-    private const int OverlayPadRight  = 24;
-    private const int OverlayPadBottom = 24;
+    private const int OverlayPadTop = 24;
+    private const int OverlayRowGap = 6;
+    // Recommend advisory label sits BELOW the two toggles in the
+    // top-center stack. Wider than the toggle column so we can fit
+    // "play_card 2 → NIBBIT_0" without truncation.
+    private const int OverlayMessageWidth  = 360;
+    private const int OverlayMessageHeight = 32;
+    private const int OverlayMessageGap    = 8;
 
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
@@ -117,9 +137,15 @@ public static partial class McpMod
         {
             try
             {
+                // AutoPlay wins if both toggles are on (it executes; the
+                // advisory label is hidden by UpdateOverlayButtonText).
                 if (AutoPlayEnabled && EnsurePolicyLoaded())
                 {
                     _ThinkOneStep();
+                }
+                else if (RecommendEnabled && EnsurePolicyLoaded())
+                {
+                    _RecommendOneStep();
                 }
             }
             catch (Exception ex)
@@ -127,6 +153,109 @@ public static partial class McpMod
                 GD.PrintErr($"[STS2 MCP] AutoPlay step failed: {ex.Message}");
             }
             Thread.Sleep(ThinkerPollMs);
+        }
+    }
+
+    /// <summary>
+    /// Read live state, run the policy, format the recommended action as
+    /// a human-readable BBCode string, push it onto the on-screen advisory
+    /// label. Does NOT call ExecuteAction.
+    /// </summary>
+    private static void _RecommendOneStep()
+    {
+        var task = RunOnMainThread(() =>
+        {
+            Dictionary<string, object?> state;
+            try { state = BuildGameState(); }
+            catch { return false; }
+            string st = AsString(state, "state_type", "");
+            if (string.IsNullOrEmpty(st) || st == "game_over" || st == "victory")
+            {
+                _SetRecommendMessage($"[center][color=#888]({st})[/color][/center]");
+                return false;
+            }
+            // Combat play_phase gating: if it's the enemy's turn we have
+            // nothing useful to say.
+            if (st == "monster" || st == "elite" || st == "boss")
+            {
+                var battle = AsDict(state, "battle");
+                if (!AsBool(battle, "is_play_phase"))
+                {
+                    _SetRecommendMessage("[center][color=#888]waiting for play phase[/color][/center]");
+                    return false;
+                }
+            }
+            bool[] mask = BuildMask(state);
+            int legalCount = 0;
+            for (int i = 0; i < mask.Length; i++) if (mask[i]) legalCount++;
+            if (legalCount == 0)
+            {
+                _SetRecommendMessage($"[center][color=#888]{st}: no legal actions[/color][/center]");
+                return false;
+            }
+            float[] obs = BuildObs(state);
+            int action = PredictAction(obs, mask);
+            if (action < 0)
+            {
+                _SetRecommendMessage("[center][color=#888]policy returned no action[/color][/center]");
+                return false;
+            }
+            var decoded = DecodeAction(action, state);
+            string summary = decoded is { } d
+                ? _FormatRecommendation(d.action, d.data, state)
+                : $"idx {action} (decode failed)";
+            _SetRecommendMessage($"[center][color=#4ec1ff]AI recommends:[/color]  {summary}[/center]");
+            return true;
+        });
+        if (!task.Wait(1000))
+            GD.PrintErr("[STS2 MCP][REC] step timed out on main thread.");
+    }
+
+    /// <summary>
+    /// Turn a (action_name, payload) pair into a short caption like
+    /// "play_card 2 -> NIBBIT_0" or "choose_map_node 1". Pure formatting;
+    /// no game-state mutation.
+    /// </summary>
+    private static string _FormatRecommendation(string action, Dictionary<string, JsonElement> data,
+                                                Dictionary<string, object?> state)
+    {
+        string? Get(string key) =>
+            data.TryGetValue(key, out var v) ? v.ToString() : null;
+
+        switch (action)
+        {
+            case "end_turn":
+                return "[b]end turn[/b]";
+            case "play_card":
+                {
+                    string idx = Get("card_index") ?? "?";
+                    string? target = Get("target");
+                    var hand = AsList(AsDict(state, "player"), "hand");
+                    string cardName = "";
+                    if (int.TryParse(idx, out int i) && i >= 0 && i < hand.Count
+                        && hand[i] is Dictionary<string, object?> c)
+                    {
+                        cardName = AsString(c, "name", AsString(c, "id", ""));
+                    }
+                    string head = string.IsNullOrEmpty(cardName) ? $"play card #{idx}" : $"play [b]{cardName}[/b]";
+                    return string.IsNullOrEmpty(target) ? head : $"{head} → {target}";
+                }
+            case "combat_select_card":      return $"select hand card #{Get("card_index") ?? "?"}";
+            case "combat_confirm_selection":return "[b]confirm selection[/b]";
+            case "choose_map_node":         return $"map: take option [b]#{Get("index") ?? "?"}[/b]";
+            case "choose_rest_option":      return $"rest: option [b]#{Get("index") ?? "?"}[/b]";
+            case "select_card_reward":      return $"take card reward #[b]{Get("card_index") ?? "?"}[/b]";
+            case "skip_card_reward":        return "[b]skip card reward[/b]";
+            case "claim_reward":            return $"claim reward #{Get("index") ?? "?"}";
+            case "select_relic":            return $"take relic #{Get("index") ?? "?"}";
+            case "claim_treasure_relic":    return $"take treasure #{Get("index") ?? "?"}";
+            case "skip_relic_selection":    return "[b]skip relic[/b]";
+            case "shop_purchase":           return $"shop: buy slot #{Get("index") ?? "?"}";
+            case "choose_event_option":     return $"event: option #{Get("index") ?? "?"}";
+            case "advance_dialogue":        return "[b]continue dialogue[/b]";
+            case "menu_select":             return $"menu: [b]{Get("option") ?? "?"}[/b]";
+            case "proceed":                 return "[b]proceed[/b]";
+            default:                        return action;
         }
     }
 
@@ -350,23 +479,25 @@ public static partial class McpMod
                 Layer = 100,             // above gameplay HUD
                 Name = "STS2MCP_AutoPlayOverlay",
             };
-            // Anchor to the bottom-right of the viewport so the button moves
-            // with window resizes and stays clear of HUD elements that live
-            // in the other corners. The Button is the click target; the
-            // MegaRichTextLabel inside provides the game-native caption.
+            // Anchor to the TOP-CENTER of the viewport — `AnchorLeft = AnchorRight = 0.5`
+            // pins the midpoint to viewport center while OffsetLeft/Right
+            // form a fixed-width box around it. This keeps the toggles
+            // clear of the bottom-right pile icons / right-side select
+            // buttons / left HP strip / top-corner act counter, all of
+            // which live in the four corners.
             _overlayButton = new Button
             {
                 Name = "STS2MCP_AutoPlayButton",
                 Text = "",  // text is drawn by the inner MegaRichTextLabel
                 FocusMode = Control.FocusModeEnum.None,
-                AnchorLeft   = 1f,
-                AnchorRight  = 1f,
-                AnchorTop    = 1f,
-                AnchorBottom = 1f,
-                OffsetLeft   = -(OverlayWidth + OverlayPadRight),
-                OffsetTop    = -(OverlayHeight + OverlayPadBottom),
-                OffsetRight  = -OverlayPadRight,
-                OffsetBottom = -OverlayPadBottom,
+                AnchorLeft   = 0.5f,
+                AnchorRight  = 0.5f,
+                AnchorTop    = 0f,
+                AnchorBottom = 0f,
+                OffsetLeft   = -(OverlayWidth / 2f),
+                OffsetTop    = OverlayPadTop,
+                OffsetRight  = OverlayWidth / 2f,
+                OffsetBottom = OverlayPadTop + OverlayHeight,
                 MouseFilter  = Control.MouseFilterEnum.Stop,
             };
             // Caption uses the game's BBCode-aware label widget — the same
@@ -391,8 +522,59 @@ public static partial class McpMod
                 _QueueTitleUpdate();
             };
             _overlayCanvas.AddChild(_overlayButton);
+
+            // REC toggle: same shape as AUTO, stacked directly *below* AUTO
+            // so the column reads top→bottom AUTO / REC / advisory line.
+            _overlayRecButton = new Button
+            {
+                Name = "STS2MCP_RecommendButton",
+                Text = "",
+                FocusMode = Control.FocusModeEnum.None,
+                AnchorLeft = 0.5f, AnchorRight = 0.5f,
+                AnchorTop  = 0f,   AnchorBottom = 0f,
+                OffsetLeft   = -(OverlayWidth / 2f),
+                OffsetTop    = OverlayPadTop + OverlayHeight + OverlayRowGap,
+                OffsetRight  = OverlayWidth / 2f,
+                OffsetBottom = OverlayPadTop + OverlayHeight * 2 + OverlayRowGap,
+                MouseFilter  = Control.MouseFilterEnum.Stop,
+            };
+            _overlayRecLabel = new MegaRichTextLabel
+            {
+                Name = "Caption",
+                BbcodeEnabled = true,
+                AnchorLeft = 0f, AnchorTop = 0f,
+                AnchorRight = 1f, AnchorBottom = 1f,
+                MouseFilter = Control.MouseFilterEnum.Ignore,
+            };
+            _overlayRecButton.AddChild(_overlayRecLabel);
+            _overlayRecButton.Pressed += () =>
+            {
+                RecommendEnabled = !RecommendEnabled;
+                GD.Print($"[STS2 MCP] Recommend {(RecommendEnabled ? "ON" : "OFF")} (button)");
+                _QueueTitleUpdate();
+            };
+            _overlayCanvas.AddChild(_overlayRecButton);
+
+            // Advisory label below the two toggles. Only painted when REC
+            // is ON; stays invisible otherwise so the top-center area is
+            // clean during AutoPlay-driven runs.
+            _overlayRecMessage = new MegaRichTextLabel
+            {
+                Name = "STS2MCP_RecommendMessage",
+                BbcodeEnabled = true,
+                AnchorLeft = 0.5f, AnchorRight = 0.5f,
+                AnchorTop  = 0f,   AnchorBottom = 0f,
+                OffsetLeft   = -(OverlayMessageWidth / 2f),
+                OffsetTop    = OverlayPadTop + OverlayHeight * 2 + OverlayRowGap + OverlayMessageGap,
+                OffsetRight  = OverlayMessageWidth / 2f,
+                OffsetBottom = OverlayPadTop + OverlayHeight * 2 + OverlayRowGap + OverlayMessageGap + OverlayMessageHeight,
+                MouseFilter = Control.MouseFilterEnum.Ignore,
+                Visible = false,
+            };
+            _overlayCanvas.AddChild(_overlayRecMessage);
+
             tree.Root.AddChild(_overlayCanvas);
-            GD.Print("[STS2 MCP] AutoPlay overlay button installed (bottom-right, game font).");
+            GD.Print("[STS2 MCP] Overlay installed: AUTO + REC toggles, recommend message slot.");
         }
         catch (Exception ex)
         {
@@ -408,18 +590,47 @@ public static partial class McpMod
             // Tint via BBCode so the ON/OFF state is unambiguous while still
             // using the game's font and centering. A small ● glyph mirrors
             // the visual cue used in NFastModeTickbox.
-            string color = AutoPlayEnabled ? "#3ef27a" : "#cccccc";
-            string dot   = AutoPlayEnabled ? "●" : "○";
-            string state = AutoPlayEnabled ? "AUTO ON" : "AUTO OFF";
+            string autoColor = AutoPlayEnabled ? "#3ef27a" : "#cccccc";
+            string autoDot   = AutoPlayEnabled ? "●" : "○";
+            string autoState = AutoPlayEnabled ? "AUTO ON" : "AUTO OFF";
             if (_overlayLabel != null && IsInstanceValid(_overlayLabel))
             {
-                _overlayLabel.Text = $"[center][color={color}]{dot}  {state}[/color][/center]";
+                _overlayLabel.Text = $"[center][color={autoColor}]{autoDot}  {autoState}[/color][/center]";
             }
-            // Leave the Button's modulate at white so the background stylebox
-            // (provided by the game theme) renders normally; we communicate
-            // state through the caption color only.
+
+            if (_overlayRecLabel != null && IsInstanceValid(_overlayRecLabel))
+            {
+                // REC uses a different accent (cyan) so the two toggles
+                // are visually distinct at a glance.
+                string recColor = RecommendEnabled ? "#4ec1ff" : "#cccccc";
+                string recDot   = RecommendEnabled ? "●" : "○";
+                string recState = RecommendEnabled ? "REC ON" : "REC OFF";
+                _overlayRecLabel.Text = $"[center][color={recColor}]{recDot}  {recState}[/color][/center]";
+            }
+            if (_overlayRecMessage != null && IsInstanceValid(_overlayRecMessage))
+            {
+                // Hide the advisory band entirely when REC is off OR when
+                // AutoPlay is doing the work — keeps the bottom-right
+                // quiet unless we're actively advising.
+                _overlayRecMessage.Visible = RecommendEnabled && !AutoPlayEnabled;
+            }
         }
         catch { /* button may have been freed during scene reload */ }
+    }
+
+    /// <summary>
+    /// Update the advisory text shown above the toggle buttons while
+    /// Recommend mode is on. Safe to call from the thinker thread —
+    /// the actual Godot text mutation is marshalled onto the main thread.
+    /// </summary>
+    private static void _SetRecommendMessage(string bbcode)
+    {
+        _mainThreadQueue.Enqueue(() =>
+        {
+            if (_overlayRecMessage == null || !IsInstanceValid(_overlayRecMessage)) return;
+            _overlayRecMessage.Visible = RecommendEnabled && !AutoPlayEnabled;
+            _overlayRecMessage.Text = bbcode;
+        });
     }
 
     private static bool IsInstanceValid(GodotObject obj)
@@ -433,6 +644,7 @@ public static partial class McpMod
         return new Dictionary<string, object?>
         {
             ["enabled"] = AutoPlayEnabled,
+            ["recommend"] = RecommendEnabled,
             ["hotkey"] = "F8",
         };
     }
@@ -449,9 +661,35 @@ public static partial class McpMod
             // Toggle when body has no explicit value.
             AutoPlayEnabled = !AutoPlayEnabled;
         }
+        _QueueTitleUpdate();
         return new Dictionary<string, object?>
         {
             ["enabled"] = AutoPlayEnabled,
+            ["status"] = "ok",
+        };
+    }
+
+    internal static Dictionary<string, object?> HandleRecommendGet()
+    {
+        EnsureAutoPlayHotkey();
+        return new Dictionary<string, object?>
+        {
+            ["enabled"] = RecommendEnabled,
+            ["autoplay"] = AutoPlayEnabled,
+        };
+    }
+
+    internal static Dictionary<string, object?> HandleRecommendPost(
+        Dictionary<string, System.Text.Json.JsonElement> data)
+    {
+        if (data != null && data.TryGetValue("enabled", out var v))
+            RecommendEnabled = v.GetBoolean();
+        else
+            RecommendEnabled = !RecommendEnabled;
+        _QueueTitleUpdate();
+        return new Dictionary<string, object?>
+        {
+            ["enabled"] = RecommendEnabled,
             ["status"] = "ok",
         };
     }

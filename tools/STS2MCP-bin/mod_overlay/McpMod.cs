@@ -301,6 +301,35 @@ public static partial class McpMod
                 else
                     SendError(response, 405, "Method not allowed");
             }
+            else if (path == "/api/v1/recommend")
+            {
+                if (request.HttpMethod == "GET")
+                {
+                    SendJson(response, HandleRecommendGet());
+                }
+                else if (request.HttpMethod == "POST")
+                {
+                    string bodyText;
+                    using (var reader = new StreamReader(request.InputStream, request.ContentEncoding))
+                        bodyText = reader.ReadToEnd();
+                    Dictionary<string, JsonElement>? parsed = null;
+                    if (!string.IsNullOrWhiteSpace(bodyText))
+                    {
+                        try
+                        {
+                            parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bodyText);
+                        }
+                        catch
+                        {
+                            SendError(response, 400, "Invalid JSON");
+                            return;
+                        }
+                    }
+                    SendJson(response, HandleRecommendPost(parsed ?? new Dictionary<string, JsonElement>()));
+                }
+                else
+                    SendError(response, 405, "Method not allowed");
+            }
             else
             {
                 SendError(response, 404, "Not found");
