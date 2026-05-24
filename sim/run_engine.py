@@ -177,10 +177,15 @@ def _step_map(rs: RunState, body: dict, res: StepResult) -> StepResult:
         res.reason = "expected choose_map_node"
         return res
     options = reachable_map_nodes(rs)
-    idx = body.get("node_index")
+    # action_space.decode emits the mod-API field name `index`. The old
+    # `node_index` key was an internal sim convention that pre-dated the
+    # mod-side alignment; reading `node_index` here meant every legal map
+    # pick decoded to "invalid", deterministic eval policies couldn't
+    # escape floor 0, and reward collapsed to -living_cost * 1500 = -150.
+    idx = body.get("index", body.get("node_index"))
     if idx is None or idx < 0 or idx >= len(options):
         res.invalid_action = True
-        res.reason = f"node_index {idx} out of range (have {len(options)})"
+        res.reason = f"map index {idx} out of range (have {len(options)})"
         return res
     node = options[idx]
     rs.floor = node.floor
