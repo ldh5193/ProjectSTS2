@@ -66,10 +66,77 @@ class WeakPower(Power):
     _owner: object = None
 
 
+@dataclass
+class DexterityPower(Power):
+    """+amount block on powered block from owner (additive)."""
+    id: str = field(default="dexterity", init=False)
+
+    def modify_block_additive(self, dealer, base_amount: int) -> int:
+        if dealer is not self._owner:
+            return 0
+        return self.amount
+
+    _owner: object = None
+
+
+@dataclass
+class FrailPower(Power):
+    """×0.75 block on powered block from owner. Counter is duration (tick at owner turn end)."""
+    id: str = field(default="frail", init=False)
+
+    def modify_block_multiplicative(self, dealer, base_amount: int) -> float:
+        if dealer is not self._owner:
+            return 1.0
+        return 0.75
+
+    _owner: object = None
+
+
+@dataclass
+class ThornsPower(Power):
+    """When owner takes powered attack damage, attacker takes amount unblockable."""
+    id: str = field(default="thorns", init=False)
+    _owner: object = None
+
+
+@dataclass
+class PlatingPower(Power):
+    """Plating: reduces incoming HP loss by `amount` per hit (after block).
+    Each hit consumes 1 stack."""
+    id: str = field(default="plating", init=False)
+    _owner: object = None
+
+
+@dataclass
+class PoisonPower(Power):
+    """Damage = stack count, applied at owner's turn end, then decrement by 1."""
+    id: str = field(default="poison", init=False)
+    _owner: object = None
+
+
+@dataclass
+class VigorPower(Power):
+    """Next attack from owner deals +amount damage, then removes self."""
+    id: str = field(default="vigor", init=False)
+
+    def modify_damage_additive(self, dealer, target, base_amount: int) -> int:
+        if dealer is not self._owner:
+            return 0
+        return self.amount
+
+    _owner: object = None
+
+
 POWER_REGISTRY: dict[str, type[Power]] = {
     "strength": StrengthPower,
     "vulnerable": VulnerablePower,
     "weak": WeakPower,
+    "dexterity": DexterityPower,
+    "frail": FrailPower,
+    "thorns": ThornsPower,
+    "plating": PlatingPower,
+    "poison": PoisonPower,
+    "vigor": VigorPower,
 }
 
 

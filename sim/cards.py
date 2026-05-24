@@ -109,6 +109,80 @@ INFLAME = CardDef(
     ),
 )
 
+# --- Cycle B: real OnPlay effects for Common SIMPLE cards (notes/14 §IV) ---
+
+POMMEL_STRIKE = CardDef(
+    id="pommel_strike", name="Pommel Strike", cost=1, type=CardType.ATTACK, count=0,
+    effects=(
+        Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+               amount=9, scaling=STRIKE_SCALING),
+        Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=1),
+    ),
+)
+
+SHRUG_IT_OFF = CardDef(
+    id="shrug_it_off", name="Shrug It Off", cost=1, type=CardType.SKILL, count=0,
+    effects=(
+        Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=8),
+        Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=1),
+    ),
+)
+
+THUNDERCLAP = CardDef(
+    id="thunderclap", name="Thunderclap", cost=1, type=CardType.ATTACK, count=0,
+    effects=(
+        Effect(op=EffectOp.DEAL_DAMAGE, target=Target.ALL_ENEMIES,
+               amount=4, scaling=STRIKE_SCALING),
+        Effect(op=EffectOp.APPLY_POWER, target=Target.ALL_ENEMIES,
+               power_id="vulnerable", amount=1),
+    ),
+)
+
+TREMBLE = CardDef(
+    id="tremble", name="Tremble", cost=1, type=CardType.SKILL, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+               power_id="vulnerable", amount=3),
+        Effect(op=EffectOp.EXHAUST_SELF, target=Target.SELF),
+    ),
+)
+
+TWIN_STRIKE = CardDef(
+    id="twin_strike", name="Twin Strike", cost=1, type=CardType.ATTACK, count=0,
+    effects=(
+        Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+               amount=5, scaling=STRIKE_SCALING, hit_count=2),
+    ),
+)
+
+BLOODLETTING = CardDef(
+    id="bloodletting", name="Bloodletting", cost=0, type=CardType.SKILL, count=0,
+    effects=(
+        Effect(op=EffectOp.SELF_HP_LOSE, target=Target.SELF, amount=3),
+        Effect(op=EffectOp.ENERGY_GAIN, target=Target.SELF, amount=2),
+    ),
+)
+
+ANGER = CardDef(
+    id="anger", name="Anger", cost=0, type=CardType.ATTACK, count=0,
+    effects=(
+        Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+               amount=6, scaling=STRIKE_SCALING),
+        Effect(op=EffectOp.COPY_TO_DISCARD, target=Target.SELF),
+    ),
+)
+
+CINDER = CardDef(
+    id="cinder", name="Cinder", cost=2, type=CardType.ATTACK, count=0,
+    effects=(
+        Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+               amount=18, scaling=STRIKE_SCALING),
+        Effect(op=EffectOp.EXHAUST_RANDOM, target=Target.SELF),
+    ),
+)
+
+INFLAME_HIGH = INFLAME  # alias for callers
+
 
 # Catalog of every CardDef this module knows about. Keep in sync with the
 # additions above so consumers (env builders, future card-reward systems)
@@ -119,6 +193,14 @@ IRONCLAD_LIBRARY: tuple[CardDef, ...] = (
     BASH,
     IRON_WAVE,
     INFLAME,
+    POMMEL_STRIKE,
+    SHRUG_IT_OFF,
+    THUNDERCLAP,
+    TREMBLE,
+    TWIN_STRIKE,
+    BLOODLETTING,
+    ANGER,
+    CINDER,
 )
 
 

@@ -13,7 +13,22 @@ from __future__ import annotations
 
 from enum import Enum
 
-from .cards import BASH, DEFEND_IRONCLAD, INFLAME, IRON_WAVE, STRIKE_IRONCLAD, STRIKE_SCALING
+from .cards import (
+    ANGER,
+    BASH,
+    BLOODLETTING,
+    CINDER,
+    DEFEND_IRONCLAD,
+    INFLAME,
+    IRON_WAVE,
+    POMMEL_STRIKE,
+    SHRUG_IT_OFF,
+    STRIKE_IRONCLAD,
+    STRIKE_SCALING,
+    THUNDERCLAP,
+    TREMBLE,
+    TWIN_STRIKE,
+)
 from .dsl import CardDef, CardType, Effect, EffectOp, Target
 
 
@@ -153,6 +168,14 @@ _IMPLEMENTED: dict[str, CardDef] = {
     BASH.id: BASH,
     IRON_WAVE.id: IRON_WAVE,
     INFLAME.id: INFLAME,
+    POMMEL_STRIKE.id: POMMEL_STRIKE,
+    SHRUG_IT_OFF.id: SHRUG_IT_OFF,
+    THUNDERCLAP.id: THUNDERCLAP,
+    TREMBLE.id: TREMBLE,
+    TWIN_STRIKE.id: TWIN_STRIKE,
+    BLOODLETTING.id: BLOODLETTING,
+    ANGER.id: ANGER,
+    CINDER.id: CINDER,
 }
 
 
