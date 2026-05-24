@@ -74,6 +74,21 @@ class SludgeSpinnerWeak(Monster):
         return event
 
 
+def spawn_nibbits_normal(rng) -> list[Monster]:
+    """NibbitsNormal encounter: 2 Nibbits with IsFront / IsBack starting moves.
+
+    Per notes/16: front opens with SLICE, back opens with HISS. The shared
+    BUTT → SLICE → HISS state machine is reused.
+    """
+    front = NibbitWeak.spawn(rng)
+    front.name = "Nibbit (Front)"
+    front.next_move = NibbitMove.SLICE
+    back = NibbitWeak.spawn(rng)
+    back.name = "Nibbit (Back)"
+    back.next_move = NibbitMove.HISS
+    return [front, back]
+
+
 # --- NibbitWeak (NIBBIT_0, IsAlone) -----------------------------------------
 # Cites:
 #   decompiled/MegaCrit.Sts2.Core.Models.Monsters/Nibbit.cs

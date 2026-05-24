@@ -25,6 +25,8 @@ HAND_SIZE = 5
 @dataclass
 class CombatState:
     player: Player
+    # `monster` keeps the legacy single-enemy API; `monsters` is the new
+    # multi-enemy list. They're kept in sync — see _sync_monsters().
     monster: Monster
     draw_pile: list[CardDef]
     discard_pile: list[CardDef] = field(default_factory=list)
@@ -33,13 +35,30 @@ class CombatState:
     rng: random.Random = field(default_factory=random.Random)
     turn_number: int = 0
     is_player_turn: bool = True
+    monsters: list[Monster] = field(default_factory=list)
+    target_index: int = 0  # which monster Target.SELECTED_ENEMY hits
+
+    def _sync_monsters(self) -> None:
+        """Ensure `self.monsters` includes `self.monster` for legacy code."""
+        if not self.monsters:
+            self.monsters = [self.monster]
+        elif self.monster is not self.monsters[0]:
+            # The legacy field is the canonical "first" enemy.
+            self.monsters[0] = self.monster
+
+    def alive_monsters(self) -> list[Monster]:
+        self._sync_monsters()
+        return [m for m in self.monsters if m.alive]
 
     @classmethod
-    def new_combat(cls, seed: int | None = None, monster_factory=None) -> "CombatState":
-        """Build a fresh combat. `monster_factory(rng) -> Monster` defaults to
-        SludgeSpinnerWeak (the MVP encounter) so existing callers keep working;
-        pass NibbitWeak.spawn (or any other monster's classmethod) to validate
-        against a different act-1 encounter.
+    def new_combat(cls, seed: int | None = None, monster_factory=None,
+                   monsters_factory=None) -> "CombatState":
+        """Build a fresh combat.
+
+        `monster_factory(rng) -> Monster` (single-enemy mode, default
+        SludgeSpinnerWeak) keeps existing callers working.
+        `monsters_factory(rng) -> list[Monster]` is the new multi-enemy
+        constructor; supplying it overrides monster_factory.
         """
         rng = random.Random(seed)
         deck = build_starting_deck()
@@ -51,10 +70,16 @@ class CombatState:
             energy=PLAYER_ENERGY_PER_TURN,
             max_energy=PLAYER_ENERGY_PER_TURN,
         )
+        if monsters_factory is not None:
+            monsters = monsters_factory(rng)
+            cs = cls(player=player, monster=monsters[0], monsters=monsters,
+                     draw_pile=deck, rng=rng)
+            return cs
         if monster_factory is None:
             monster_factory = SludgeSpinnerWeak.spawn
         monster = monster_factory(rng)
-        return cls(player=player, monster=monster, draw_pile=deck, rng=rng)
+        return cls(player=player, monster=monster, monsters=[monster],
+                   draw_pile=deck, rng=rng)
 
     # ---- pile management ----
 
@@ -97,14 +122,22 @@ class CombatState:
             self._resolve_single_effect(card, eff)
 
     def _resolve_single_effect(self, card: CardDef, eff) -> None:  # noqa: PLR0912
-        # Resolve target list. The first-slice combat has one monster so
-        # ALL_ENEMIES / RANDOM_ENEMY collapse to a single-element list.
+        # Multi-monster targeting: SELECTED_ENEMY uses target_index (clamped
+        # to alive); RANDOM_ENEMY picks one alive at random; ALL_ENEMIES hits
+        # every alive monster. SELF always hits the player.
+        alive = self.alive_monsters()
         if eff.target is Target.SELF:
             targets = [self.player]
-        elif eff.target in (Target.SELECTED_ENEMY, Target.RANDOM_ENEMY):
-            targets = [self.monster]
+        elif eff.target is Target.SELECTED_ENEMY:
+            if not alive:
+                targets = []
+            else:
+                idx = min(self.target_index, len(alive) - 1)
+                targets = [alive[idx]]
+        elif eff.target is Target.RANDOM_ENEMY:
+            targets = [self.rng.choice(alive)] if alive else []
         elif eff.target is Target.ALL_ENEMIES:
-            targets = [self.monster]
+            targets = list(alive)
         else:
             targets = []
 
@@ -182,18 +215,25 @@ class CombatState:
         # Poison ticks at end of owner's turn — player's poison hits player.
         apply_poison_tick(self.player)
         self.monster_turn()
-        if self.monster.alive:
+        if self.alive_monsters():
             self.start_player_turn()
 
-    def monster_turn(self) -> dict:
-        # Monster block also resets per turn in MVP (matches STS UI).
-        self.monster.block = 0
-        event = self.monster.take_turn(self.rng, self.player)
-        # Vulnerable's owner is monster → tick at end of monster turn.
-        self._tick_powers(self.monster, ids=("vulnerable",))
-        # Poison on the monster also ticks at end of monster turn.
-        apply_poison_tick(self.monster)
-        return event
+    def monster_turn(self) -> list[dict]:
+        events: list[dict] = []
+        for m in self.alive_monsters():
+            # Monster block resets per turn in MVP (matches STS UI).
+            m.block = 0
+            events.append(m.take_turn(self.rng, self.player))
+            # Vulnerable's owner is monster → tick at end of monster turn.
+            self._tick_powers(m, ids=("vulnerable",))
+            apply_poison_tick(m)
+            if not self.player.alive:
+                break
+        # Re-target if the previously selected monster died this turn.
+        alive = self.alive_monsters()
+        if alive and self.target_index >= len(alive):
+            self.target_index = 0
+        return events
 
     @staticmethod
     def _tick_powers(creature, ids: tuple[str, ...]) -> None:
@@ -206,7 +246,7 @@ class CombatState:
     # ---- terminal conditions ----
 
     def player_won(self) -> bool:
-        return not self.monster.alive
+        return not self.alive_monsters()
 
     def player_lost(self) -> bool:
         return not self.player.alive

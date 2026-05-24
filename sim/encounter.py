@@ -21,6 +21,7 @@ from .monsters import (
     TheInsatiable,
     Vantom,
     WaterfallGiant,
+    spawn_nibbits_normal,
 )
 from .rng import Rng
 
@@ -237,6 +238,27 @@ _FACTORY_BY_ID = {
     # Act 3 boss (solo).
     "DoormakerBoss": Doormaker.spawn,
 }
+
+# Multi-monster encounters return a list[Monster]. Used by Cycle F's
+# combat refactor — run_engine prefers MULTI_FACTORY_BY_ID over the
+# single-monster table when both are defined.
+_MULTI_FACTORY_BY_ID = {
+    "NibbitsNormal": spawn_nibbits_normal,
+}
+
+
+def build_monsters_for(encounter_id: str, rng) -> list[Monster]:
+    """Return the list of monsters for a multi-enemy encounter, or
+    [single_monster] for backwards compatibility. Always returns at least
+    one monster so run_engine can populate combat state."""
+    multi = _MULTI_FACTORY_BY_ID.get(encounter_id)
+    if multi is not None:
+        return multi(rng)
+    return [build_monster_for(encounter_id, rng)]
+
+
+def is_multi_encounter(encounter_id: str) -> bool:
+    return encounter_id in _MULTI_FACTORY_BY_ID
 
 
 def build_monster_for(encounter_id: str, rng) -> Monster:

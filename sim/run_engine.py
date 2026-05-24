@@ -249,12 +249,13 @@ def _enter_room(rs: RunState, node: MapNode) -> None:
 def _start_combat(rs: RunState, encounter_id: str) -> None:
     """Build a CombatState and attach it to the RunState."""
     from .rng import Rng
+    from .encounter import build_monsters_for
     combat_rng = Rng(rs.run_seed, f"combat_{rs.act}_{rs.floor}")
-    monster = build_monster_for(encounter_id, combat_rng)
+    monsters = build_monsters_for(encounter_id, combat_rng)
     # Construct a CombatState that mirrors the player's current persistent state.
     from .combat import CombatState, HAND_SIZE as _HS
     cs = CombatState.new_combat(seed=rs.run_seed ^ (rs.floor * 17),
-                                monster_factory=lambda _r: monster)
+                                monsters_factory=lambda _r: monsters)
     # Replace the auto-generated player with one that mirrors RunState HP/deck.
     cs.player.hp = rs.hp
     cs.player.max_hp = rs.max_hp
@@ -290,6 +291,14 @@ def _step_combat(rs: RunState, body: dict, res: StepResult) -> StepResult:
             res.invalid_action = True
             res.reason = "illegal play_card"
             return res
+        # Multi-enemy targeting: action_space encodes the target enemy slot
+        # in `target` (combat_id == alive-enemy index). Set target_index
+        # before resolving the card so SELECTED_ENEMY hits the right enemy.
+        tgt = body.get("target")
+        if isinstance(tgt, int):
+            alive = cs.alive_monsters()
+            if 0 <= tgt < len(alive):
+                cs.target_index = tgt
         cs.play_card(idx)
     else:
         res.invalid_action = True

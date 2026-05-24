@@ -202,14 +202,16 @@ class RunEnv(gym.Env):
         view: dict[str, Any] = {"state_type": rs.state_type.value}
         if rs.in_combat() and rs.combat is not None:
             cs = rs.combat
+            alive = cs.alive_monsters()
             view["battle"] = {
                 "is_play_phase": cs.is_player_turn,
                 "enemies": [
                     {
-                        "entity_id": cs.monster.name,
-                        "combat_id": 1,
-                        "hp": cs.monster.hp,
+                        "entity_id": m.name,
+                        "combat_id": i,
+                        "hp": m.hp,
                     }
+                    for i, m in enumerate(alive)
                 ],
             }
             view["player"] = {
