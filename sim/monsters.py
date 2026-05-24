@@ -356,6 +356,142 @@ class Doormaker(Monster):
         return event
 
 
+# --- Underdocks bosses (solo): WaterfallGiant, SoulFysh, LagavulinMatriarch
+# Cites: decompiled/MegaCrit.Sts2.Core.Models.Monsters/*Boss source. All
+# specialty powers (Pressurize, Intangible, Asleep+Plating) are simplified.
+
+
+class WaterfallMove(str, Enum):
+    PRESSURIZE = "pressurize"   # +15 block
+    SLAM = "slam"                # 18 dmg
+    GUSH = "gush"                # 8 dmg × 3
+
+
+WATERFALL_HP = 240
+
+
+@dataclass
+class WaterfallGiant(Monster):
+    next_move: WaterfallMove | None = None
+    cycle_index: int = 0
+
+    @classmethod
+    def spawn(cls, rng: random.Random) -> "WaterfallGiant":
+        m = cls(name="Waterfall Giant", hp=WATERFALL_HP, max_hp=WATERFALL_HP)
+        m.next_move = WaterfallMove.PRESSURIZE
+        m.cycle_index = 0
+        return m
+
+    def roll_next_move(self, rng: random.Random) -> WaterfallMove:
+        cycle = (WaterfallMove.PRESSURIZE, WaterfallMove.GUSH, WaterfallMove.SLAM)
+        self.cycle_index = (self.cycle_index + 1) % len(cycle)
+        return cycle[self.cycle_index]
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        move = self.next_move or self.roll_next_move(rng)
+        event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
+        if move is WaterfallMove.PRESSURIZE:
+            self.block += 15
+        elif move is WaterfallMove.SLAM:
+            blocked, hp_loss = deal_damage(18, self, player)
+            event.update(damage=18, blocked=blocked, hp_loss=hp_loss)
+        elif move is WaterfallMove.GUSH:
+            for _ in range(3):
+                blocked, hp_loss = deal_damage(8, self, player)
+                event["damage"] += 8
+                event["blocked"] += blocked
+                event["hp_loss"] += hp_loss
+        self.next_move = self.roll_next_move(rng)
+        return event
+
+
+class SoulFyshMove(str, Enum):
+    DE_GAS = "de_gas"     # 16 dmg
+    SCREAM = "scream"     # 11 dmg
+    GAZE = "gaze"         # 7 dmg + Weak +1
+
+
+SOULFYSH_HP = 211
+
+
+@dataclass
+class SoulFysh(Monster):
+    next_move: SoulFyshMove | None = None
+    cycle_index: int = 0
+
+    @classmethod
+    def spawn(cls, rng: random.Random) -> "SoulFysh":
+        m = cls(name="Soul Fysh", hp=SOULFYSH_HP, max_hp=SOULFYSH_HP)
+        m.next_move = SoulFyshMove.SCREAM
+        m.cycle_index = 0
+        return m
+
+    def roll_next_move(self, rng: random.Random) -> SoulFyshMove:
+        cycle = (SoulFyshMove.SCREAM, SoulFyshMove.DE_GAS, SoulFyshMove.GAZE)
+        self.cycle_index = (self.cycle_index + 1) % len(cycle)
+        return cycle[self.cycle_index]
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        move = self.next_move or self.roll_next_move(rng)
+        event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
+        from .powers import make_power
+        if move is SoulFyshMove.DE_GAS:
+            blocked, hp_loss = deal_damage(16, self, player)
+            event.update(damage=16, blocked=blocked, hp_loss=hp_loss)
+        elif move is SoulFyshMove.SCREAM:
+            blocked, hp_loss = deal_damage(11, self, player)
+            event.update(damage=11, blocked=blocked, hp_loss=hp_loss)
+        elif move is SoulFyshMove.GAZE:
+            blocked, hp_loss = deal_damage(7, self, player)
+            event.update(damage=7, blocked=blocked, hp_loss=hp_loss)
+            player.add_or_stack_power(make_power("weak", 1, player))
+        self.next_move = self.roll_next_move(rng)
+        return event
+
+
+class LagavulinMove(str, Enum):
+    SLASH = "slash"        # 19 dmg (sim approximation; real has Asleep)
+    DEBILITATE = "debilitate"  # apply Frail / Weak
+
+
+LAGAVULIN_HP = 222
+
+
+@dataclass
+class LagavulinMatriarch(Monster):
+    next_move: LagavulinMove | None = None
+    cycle_index: int = 0
+
+    @classmethod
+    def spawn(cls, rng: random.Random) -> "LagavulinMatriarch":
+        m = cls(name="Lagavulin Matriarch", hp=LAGAVULIN_HP, max_hp=LAGAVULIN_HP)
+        # Asleep + Plating simplified: just start with +8 Plating so the
+        # opening turns "feel" similar (player needs sustained damage).
+        from .powers import make_power
+        m.add_or_stack_power(make_power("plating", 8, m))
+        m.next_move = LagavulinMove.DEBILITATE
+        m.cycle_index = 0
+        return m
+
+    def roll_next_move(self, rng: random.Random) -> LagavulinMove:
+        cycle = (LagavulinMove.DEBILITATE, LagavulinMove.SLASH, LagavulinMove.SLASH)
+        self.cycle_index = (self.cycle_index + 1) % len(cycle)
+        return cycle[self.cycle_index]
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        move = self.next_move or self.roll_next_move(rng)
+        event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
+        from .powers import make_power
+        if move is LagavulinMove.SLASH:
+            blocked, hp_loss = deal_damage(19, self, player)
+            event.update(damage=19, blocked=blocked, hp_loss=hp_loss)
+        elif move is LagavulinMove.DEBILITATE:
+            player.add_or_stack_power(make_power("frail", 2, player))
+            player.add_or_stack_power(make_power("weak", 2, player))
+        self.next_move = self.roll_next_move(rng)
+        return event
+
+
 # --- VantomBoss (Act 1 boss, solo) ----------------------------------------
 # Cites: decompiled/MegaCrit.Sts2.Core.Models.Monsters/Vantom.cs
 # 4-state cycle. Wound-on-DISMEMBER is approximated by Weak (sim has no

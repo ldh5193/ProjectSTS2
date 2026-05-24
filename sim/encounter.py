@@ -13,11 +13,14 @@ from dataclasses import dataclass, field
 from .monsters import (
     CeremonialBeast,
     Doormaker,
+    LagavulinMatriarch,
     Monster,
     NibbitWeak,
     SludgeSpinnerWeak,
+    SoulFysh,
     TheInsatiable,
     Vantom,
+    WaterfallGiant,
 )
 from .rng import Rng
 
@@ -225,6 +228,10 @@ _FACTORY_BY_ID = {
     # Act 1 bosses (solo).
     "CeremonialBeastBoss": CeremonialBeast.spawn,
     "VantomBoss": Vantom.spawn,
+    # Underdocks (Act-1-alt) bosses, all solo.
+    "WaterfallGiantBoss": WaterfallGiant.spawn,
+    "SoulFyshBoss": SoulFysh.spawn,
+    "LagavulinMatriarchBoss": LagavulinMatriarch.spawn,
     # Act 2 boss (solo).
     "TheInsatiableBoss": TheInsatiable.spawn,
     # Act 3 boss (solo).
