@@ -22,7 +22,9 @@ namespace STS2_MCP;
 
 public static partial class McpMod
 {
-    public const int PolicyObsDim = 64;
+    // v2 obs layout (2026-05-25): see notes/18_training_gaps.md.
+    // 64 -> 128 to fit status effects / intent / hand identity / potions.
+    public const int PolicyObsDim = 128;
     public const int PolicyActionDim = 300;
 
     private static InferenceSession? _policySession;

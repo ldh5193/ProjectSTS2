@@ -42,7 +42,26 @@ from .run_engine import (
 )
 
 
-OBS_DIM = 64
+OBS_DIM = 128
+
+
+# Power ids the policy gets a stack-amount feature for. Order is part of
+# the obs contract — re-shuffling breaks any trained policy.
+_PLAYER_POWER_IDS = ("strength", "vulnerable", "weak", "dexterity", "frail")
+_MONSTER_POWER_IDS = ("strength", "vulnerable", "weak")
+# Substring heuristic: if any of these tokens appears in str(monster.next_move).upper()
+# we treat the upcoming move as an attack. Better than "no intent signal at all"
+# until a per-monster intent.damage() lands.
+_ATTACK_MOVE_TOKENS = ("ATTACK", "STRIKE", "SLAM", "SLICE", "BUTT",
+                       "CHOMP", "STAB", "BITE", "RAGE", "CLAW",
+                       "TACKLE", "GORE", "REND", "MAUL", "DISMEMBER",
+                       "HEAVY_SLASH", "PROD")
+
+
+def _power_amount(creature, power_id: str) -> int:
+    """Sum of all matching power stacks on a creature (most ids appear at
+    most once; sum keeps the helper robust if duplicates ever land)."""
+    return sum(p.amount for p in creature.powers if p.id == power_id)
 
 _STATE_TYPE_ORDER: list[StateType] = [
     StateType.MENU, StateType.MAP,
@@ -280,6 +299,12 @@ class RunEnv(gym.Env):
     # -- observation --------------------------------------------------------
 
     def _obs(self) -> np.ndarray:
+        """v2 layout — see notes/18_training_gaps.md for the full audit.
+
+        Total 93 used, 35 reserved padding (OBS_DIM = 128). Field order
+        is part of the obs contract; renumbering invalidates trained
+        policies.
+        """
         rs = self.rs
         assert rs is not None
         v = np.zeros(OBS_DIM, dtype=np.float32)
@@ -302,9 +327,6 @@ class RunEnv(gym.Env):
         cursor += 1
 
         # Deck composition by rarity (5: basic/common/uncommon/rare/total).
-        # Inlined fixed-index counter — faster than a dict lookup per card,
-        # and a tight `id[-1] == "+"` check beats rstrip("+"). Values are
-        # identical to the dict-based version.
         rarity_counts = [0, 0, 0, 0, 0]  # [BASIC, COMMON, UNCOMMON, RARE, ANCIENT]
         _rar_idx = {
             CardRarity.BASIC: 0, CardRarity.COMMON: 1,
@@ -327,31 +349,123 @@ class RunEnv(gym.Env):
         v[cursor] = min(1.0, len(rs.relics) / 25)
         cursor += 1
 
-        # In-combat features (8)
+        # NEW v2: Pile sizes (3) — draw / discard / exhaust separately.
+        # Previously only draw was exposed, glommed onto combat features.
+        if rs.in_combat() and rs.combat is not None:
+            cs = rs.combat
+            v[cursor + 0] = min(1.0, len(cs.draw_pile) / 40.0)
+            v[cursor + 1] = min(1.0, len(getattr(cs, "discard_pile", [])) / 40.0)
+            v[cursor + 2] = min(1.0, len(getattr(cs, "exhaust_pile", [])) / 20.0)
+        cursor += 3
+
+        # In-combat core features (8): hp/block/energy + first-enemy hp/block
+        # + round / hand size / draw size (kept for back-compat with v1's
+        # general "combat snapshot" layer).
         if rs.in_combat() and rs.combat is not None:
             cs = rs.combat
             v[cursor + 0] = cs.player.hp / max(1, cs.player.max_hp)
-            v[cursor + 1] = cs.player.block / 50.0
+            v[cursor + 1] = min(1.0, cs.player.block / 50.0)
             v[cursor + 2] = cs.player.energy / max(1, cs.player.max_energy)
-            v[cursor + 3] = cs.monster.hp / max(1, cs.monster.max_hp)
-            v[cursor + 4] = cs.monster.block / 50.0
-            v[cursor + 5] = cs.turn_number / 20.0
-            v[cursor + 6] = len(cs.hand) / 10.0
-            v[cursor + 7] = len(cs.draw_pile) / 20.0
+            alive = cs.alive_monsters()
+            m1 = alive[0] if alive else None
+            if m1 is not None:
+                v[cursor + 3] = m1.hp / max(1, m1.max_hp)
+                v[cursor + 4] = min(1.0, m1.block / 50.0)
+            v[cursor + 5] = min(1.0, cs.turn_number / 20.0)
+            v[cursor + 6] = min(1.0, len(cs.hand) / 10.0)
+            v[cursor + 7] = min(1.0, len(cs.draw_pile) / 20.0)
         cursor += 8
 
-        # Pending card-reward features (3)
+        # NEW v2: Player powers (5) — strength, vulnerable, weak, dexterity, frail.
+        if rs.in_combat() and rs.combat is not None:
+            cs = rs.combat
+            for i, pid in enumerate(_PLAYER_POWER_IDS):
+                v[cursor + i] = min(1.0, _power_amount(cs.player, pid) / 10.0)
+        cursor += 5
+
+        # NEW v2: Monster #1 powers (3) — strength, vulnerable, weak.
+        if rs.in_combat() and rs.combat is not None:
+            cs = rs.combat
+            alive = cs.alive_monsters()
+            if alive:
+                for i, pid in enumerate(_MONSTER_POWER_IDS):
+                    v[cursor + i] = min(1.0, _power_amount(alive[0], pid) / 10.0)
+        cursor += 3
+
+        # NEW v2: Monster #1 intent (2) — is_attacking, intent_strength.
+        # Damage estimation per-monster needs a real Monster.intent_damage()
+        # helper; for now a 0.5 placeholder when attack is detected.
+        if rs.in_combat() and rs.combat is not None:
+            cs = rs.combat
+            alive = cs.alive_monsters()
+            if alive and getattr(alive[0], "next_move", None) is not None:
+                mv = str(alive[0].next_move).upper()
+                if any(tok in mv for tok in _ATTACK_MOVE_TOKENS):
+                    v[cursor + 0] = 1.0
+                    v[cursor + 1] = 0.5
+        cursor += 2
+
+        # NEW v2: Monster #2 / #3 minimal features (4 each = 8 total)
+        # hp%, block, vulnerable, alive_flag. Enables the policy to learn
+        # multi-target prioritization (focus the low-HP one, etc.).
+        if rs.in_combat() and rs.combat is not None:
+            alive = rs.combat.alive_monsters()
+            for ext_idx in range(2):
+                slot = ext_idx + 1
+                if slot < len(alive):
+                    m = alive[slot]
+                    v[cursor + 0] = m.hp / max(1, m.max_hp)
+                    v[cursor + 1] = min(1.0, m.block / 50.0)
+                    v[cursor + 2] = min(1.0, _power_amount(m, "vulnerable") / 10.0)
+                    v[cursor + 3] = 1.0  # alive flag
+                cursor += 4
+        else:
+            cursor += 8
+
+        # NEW v2: Hand identity (30 = 10 slots × 3 features).
+        # Per slot: normalized cost, is_attack, can_play. Lets the policy
+        # tell "play Strike (1-cost attack)" apart from "play Inflame (1-cost
+        # power)" — without this, the v1 obs collapsed every legal play to
+        # the same shape.
+        if rs.in_combat() and rs.combat is not None:
+            cs = rs.combat
+            for slot in range(10):
+                if slot < len(cs.hand):
+                    c = cs.hand[slot]
+                    cost_norm = (c.cost / 3.0) if c.cost is not None and c.cost >= 0 else 0.0
+                    v[cursor + slot * 3 + 0] = min(1.0, cost_norm)
+                    v[cursor + slot * 3 + 1] = 1.0 if getattr(c.type, "value", "") == "attack" else 0.0
+                    try:
+                        v[cursor + slot * 3 + 2] = 1.0 if cs.can_play(slot) else 0.0
+                    except Exception:
+                        v[cursor + slot * 3 + 2] = 0.0
+        cursor += 30
+
+        # Pending card-reward (3) — count, attack share, [reserved]
         if rs.pending_card_reward is not None:
             v[cursor] = len(rs.pending_card_reward) / 3.0
             attack_n = sum(1 for c in rs.pending_card_reward
-                           if c.type.value == "attack")
+                           if getattr(c.type, "value", "") == "attack")
             v[cursor + 1] = attack_n / max(1, len(rs.pending_card_reward))
         cursor += 3
 
         # Map options count (1)
         if rs.state_type is StateType.MAP:
-            v[cursor] = len(self._reachable_map_nodes_cached()) / 7.0
+            v[cursor] = min(1.0, len(self._reachable_map_nodes_cached()) / 7.0)
         cursor += 1
+
+        # NEW v2: Potion slot presence (3) — bool for slots 0/1/2.
+        # Pairs with the new `_potion_mask` predicate so the policy can
+        # actually decide when to drink.
+        pots = getattr(rs, "potions", None) or []
+        for i in range(min(3, len(pots))):
+            if pots[i] is not None:
+                v[cursor + i] = 1.0
+        cursor += 3
+
+        # Cursor at 93. OBS_DIM = 128. Remaining 35 dims are reserved for
+        # round-2 additions (intent damage value per enemy, relic identity
+        # one-hot, room-type lookahead, etc.).
 
         v.clip(0.0, 1.0, out=v)
         return v

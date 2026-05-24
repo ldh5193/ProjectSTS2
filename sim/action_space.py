@@ -353,12 +353,45 @@ def _rest_mask(state: dict, r: ActionRange) -> Iterable[int]:
     return yielded
 
 
+def _potion_mask(state: dict, r: ActionRange) -> Iterable[int]:
+    """Potion range layout: 0..2 use_potion(slot), 3..5 discard_potion(slot).
+    Combat-only potions are only legal when state_type is a battle. Discard
+    is legal anywhere a potion exists (mirrors the in-game belt UI). 6..7
+    reserved per the action_space doc.
+
+    Empty `state.player.potions` (the sim's default until potion rewards
+    are real) yields nothing — the predicate is a no-op for now and
+    fires properly the moment the live mod sees the player carry a
+    potion.
+    """
+    player = state.get("player") or {}
+    potions = player.get("potions") or []
+    st = state.get("state_type", "")
+    in_combat = st in ("monster", "elite", "boss")
+    out: list[int] = []
+    for slot in range(min(3, len(potions))):
+        potion = potions[slot]
+        if not potion:
+            continue
+        if isinstance(potion, dict):
+            usage = str(potion.get("usage", "AnyTime")).lower()
+            can_use_now = potion.get("can_use_in_combat", True) \
+                          if in_combat else usage in ("anytime", "outside_combat", "anywhere")
+        else:
+            can_use_now = in_combat  # be conservative for plain-string sim potions
+        if can_use_now:
+            out.append(slot)              # use_potion(slot)
+        out.append(3 + slot)               # discard_potion(slot) — always legal
+    return out
+
+
 _PREDICATES: dict[str, MaskPredicate] = {
     "combat": _combat_mask,
     "hand_select": _hand_select_mask,
     "card_reward": _card_reward_mask,
     "rewards": _rewards_mask,
     "rest": _rest_mask,
+    "potion": _potion_mask,
     "misc": _misc_mask,
     "relic_select": _by_visible_options("relic_select"),
     "map": lambda state, r: range(min(

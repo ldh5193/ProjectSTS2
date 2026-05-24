@@ -73,6 +73,7 @@ public static partial class McpMod
             "card_reward"   => CardRewardMask(state, r),
             "rewards"       => RewardsMask(state, r),
             "rest"          => RestMask(state, r),
+            "potion"        => PotionMask(state, r),
             "misc"          => MiscMask(state),
             "relic_select"  => Sequence(Math.Min(AsList(state, "relic_select").Count, r.Size)),
             "map"           => MapMask(state, r),
@@ -229,6 +230,27 @@ public static partial class McpMod
         if (opts.Count == 0) opts = AsList(state, "event");
         int n = Math.Min(opts.Count, r.Size);
         for (int i = 0; i < n; i++) yield return i;
+    }
+
+    private static IEnumerable<int> PotionMask(Dictionary<string, object?> state, ActionRange r)
+    {
+        // Range layout: 0..2 use_potion(slot), 3..5 discard_potion(slot),
+        // 6..7 reserved. Combat-only potions fire use_ only in combat;
+        // every occupied slot is always eligible for discard_.
+        var player = AsDict(state, "player");
+        var potions = AsList(player, "potions");
+        string st = AsString(state, "state_type", "");
+        bool inCombat = st == "monster" || st == "elite" || st == "boss";
+        for (int slot = 0; slot < 3 && slot < potions.Count; slot++)
+        {
+            if (potions[slot] is not Dictionary<string, object?> potion) continue;
+            string usage = AsString(potion, "usage", "AnyTime").ToLowerInvariant();
+            bool canUseNow = inCombat
+                ? AsBool(potion, "can_use_in_combat", true)
+                : (usage == "anytime" || usage == "outside_combat" || usage == "anywhere");
+            if (canUseNow) yield return slot;           // use_potion(slot)
+            yield return 3 + slot;                       // discard_potion(slot)
+        }
     }
 
     private static IEnumerable<int> Sequence(int count)
