@@ -221,6 +221,141 @@ class CeremonialBeast(Monster):
         return event
 
 
+# --- TheInsatiable (Act 2 boss, solo) -------------------------------------
+# Cites: decompiled/MegaCrit.Sts2.Core.Models.Monsters/TheInsatiable.cs
+# Simplified — LIQUIFY's SandpitPower + FranticEscape status cards are
+# approximated as a single Weak debuff (sim has no status-card system yet).
+
+
+class InsatiableMove(str, Enum):
+    LIQUIFY = "liquify"
+    THRASH1 = "thrash1"
+    LUNGING_BITE = "bite"
+    SALIVATE = "salivate"
+    THRASH2 = "thrash2"
+
+
+INSATIABLE_HP = 321
+
+_INSATIABLE_CYCLE = (
+    InsatiableMove.LIQUIFY, InsatiableMove.THRASH1, InsatiableMove.LUNGING_BITE,
+    InsatiableMove.SALIVATE, InsatiableMove.THRASH2,
+)
+
+
+@dataclass
+class TheInsatiable(Monster):
+    last_move: InsatiableMove | None = None
+    next_move: InsatiableMove | None = None
+    cycle_index: int = 0
+
+    @classmethod
+    def spawn(cls, rng: random.Random) -> "TheInsatiable":
+        m = cls(name="The Insatiable", hp=INSATIABLE_HP, max_hp=INSATIABLE_HP)
+        m.next_move = _INSATIABLE_CYCLE[0]
+        m.cycle_index = 0
+        return m
+
+    def roll_next_move(self, rng: random.Random) -> InsatiableMove:
+        self.cycle_index = (self.cycle_index + 1) % len(_INSATIABLE_CYCLE)
+        return _INSATIABLE_CYCLE[self.cycle_index]
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        move = self.next_move or self.roll_next_move(rng)
+        event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
+        from .powers import make_power
+
+        if move is InsatiableMove.LIQUIFY:
+            # Sim approximation of SandpitPower + 6 FranticEscape statuses.
+            player.add_or_stack_power(make_power("weak", 3, player))
+        elif move is InsatiableMove.THRASH1 or move is InsatiableMove.THRASH2:
+            for _ in range(2):
+                blocked, hp_loss = deal_damage(8, self, player)
+                event["damage"] += 8
+                event["blocked"] += blocked
+                event["hp_loss"] += hp_loss
+        elif move is InsatiableMove.LUNGING_BITE:
+            blocked, hp_loss = deal_damage(28, self, player)
+            event.update(damage=28, blocked=blocked, hp_loss=hp_loss)
+        elif move is InsatiableMove.SALIVATE:
+            strength = StrengthPower(amount=2)
+            strength._owner = self
+            self.add_or_stack_power(strength)
+
+        self.last_move = move
+        self.next_move = self.roll_next_move(rng)
+        return event
+
+
+# --- Doormaker (Act 3 boss, solo) -----------------------------------------
+# Cites: decompiled/MegaCrit.Sts2.Core.Models.Monsters/Doormaker.cs
+# Simplified — the Hunger/Scrutiny/Grasp power swap visuals aren't
+# modeled; the damage cycle is what matters for combat.
+
+
+class DoormakerMove(str, Enum):
+    DRAMATIC_OPEN = "dramatic_open"
+    HUNGER = "hunger"
+    SCRUTINY = "scrutiny"
+    GRASP = "grasp"
+
+
+DOORMAKER_HP = 489
+
+_DOORMAKER_CYCLE = (
+    DoormakerMove.HUNGER, DoormakerMove.SCRUTINY, DoormakerMove.GRASP,
+)
+
+
+@dataclass
+class Doormaker(Monster):
+    last_move: DoormakerMove | None = None
+    next_move: DoormakerMove | None = None
+    cycle_index: int = 0
+    opened: bool = False
+
+    @classmethod
+    def spawn(cls, rng: random.Random) -> "Doormaker":
+        m = cls(name="Doormaker", hp=DOORMAKER_HP, max_hp=DOORMAKER_HP)
+        m.next_move = DoormakerMove.DRAMATIC_OPEN
+        m.cycle_index = -1  # advances to 0 (HUNGER) after the open move
+        return m
+
+    def roll_next_move(self, rng: random.Random) -> DoormakerMove:
+        if not self.opened:
+            self.opened = True
+            self.cycle_index = 0
+            return _DOORMAKER_CYCLE[0]
+        self.cycle_index = (self.cycle_index + 1) % len(_DOORMAKER_CYCLE)
+        return _DOORMAKER_CYCLE[self.cycle_index]
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        move = self.next_move or self.roll_next_move(rng)
+        event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
+
+        if move is DoormakerMove.DRAMATIC_OPEN:
+            pass  # no damage, just the cinematic reveal
+        elif move is DoormakerMove.HUNGER:
+            blocked, hp_loss = deal_damage(30, self, player)
+            event.update(damage=30, blocked=blocked, hp_loss=hp_loss)
+        elif move is DoormakerMove.SCRUTINY:
+            blocked, hp_loss = deal_damage(24, self, player)
+            event.update(damage=24, blocked=blocked, hp_loss=hp_loss)
+        elif move is DoormakerMove.GRASP:
+            for _ in range(2):
+                blocked, hp_loss = deal_damage(10, self, player)
+                event["damage"] += 10
+                event["blocked"] += blocked
+                event["hp_loss"] += hp_loss
+            strength = StrengthPower(amount=3)
+            strength._owner = self
+            self.add_or_stack_power(strength)
+
+        self.last_move = move
+        self.next_move = self.roll_next_move(rng)
+        return event
+
+
 # --- VantomBoss (Act 1 boss, solo) ----------------------------------------
 # Cites: decompiled/MegaCrit.Sts2.Core.Models.Monsters/Vantom.cs
 # 4-state cycle. Wound-on-DISMEMBER is approximated by Weak (sim has no

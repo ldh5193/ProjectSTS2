@@ -10,7 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .monsters import CeremonialBeast, Monster, NibbitWeak, SludgeSpinnerWeak, Vantom
+from .monsters import (
+    CeremonialBeast,
+    Doormaker,
+    Monster,
+    NibbitWeak,
+    SludgeSpinnerWeak,
+    TheInsatiable,
+    Vantom,
+)
 from .rng import Rng
 
 
@@ -214,10 +222,13 @@ def generate_pools(act_key: str, rng: Rng, ascension: int = 0,
 _FACTORY_BY_ID = {
     "NibbitsWeak": NibbitWeak.spawn,           # solo Nibbit (IsAlone branch)
     "SludgeSpinnerWeak": SludgeSpinnerWeak.spawn,
-    # Act 1 bosses (solo): use the real boss instead of the
-    # placeholder SludgeSpinner so reaching floor 16 is a real test.
+    # Act 1 bosses (solo).
     "CeremonialBeastBoss": CeremonialBeast.spawn,
     "VantomBoss": Vantom.spawn,
+    # Act 2 boss (solo).
+    "TheInsatiableBoss": TheInsatiable.spawn,
+    # Act 3 boss (solo).
+    "DoormakerBoss": Doormaker.spawn,
 }
 
 
