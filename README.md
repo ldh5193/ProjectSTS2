@@ -29,18 +29,33 @@
 |   |     Agent         | <---------------- |  - Game Logic (sts2.dll Re-impl)|   |
 |   +-------------------+    State, Reward  +---------------------------------+   |
 +---------------------------------------------------------------------------------+
-                                         |
-                                         | Model Weights Export (.zip / .pth)
-                                         v
+                       |
+                       | (1) MaskablePPO .zip   (2) scripts/export_onnx.py
+                       v                            v
+                  models/sweeps/<preset>/final.zip → tools/STS2MCP-bin/policy.onnx
+                                                         |
+                                                         | bundled into mods/
+                                                         v
 +---------------------------------------------------------------------------------+
 |                                 [ 2. 실행 환경 ]                                 |
 |                                                                                 |
-|   +-------------------+    POST Action    +---------------------------------+   |
-|   |  Inference Agent  | ----------------> | Slay the Spire 2 (Steam Client) |   |
-|   |  (Python Bridge)  | <---------------- | - STS2_MCP Mod (Port: 15526)    |   |
-|   +-------------------+    GET JSON State +---------------------------------+   |
+|   +---------------------------+   in-proc step (~5 Hz)   +-----------------+    |
+|   | STS2_MCP Mod (embedded)   | ──────────────────────►  |  STS2 Client    |    |
+|   |  • BuildGameState()       |  obs (64) + mask (300)   |  (Godot 4 host) |    |
+|   |  • Microsoft.ML.OnnxRuntime|  → ONNX policy.onnx     +-----------------+    |
+|   |    → argmax legal action  |  → ExecuteAction(...)                           |
+|   +---------------------------+                                                 |
+|                ▲                                                                |
+|                │ F8 hotkey / on-screen button toggles AutoPlayEnabled           |
+|                │ GET/POST /api/v1/autoplay (optional REST control)              |
 +---------------------------------------------------------------------------------+
 ```
+
+학습은 Python (`sb3-contrib.MaskablePPO`)에서 진행하고, 학습된 weight는
+ONNX로 export되어 **mod 자체에 임베드되어** Microsoft.ML.OnnxRuntime로
+in-process 추론한다. 사이드카 Python 프로세스, HTTP round-trip 모두
+필요 없다. 자세한 모드 빌드/배포 절차는
+`tools/STS2MCP-bin/AUTOPLAY_DEPLOY.md`.
 
 ---
 
@@ -76,6 +91,38 @@ $$\text{Reward} = R_{\text{win}} + R_{\text{lose}} + R_{\text{hp\_penalty}}$$
 - **전투 패배 ($R_{\text{lose}}$)**: $-1.0$ (에피소드 종료)
 - **체력 보존 페널티 ($R_{\text{hp\_penalty}}$)**: $-0.01 \times \Delta \text{HP}$
   - 턴 종료 시점에서 잃은 체력에 대해 음의 보상을 부여함으로써 AI가 무조건적인 공격 대신 **방어(Block) 카드를 밸런스 있게 활용하도록 유도**합니다.
+
+`sim/env_run.py`는 11종의 보상 프리셋(`default / aggressive / defensive /
+sparse / dense_floor / survival / survival_v2 / tank / tank_plus /
+balanced / boss_heavy / exploration`)을 제공하고,
+`scripts/train_parallel.py --presets ...`로 동시에 여러 프리셋을 학습해
+`models/sweeps/<preset>/final.zip`에 저장한다.
+
+### 3.4 학습된 정책의 임베디드 배포 (Embedded Inference)
+
+학습 환경(Phase 1)에서 만든 정책을 **mod에 내장**해 실게임에서
+in-process로 추론한다.
+
+| 단계 | 도구 | 산출물 |
+| :--- | :--- | :--- |
+| (1) MaskablePPO 학습 | `scripts/train_parallel.py` (또는 `train_run.py`) | `models/sweeps/<preset>/final.zip` |
+| (2) ONNX export | `scripts/export_onnx.py` (TorchScript→ONNX opset 17, weights inline) | `tools/STS2MCP-bin/policy.onnx` (~110 KB) |
+| (3) mod 배포 | `mods/`에 `STS2_MCP.dll + ORT DLL 3종 + policy.onnx` 복사 | 게임 재시작 시 자동 로드 |
+| (4) 인게임 토글 | F8 hotkey / 좌상단 오버레이 버튼 / `POST /api/v1/autoplay` | `AutoPlayEnabled = true` 시 ~5 Hz 추론 |
+
+핵심 C# 모듈 (`tools/STS2MCP-bin/mod_overlay/`):
+
+- `McpMod.PolicyNet.cs` — `Microsoft.ML.OnnxRuntime.InferenceSession`
+  로 `policy.onnx` 로드, `(obs, mask)` 입력으로 argmax legal action 반환
+- `McpMod.ObsBuilder.cs` — `BuildGameState()` 출력을 64-d float 관측
+  벡터로 변환 (Python `sim/env_run._obs`와 1:1 미러)
+- `McpMod.MaskBuilder.cs` — 16개 `ActionRange`별 술어로 300-d bool
+  mask 작성 (Python `sim/action_space.build_mask`와 1:1 미러)
+- `McpMod.ActionExecutor.cs` — action index → `ExecuteAction(name,
+  payload)` (Python `sim/action_space.decode` 1:1 미러)
+- `McpMod.AutoPlay.cs` — F8/오버레이 버튼 + ~200 ms thinker 루프
+
+배포/사용 절차 전체: **[tools/STS2MCP-bin/AUTOPLAY_DEPLOY.md](tools/STS2MCP-bin/AUTOPLAY_DEPLOY.md)**
 
 ---
 
@@ -274,8 +321,11 @@ Phase 2(`.pck` 추출)의 전제 조건. 배포 채널이 GitHub 릴리스뿐이
 | **RL env** Gymnasium 래퍼 | ✅ | `sim/env.py`, `sim/observation.py` (20-dim obs, Discrete(6) + action mask) | 14/14 테스트 통과 |
 | **Random baseline** | ✅ | `scripts/random_baseline.py` | 1000 ep: 승률 95.5%, 평균 턴 6.42, 평균 잔여 HP 43.73 |
 | **MaskablePPO 학습** | ✅ | `scripts/train_mvp.py`, `models/mvp_ppo.zip` | 30K step, 500 ep eval: 승률 100%, 평균 턴 3.89, 평균 잔여 HP 67.65 |
+| **Full-run 학습** | ✅ | `scripts/train_run.py`, `scripts/train_parallel.py`, `models/sweeps/<preset>/final.zip` | 11종 reward preset 병렬 학습, 3막 보스 통과 시도 |
 | **모드 채널** 설치/검증 | ⚠ 일부 | `tools/STS2MCP-{bin,src}/`, `scripts/smoke_test_mcp.py` | 설치 완료, 스모크 테스트는 게임 실행 후 가능 |
 | **MCP API 매핑** | ✅ | `notes/06_mcp_api.md` (~370 lines) | 라우트 10종 + 액션 28종 + Discrete(61)→API 매핑 |
+| **임베디드 ONNX 추론** | ✅ | `tools/STS2MCP-bin/mod_overlay/{PolicyNet,ObsBuilder,MaskBuilder,ActionExecutor}.cs`, `policy.onnx` | mod 내장 inference, Python 사이드카 불필요 |
+| **AutoPlay UI/토글** | ✅ | F8 hotkey + 화면 좌상단 오버레이 버튼 + `GET/POST /api/v1/autoplay` | 어떤 화면에서든 mid-run start OK |
 
 ### 7.2 결정적 발견 사항
 
@@ -292,17 +342,27 @@ Phase 2(`.pck` 추출)의 전제 조건. 배포 채널이 GitHub 릴리스뿐이
 
 ```
 sim/
-├── dsl.py        # CardDef / Effect / Scaling 데이터클래스
-├── powers.py     # Strength (additive +N), Vulnerable (×1.5), Weak (×0.75)
-├── creatures.py  # Creature / Player / Monster
-├── damage.py     # compute_modified_damage, deal_damage, gain_block
-├── cards.py      # Ironclad 시작 덱 (Strike×5 + Defend×4 + Bash×1)
-├── monsters.py   # SludgeSpinnerWeak (3-move state machine, CannotRepeat)
-├── combat.py     # CombatState — 턴 사이클, 패 관리, tick 규칙
-├── observation.py# 20-dim float32 obs 벡터
-├── env.py        # Gymnasium Discrete(6) MVP env
-├── env_full.py   # Gymnasium Discrete(61) — 기획안과 일치하는 액션 공간
-└── rng.py        # xoshiro256** + SplitMix64 시드 + 카운터 기반 결정성 (PlayerRngSet/RunRngSet)
+├── dsl.py            # CardDef / Effect / Scaling 데이터클래스
+├── powers.py         # Strength (additive +N), Vulnerable (×1.5), Weak (×0.75)
+├── creatures.py      # Creature / Player / Monster
+├── damage.py         # compute_modified_damage, deal_damage, gain_block
+├── cards.py          # Ironclad 시작 덱 (Strike×5 + Defend×4 + Bash×1)
+├── card_catalog.py   # Common / Uncommon / Rare 카드 풀 + 효과 DSL
+├── monsters.py       # SludgeSpinnerWeak (3-move state machine, CannotRepeat)
+├── combat.py         # CombatState — 턴 사이클, 패 관리, tick 규칙
+├── encounter.py      # 1~3막 일반/엘리트/보스 인카운터 풀
+├── map_gen.py        # 7-act-1 / 7-act-2 / 7-act-3 절차적 맵 생성
+├── relics.py         # 시작/Common/Uncommon 렐릭 효과
+├── powers.py         # 게임 내부 power 시스템
+├── game_state.py     # RunState — full-run 상태 머신
+├── run_engine.py     # 룸 진입/해결/맵 진행 게임 루프
+├── rewards.py        # 11종 reward preset (default/aggressive/tank/...)
+├── action_space.py   # Discrete(300) layout + build_mask + decode
+├── observation.py    # 20-dim float32 obs 벡터 (MVP)
+├── env.py            # Gymnasium Discrete(6) MVP env
+├── env_full.py       # Gymnasium Discrete(61) — single combat
+├── env_run.py        # Gymnasium Discrete(300) full-run env (학습 메인)
+└── rng.py            # xoshiro256** + SplitMix64 시드 (PlayerRngSet/RunRngSet)
 ```
 
 테스트 (`tests/`, **33/33 통과**):
@@ -314,8 +374,14 @@ sim/
 스크립트:
 - `scripts/smoke_test_mcp.py` — 모드 5-prob 검증 (게임 실행 후)
 - `scripts/random_baseline.py` — 무작위 정책 1000 ep 벤치
-- `scripts/train_mvp.py --env {mvp,full}` — MaskablePPO 학습
+- `scripts/train_mvp.py --env {mvp,full}` — MaskablePPO MVP/single-combat 학습
+- `scripts/train_run.py` — Discrete(300) full-run 학습 (단일 워커)
+- `scripts/train_parallel.py --presets a,b,c --workers N --steps M` — 보상 프리셋 sweep 동시 학습
 - `scripts/eval_model.py` — 저장된 모델 평가
+- `scripts/log_episodes.py` — 학습된 모델로 N개 에피소드 trace 기록 (`--max-trajectories`로 용량 제한)
+- `scripts/export_onnx.py --model <zip> --out tools/STS2MCP-bin/policy.onnx` — ONNX 변환
+- `scripts/show_latest_weight.py [--all]` — 최신 sweep 체크포인트 + 배포된 ONNX 상태 표시
+- `scripts/visualize_progress.py` / `scripts/visualize_runenv_trace.py` — sweep 비교/단일 에피소드 시각화
 - `scripts/validate.py` — Phase 7 V01~V05 검증 하네스 (게임 실행 후)
 
 기존 테스트 세부:
@@ -340,7 +406,37 @@ sim/
 
 모델: `models/mvp_ppo.zip` (Discrete(6) 30K), `models/mvp_ppo_full.zip` (Discrete(61) 100K).
 
-### 7.5 사용자 액션 대기 항목
+### 7.5 최신 학습 weight (Latest Trained Weight)
+
+`models/sweeps/<preset>/final.zip` 중 가장 최근 mtime을 가진 체크포인트를
+"latest"로 본다. CLI 한 줄로 현재 상태(경로, 크기, mtime, 배포된 ONNX
+싱크 여부)를 출력한다:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\show_latest_weight.py        # 최신만
+.\.venv\Scripts\python.exe scripts\show_latest_weight.py --all  # 전체 목록
+```
+
+출력 예:
+
+```
+=== Latest sweep checkpoint ===
+  path : models\sweeps\boss_heavy\final.zip
+  size : 452.6 KB
+  mtime: 2026-05-24 21:36:29 +0900
+  preset: boss_heavy
+
+=== Deployed ONNX policy ===
+  path : tools\STS2MCP-bin\policy.onnx
+  size : 110.2 KB
+  mtime: 2026-05-24 22:27:13 +0900
+  state: up to date.
+```
+
+`state: STALE`이면 새 체크포인트가 더 신선하다는 뜻이고, 표시되는
+재실행 명령으로 임베드 정책을 갱신한다.
+
+### 7.6 사용자 액션 대기 항목
 
 다음 두 항목은 사용자의 명시적 액션이 필요:
 
