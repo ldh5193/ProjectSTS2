@@ -288,8 +288,23 @@ class RunEnv(gym.Env):
         if rs.state_type is StateType.MAP:
             opts = self._reachable_map_nodes_cached()
             view["map"] = {"options": [{"x": n.x, "floor": n.floor} for n in opts]}
-        if rs.state_type in (StateType.CARD_REWARD, StateType.CARD_SELECT):
-            view["card_select"] = [{"id": c.id} for c in (rs.pending_card_reward or [])]
+        if rs.state_type is StateType.CARD_REWARD:
+            # Post-combat reward: mask reads view.card_reward.cards,
+            # decode emits select_card_reward / skip_card_reward.
+            cards = rs.pending_card_reward or []
+            view["card_reward"] = {
+                "cards": [{"index": i, "id": c.id} for i, c in enumerate(cards)],
+                "can_skip": True,
+            }
+        elif rs.state_type is StateType.CARD_SELECT:
+            # Grid picker (smith / transform / event grant): mask reads
+            # view.card_select.cards, decode emits select_card / confirm.
+            cards = rs.pending_card_reward or []
+            view["card_select"] = {
+                "cards": [{"index": i, "id": c.id} for i, c in enumerate(cards)],
+                "can_confirm": False,
+                "can_skip": False,
+            }
         if rs.state_type is StateType.REST and rs.pending_rest_options is not None:
             view["state_type"] = "rest_site"  # match the live mod's emitted value
             view["rest_site"] = {
