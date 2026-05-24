@@ -169,11 +169,29 @@ def run_one_experiment(preset: str, ascension: int, workers: int, steps: int,
     # (CNN policies, transformer, large batch) where the math truly
     # dominates transfer overhead.
     device = os.getenv("PPO_DEVICE", "cpu")
-    model = MaskablePPO("MlpPolicy", vec_env, verbose=0, seed=seed,
-                        tensorboard_log=str(tb_dir) if tb_dir else None,
-                        n_steps=n_steps, batch_size=batch, ent_coef=ent,
-                        learning_rate=lr, device=device)
-    print(f"[{preset}] PPO device={device}", flush=True)
+    # Warm-start from the previous sweep checkpoint if one exists.
+    # Without this every train_forever cycle starts from scratch and
+    # win rate stops improving past whatever 300K random steps can
+    # achieve (~6-10%). With it the policy actually compounds.
+    prev_ckpt = out_dir / "final.zip"
+    if prev_ckpt.exists() and os.getenv("PPO_WARM_START", "1") != "0":
+        try:
+            model = MaskablePPO.load(prev_ckpt, env=vec_env, device=device,
+                                     custom_objects={"learning_rate": lr,
+                                                     "ent_coef": ent})
+            print(f"[{preset}] PPO device={device} warm-start from {prev_ckpt.name}", flush=True)
+        except Exception as e:
+            print(f"[{preset}] warm-start failed ({e}); fresh init", flush=True)
+            model = MaskablePPO("MlpPolicy", vec_env, verbose=0, seed=seed,
+                                tensorboard_log=str(tb_dir) if tb_dir else None,
+                                n_steps=n_steps, batch_size=batch, ent_coef=ent,
+                                learning_rate=lr, device=device)
+    else:
+        model = MaskablePPO("MlpPolicy", vec_env, verbose=0, seed=seed,
+                            tensorboard_log=str(tb_dir) if tb_dir else None,
+                            n_steps=n_steps, batch_size=batch, ent_coef=ent,
+                            learning_rate=lr, device=device)
+        print(f"[{preset}] PPO device={device} fresh init", flush=True)
 
     callback = PeriodicEvalCallback(ascension, reward_cfg,
                                     eval_every, eval_episodes, label=preset)
