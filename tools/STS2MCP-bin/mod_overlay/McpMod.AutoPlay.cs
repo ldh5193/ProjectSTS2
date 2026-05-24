@@ -973,12 +973,59 @@ public static partial class McpMod
             }
         }
 
-        // Generic menu: pick the first enabled non-trivial option. We
-        // avoid back/cancel/settings/quit/multiplayer/compendium/timeline
-        // so we always head toward starting a run.
+        // Per-screen priority lists. The navigator tries each name in
+        // order; the first one that exists, is enabled, and is past its
+        // per-(screen,option) cooldown gets clicked.
+        string[] priority;
+        switch (screen)
+        {
+            case "main":
+                // Prefer starting a new run. If a leftover save offers
+                // `continue`, try it first — but if continue can't
+                // actually advance (clicks resolve back to main), the
+                // cooldown lets us fall through to `abandon_run` →
+                // popup confirmation → fresh main menu with
+                // `singleplayer` visible.
+                priority = new[] { "singleplayer", "continue", "abandon_run" };
+                break;
+            case "singleplayer":
+                priority = new[] { "standard" };  // skip daily/custom
+                break;
+            case "popup":
+                // Confirm dialogs surface localized labels. Game is in
+                // Korean → "예" is the affirmative; keep english fallbacks
+                // for users on other locales.
+                priority = new[] { "예", "yes", "ok", "confirm", "accept", "advance", "proceed" };
+                break;
+            case "game_over":
+                priority = new[] { "main_menu" };
+                break;
+            default:
+                priority = Array.Empty<string>();
+                break;
+        }
+
+        foreach (var want in priority)
+        {
+            for (int i = 0; i < opts.Count; i++)
+            {
+                if (string.Equals(OptName(opts[i]), want, StringComparison.Ordinal)
+                    && OptEnabled(opts[i]))
+                {
+                    if (ClickIfReady(want))
+                        GD.Print($"[STS2 MCP][AUTO][menu] pick '{want}' on screen '{screen}'");
+                    return true;
+                }
+            }
+        }
+
+        // Fallback: first enabled non-avoid option (covers screens we
+        // haven't enumerated explicitly yet).
         var avoid = new HashSet<string> {
             "back", "cancel", "settings", "quit", "unready",
-            "multiplayer", "compendium", "timeline"
+            "multiplayer", "compendium", "timeline",
+            "daily", "custom", "host", "join", "load", "abandon", "abandon_run",
+            "no", "아니요"
         };
         for (int i = 0; i < opts.Count; i++)
         {
@@ -986,8 +1033,8 @@ public static partial class McpMod
             if (string.IsNullOrEmpty(nm) || avoid.Contains(nm.ToLowerInvariant())) continue;
             if (!OptEnabled(opts[i])) continue;
             if (ClickIfReady(nm))
-                GD.Print($"[STS2 MCP][AUTO][menu] pick '{nm}' on screen '{screen}'");
-            return true;  // either we clicked or cooldown is suppressing
+                GD.Print($"[STS2 MCP][AUTO][menu] fallback pick '{nm}' on screen '{screen}'");
+            return true;
         }
         return false;
     }
