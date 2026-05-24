@@ -124,6 +124,11 @@ public static partial class McpMod
     // transform / NEOW upgrade). -1 = not in a card_select; 0..N = ticks
     // since the last select_card call.
     private static int _cardSelectTicksSinceSelect = -1;
+    // Which grid slot we toggled on the previous select_card. We advance
+    // through indices on every retry so multi-pick screens (transform N,
+    // upgrade-2, etc.) accumulate selections instead of toggling slot 0
+    // on and off forever.
+    private static int _cardSelectPickedSlot = -1;
     private const int HandSelectRetryTicks = 5;  // ~1 s @ 200 ms tick
 
     // Loop-detector: track the last (state_type, action_index) we executed
@@ -474,12 +479,19 @@ public static partial class McpMod
             {
                 var cs = AsDict(state, "card_select");
                 bool canConfirm = AsBool(cs, "can_confirm");
-                var selected = AsList(cs, "selected_cards");
                 var cards = AsList(cs, "cards");
-                if (canConfirm && selected.Count > 0)
+                // can_confirm true is the authoritative "ready to commit" signal.
+                // selected_cards in the JSON is unreliable — for transform /
+                // multi-upgrade screens the mod's StateBuilder leaves it empty
+                // even after select_card calls have toggled holders (observed
+                // live: can_confirm=True after 2 picks but selected_cards.len=0).
+                // Just trust can_confirm and skip the count check.
+                if (canConfirm)
                 {
                     ExecuteAction("confirm_selection", new Dictionary<string, JsonElement>());
-                    GD.Print($"[STS2 MCP][AUTO] card_select -> confirm_selection ({selected.Count} picked)");
+                    GD.Print($"[STS2 MCP][AUTO] card_select -> confirm_selection (can_confirm=true)");
+                    _cardSelectTicksSinceSelect = -1;
+                    _cardSelectPickedSlot = -1;
                     return true;
                 }
                 if (cards.Count > 0)
@@ -488,16 +500,24 @@ public static partial class McpMod
                                    || _cardSelectTicksSinceSelect >= HandSelectRetryTicks;
                     if (shouldFire)
                     {
-                        int firstIdx = 0;
-                        if (cards[0] is Dictionary<string, object?> first0)
-                            firstIdx = ToInt(first0, "index", 0);
+                        // For multi-pick screens (transform: pick N, upgrade:
+                        // pick N), cycle through indices each retry instead
+                        // of re-picking slot 0 forever. _cardSelectPickedSlot
+                        // tracks the last slot we toggled; advance modulo the
+                        // grid size so we accumulate selections until
+                        // can_confirm flips.
+                        int slot = (_cardSelectPickedSlot + 1) % Math.Max(1, cards.Count);
+                        int firstIdx = slot;
+                        if (slot < cards.Count && cards[slot] is Dictionary<string, object?> cd)
+                            firstIdx = ToInt(cd, "index", slot);
                         var payload = new Dictionary<string, JsonElement>
                         {
                             ["index"] = JsonDocument.Parse(firstIdx.ToString()).RootElement.Clone(),
                         };
                         ExecuteAction("select_card", payload);
                         _cardSelectTicksSinceSelect = 0;
-                        GD.Print($"[STS2 MCP][AUTO] card_select -> select_card({firstIdx})");
+                        _cardSelectPickedSlot = slot;
+                        GD.Print($"[STS2 MCP][AUTO] card_select -> select_card({firstIdx}) [slot {slot}/{cards.Count}]");
                         return true;
                     }
                     _cardSelectTicksSinceSelect++;
