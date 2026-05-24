@@ -159,10 +159,21 @@ def run_one_experiment(preset: str, ascension: int, workers: int, steps: int,
     ent = float(os.getenv("PPO_ENT", "0.01"))
     n_steps = int(os.getenv("PPO_N_STEPS", "1024"))
     batch = int(os.getenv("PPO_BATCH", "128"))
+    # Default to CPU: the policy/value net is a tiny 64→64→64→300 MLP
+    # (~25 K params), so host↔device transfer per minibatch costs more than
+    # the GPU saves on the forward+backward pass. Bench: 30 K steps in
+    # 21 s CPU vs 38 s on an RTX 3060 Ti. The real bottleneck is the
+    # Python env.step() loop; that's helped by multiple env workers,
+    # not by GPU.
+    # `PPO_DEVICE=cuda` re-enables GPU for experiments with bigger nets
+    # (CNN policies, transformer, large batch) where the math truly
+    # dominates transfer overhead.
+    device = os.getenv("PPO_DEVICE", "cpu")
     model = MaskablePPO("MlpPolicy", vec_env, verbose=0, seed=seed,
                         tensorboard_log=str(tb_dir) if tb_dir else None,
                         n_steps=n_steps, batch_size=batch, ent_coef=ent,
-                        learning_rate=lr)
+                        learning_rate=lr, device=device)
+    print(f"[{preset}] PPO device={device}", flush=True)
 
     callback = PeriodicEvalCallback(ascension, reward_cfg,
                                     eval_every, eval_episodes, label=preset)

@@ -143,8 +143,14 @@ def main() -> None:
 
     env = make_env(ascension=args.ascension)
     tb = str(args.tensorboard) if args.tensorboard else None
+    # CPU by default — see train_parallel.py for the why. Override via
+    # PPO_DEVICE=cuda for big-network experiments.
+    import os
+    device = os.getenv("PPO_DEVICE", "cpu")
     model = MaskablePPO("MlpPolicy", env, verbose=0, seed=args.seed,
-                        tensorboard_log=tb, n_steps=512, batch_size=64)
+                        tensorboard_log=tb, n_steps=512, batch_size=64,
+                        device=device)
+    print(f"PPO device={device}", flush=True)
     print(f"Training MaskablePPO (RunEnv A{args.ascension}) for {args.steps} steps"
           f"{f' (TB->{tb})' if tb else ''}...")
 
