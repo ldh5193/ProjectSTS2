@@ -60,13 +60,13 @@ public static partial class McpMod
     // hand, bottom-right "End Turn" sits a bit further right than us).
     private static CanvasLayer? _overlayCanvas;
     private static Button? _overlayButton;
-    private static MegaRichTextLabel? _overlayLabel;
+    private static Label? _overlayLabel;
     // REC toggle button (sits directly above AUTO).
     private static Button? _overlayRecButton;
-    private static MegaRichTextLabel? _overlayRecLabel;
+    private static Label? _overlayRecLabel;
     // Free-floating advisory label above the buttons — only visible while
     // Recommend is ON; shows the human-readable action the policy chose.
-    private static MegaRichTextLabel? _overlayRecMessage;
+    private static Label? _overlayRecMessage;
 
     // The bottom-right corner is reserved for the game's discard/exhaust
     // pile icons + the right-edge confirm/end-turn button. We anchor our
@@ -604,14 +604,15 @@ public static partial class McpMod
             // up the project font/theme automatically. We feed BBCode into
             // Text for centering + color; SettingsUI.cs uses this same
             // class with plain text, so falling back to plain works too.
-            _overlayLabel = new MegaRichTextLabel
+            _overlayLabel = new Label
             {
                 Name = "Caption",
-                BbcodeEnabled = true,
                 AnchorLeft = 0f, AnchorTop = 0f,
                 AnchorRight = 1f, AnchorBottom = 1f,
                 OffsetLeft = 0, OffsetTop = 0, OffsetRight = 0, OffsetBottom = 0,
-                MouseFilter = Control.MouseFilterEnum.Ignore,  // clicks pass through to Button
+                MouseFilter = Control.MouseFilterEnum.Ignore,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
             };
             _overlayButton.AddChild(_overlayLabel);
             _overlayButton.Pressed += () =>
@@ -637,13 +638,14 @@ public static partial class McpMod
                 OffsetBottom = OverlayPadTop + OverlayHeight * 2 + OverlayRowGap,
                 MouseFilter  = Control.MouseFilterEnum.Stop,
             };
-            _overlayRecLabel = new MegaRichTextLabel
+            _overlayRecLabel = new Label
             {
                 Name = "Caption",
-                BbcodeEnabled = true,
                 AnchorLeft = 0f, AnchorTop = 0f,
                 AnchorRight = 1f, AnchorBottom = 1f,
                 MouseFilter = Control.MouseFilterEnum.Ignore,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
             };
             _overlayRecButton.AddChild(_overlayRecLabel);
             _overlayRecButton.Pressed += () =>
@@ -657,10 +659,9 @@ public static partial class McpMod
             // Advisory label below the two toggles. Only painted when REC
             // is ON; stays invisible otherwise so the top-center area is
             // clean during AutoPlay-driven runs.
-            _overlayRecMessage = new MegaRichTextLabel
+            _overlayRecMessage = new Label
             {
                 Name = "STS2MCP_RecommendMessage",
-                BbcodeEnabled = true,
                 AnchorLeft = 0.5f, AnchorRight = 0.5f,
                 AnchorTop  = 0f,   AnchorBottom = 0f,
                 OffsetLeft   = -(OverlayMessageWidth / 2f),
@@ -669,6 +670,8 @@ public static partial class McpMod
                 OffsetBottom = OverlayPadTop + OverlayHeight * 2 + OverlayRowGap + OverlayMessageGap + OverlayMessageHeight,
                 MouseFilter = Control.MouseFilterEnum.Ignore,
                 Visible = false,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
             };
             _overlayCanvas.AddChild(_overlayRecMessage);
 
@@ -686,31 +689,28 @@ public static partial class McpMod
         if (_overlayButton == null || !IsInstanceValid(_overlayButton)) return;
         try
         {
-            // Tint via BBCode so the ON/OFF state is unambiguous while still
-            // using the game's font and centering. A small ● glyph mirrors
-            // the visual cue used in NFastModeTickbox.
-            string autoColor = AutoPlayEnabled ? "#3ef27a" : "#cccccc";
-            string autoDot   = AutoPlayEnabled ? "●" : "○";
-            string autoState = AutoPlayEnabled ? "AUTO ON" : "AUTO OFF";
+            // Plain text + Modulate (per-Label color). Switched away from
+            // MegaRichTextLabel because that custom widget throws
+            // System.InvalidOperationException "has no theme font override"
+            // on every frame — those exceptions buffer up enough work to
+            // starve the Godot main thread, blocking even basic main-menu
+            // button clicks from animating to their destination screen.
             if (_overlayLabel != null && IsInstanceValid(_overlayLabel))
             {
-                _overlayLabel.Text = $"[center][color={autoColor}]{autoDot}  {autoState}[/color][/center]";
+                _overlayLabel.Text = AutoPlayEnabled ? "● AUTO ON" : "○ AUTO OFF";
+                _overlayLabel.Modulate = AutoPlayEnabled
+                    ? new Color(0.24f, 0.95f, 0.48f)
+                    : new Color(0.80f, 0.80f, 0.80f);
             }
-
             if (_overlayRecLabel != null && IsInstanceValid(_overlayRecLabel))
             {
-                // REC uses a different accent (cyan) so the two toggles
-                // are visually distinct at a glance.
-                string recColor = RecommendEnabled ? "#4ec1ff" : "#cccccc";
-                string recDot   = RecommendEnabled ? "●" : "○";
-                string recState = RecommendEnabled ? "REC ON" : "REC OFF";
-                _overlayRecLabel.Text = $"[center][color={recColor}]{recDot}  {recState}[/color][/center]";
+                _overlayRecLabel.Text = RecommendEnabled ? "● REC ON" : "○ REC OFF";
+                _overlayRecLabel.Modulate = RecommendEnabled
+                    ? new Color(0.31f, 0.76f, 1.0f)
+                    : new Color(0.80f, 0.80f, 0.80f);
             }
             if (_overlayRecMessage != null && IsInstanceValid(_overlayRecMessage))
             {
-                // Hide the advisory band entirely when REC is off OR when
-                // AutoPlay is doing the work — keeps the bottom-right
-                // quiet unless we're actively advising.
                 _overlayRecMessage.Visible = RecommendEnabled && !AutoPlayEnabled;
             }
         }
@@ -722,13 +722,17 @@ public static partial class McpMod
     /// Recommend mode is on. Safe to call from the thinker thread —
     /// the actual Godot text mutation is marshalled onto the main thread.
     /// </summary>
-    private static void _SetRecommendMessage(string bbcode)
+    private static void _SetRecommendMessage(string text)
     {
+        // Strip any BBCode-style tags ([b], [color=#xxx], [center], etc.)
+        // that older callers may still pass — a plain Label can't render
+        // them and they'd just show up as raw brackets.
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\[/?[^\]]*\]", "");
         _mainThreadQueue.Enqueue(() =>
         {
             if (_overlayRecMessage == null || !IsInstanceValid(_overlayRecMessage)) return;
             _overlayRecMessage.Visible = RecommendEnabled && !AutoPlayEnabled;
-            _overlayRecMessage.Text = bbcode;
+            _overlayRecMessage.Text = text;
         });
     }
 
