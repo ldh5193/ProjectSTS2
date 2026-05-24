@@ -122,6 +122,16 @@ public static partial class McpMod
     private static int _handSelectTicksSinceSelect = -1;
     private const int HandSelectRetryTicks = 5;  // ~1 s @ 200 ms tick
 
+    // Loop-detector: track the last (state_type, action_index) we executed
+    // and count how many ticks have fired the same pair. If the policy
+    // repeats the same idx 5+ times without the state advancing, we mask
+    // that idx off for one tick and let argmax fall through to the second-
+    // best legal slot. Self-healing without retraining.
+    private static string _lastStateAction = "";
+    private static int _lastStateActionCount = 0;
+    private static int _suppressActionIdx = -1;
+    private const int LoopRepeatThreshold = 5;
+
     internal static void EnsureAutoPlayThinker()
     {
         if (_thinkerInstalled) return;
@@ -400,6 +410,14 @@ public static partial class McpMod
             _handSelectTicksSinceSelect = -1;
 
             bool[] mask = BuildMask(state);
+            // Loop suppression: if we've repeated the same (state, idx) too
+            // often the state isn't advancing — mask that slot off for one
+            // tick so argmax picks the second-best legal action.
+            if (_suppressActionIdx >= 0 && _suppressActionIdx < mask.Length)
+            {
+                mask[_suppressActionIdx] = false;
+                _suppressActionIdx = -1;
+            }
             int legalCount = 0;
             for (int i = 0; i < mask.Length; i++) if (mask[i]) legalCount++;
             if (legalCount == 0)
@@ -425,7 +443,31 @@ public static partial class McpMod
             try
             {
                 var result = ExecuteAction(dec.action, dec.data);
-                _lastIdleReason = "";  // reset idle tracking after a real action
+                _lastIdleReason = "";
+
+                // Track repeats. The mod's BuildGameState normally advances
+                // state_type after a successful action; if (state_type, idx)
+                // is identical to the previous tick, the action wasn't
+                // effective. After LoopRepeatThreshold consecutive matches,
+                // suppress that idx on the very next mask.
+                string key = $"{st}:{action}";
+                if (key == _lastStateAction)
+                {
+                    _lastStateActionCount++;
+                    if (_lastStateActionCount >= LoopRepeatThreshold)
+                    {
+                        _suppressActionIdx = action;
+                        _lastStateActionCount = 0;
+                        GD.PrintErr($"[STS2 MCP][AUTO] loop guard: {st} idx={action} repeated " +
+                                    $"{LoopRepeatThreshold}× with no state change — suppressing 1 tick");
+                    }
+                }
+                else
+                {
+                    _lastStateAction = key;
+                    _lastStateActionCount = 1;
+                }
+
                 GD.Print($"[STS2 MCP][AUTO] {st} -> {dec.action} (idx={action}, legal={legalCount})");
                 return true;
             }
