@@ -92,6 +92,21 @@ REWARD_PRESETS: dict[str, RewardConfig] = {
         combat_win=0.05, elite_kill=0.20, boss_kill=2.0, run_victory=8.0,
         floor_advance=0.05, living_cost=-0.001, death=-1.0,
     ),
+    # Cycle E v2 — added after 3rd sweep showed sparse/aggressive (high-end
+    # boss/victory weight, no shaping) reach more bosses than default.
+    "boss_heavy": RewardConfig(
+        combat_win=0.05, elite_kill=0.30, boss_kill=5.0, act_completion=2.0,
+        run_victory=15.0, floor_advance=0.0, living_cost=-0.001, death=-1.0,
+    ),
+    "survival": RewardConfig(
+        combat_win=0.15, elite_kill=0.40, boss_kill=3.0, act_completion=1.0,
+        run_victory=10.0, floor_advance=0.01, living_cost=-0.0005, death=-3.0,
+        hp_delta_weight=0.005,
+    ),
+    "exploration": RewardConfig(
+        combat_win=0.08, elite_kill=0.25, boss_kill=2.0, act_completion=0.5,
+        run_victory=5.0, floor_advance=0.02, living_cost=0.0, death=-0.5,
+    ),
 }
 
 
