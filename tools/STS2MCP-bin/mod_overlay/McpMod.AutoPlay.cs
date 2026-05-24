@@ -885,6 +885,13 @@ public static partial class McpMod
     // so we don't spam it before the screen has time to react.
     private static int _ticksSinceEmbark = 999;
     private const int EmbarkCooldownTicks = 4;
+    // Generic menu-click cooldown: every menu click costs ≥1 tick. The
+    // STS2 main menu / submenu transitions take ~1–2 frames; without
+    // this cooldown the navigator hammered the same option each 200 ms
+    // tick and the click animation never had a chance to start.
+    private static string _lastMenuKey = "";
+    private static int _ticksSinceMenuClick = 999;
+    private const int MenuClickCooldownTicks = 3;  // ~0.6 s between clicks
 
     /// <summary>
     /// Deterministic menu navigator. Bypasses the policy for menu states
@@ -900,8 +907,28 @@ public static partial class McpMod
     private static bool _AutoMenuStep(Dictionary<string, object?> state)
     {
         _ticksSinceEmbark++;
+        _ticksSinceMenuClick++;
         string screen = AsString(state, "menu_screen", "");
         var opts = AsList(state, "options");
+
+        // Generic cooldown: never click the SAME (screen,option) twice
+        // within MenuClickCooldownTicks. Lets the screen transition
+        // animate. Different (screen,option) bypasses the cooldown so
+        // chained navigation (singleplayer → standard → IRONCLAD …)
+        // doesn't waste ticks.
+        bool ClickIfReady(string optName)
+        {
+            string key = $"{screen}:{optName}";
+            if (key == _lastMenuKey && _ticksSinceMenuClick < MenuClickCooldownTicks)
+            {
+                _LogIdle($"menu: cooldown on {key} ({_ticksSinceMenuClick}/{MenuClickCooldownTicks})");
+                return false;
+            }
+            _lastMenuKey = key;
+            _ticksSinceMenuClick = 0;
+            _SendMenuSelect(optName);
+            return true;
+        }
 
         // Resolve the option name (handle both bare-string and dict shapes).
         string OptName(object? o)
@@ -919,44 +946,48 @@ public static partial class McpMod
 
         if (screen == "character_select")
         {
-            // First look for "embark" / "confirm" already enabled — means
-            // a character is selected and we just need to launch the run.
             for (int i = 0; i < opts.Count; i++)
             {
                 string nm = OptName(opts[i]);
                 if ((nm == "embark" || nm == "confirm") && OptEnabled(opts[i])
                     && _ticksSinceEmbark > EmbarkCooldownTicks)
                 {
-                    _SendMenuSelect(nm);
-                    _ticksSinceEmbark = 0;
-                    GD.Print($"[STS2 MCP][AUTO][menu] embark → run start");
-                    return true;
+                    if (ClickIfReady(nm))
+                    {
+                        _ticksSinceEmbark = 0;
+                        GD.Print($"[STS2 MCP][AUTO][menu] embark → run start");
+                        return true;
+                    }
+                    return true;  // cooldown still ticking — count as handled
                 }
             }
-            // Otherwise: click IRONCLAD if available.
             for (int i = 0; i < opts.Count; i++)
             {
                 string nm = OptName(opts[i]);
                 if (nm == "IRONCLAD" && OptEnabled(opts[i]))
                 {
-                    _SendMenuSelect(nm);
-                    GD.Print($"[STS2 MCP][AUTO][menu] pick IRONCLAD");
+                    if (ClickIfReady(nm))
+                        GD.Print($"[STS2 MCP][AUTO][menu] pick IRONCLAD");
                     return true;
                 }
             }
         }
 
         // Generic menu: pick the first enabled non-trivial option. We
-        // avoid "back"/"cancel"/"settings"/"quit" so we always advance.
-        var avoid = new HashSet<string> { "back", "cancel", "settings", "quit", "unready" };
+        // avoid back/cancel/settings/quit/multiplayer/compendium/timeline
+        // so we always head toward starting a run.
+        var avoid = new HashSet<string> {
+            "back", "cancel", "settings", "quit", "unready",
+            "multiplayer", "compendium", "timeline"
+        };
         for (int i = 0; i < opts.Count; i++)
         {
             string nm = OptName(opts[i]);
             if (string.IsNullOrEmpty(nm) || avoid.Contains(nm.ToLowerInvariant())) continue;
             if (!OptEnabled(opts[i])) continue;
-            _SendMenuSelect(nm);
-            GD.Print($"[STS2 MCP][AUTO][menu] pick '{nm}' on screen '{screen}'");
-            return true;
+            if (ClickIfReady(nm))
+                GD.Print($"[STS2 MCP][AUTO][menu] pick '{nm}' on screen '{screen}'");
+            return true;  // either we clicked or cooldown is suppressing
         }
         return false;
     }
