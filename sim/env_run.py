@@ -120,6 +120,18 @@ REWARD_PRESETS: dict[str, RewardConfig] = {
         run_victory=10.0, floor_advance=0.005, living_cost=-0.001, death=-2.0,
         hp_delta_weight=0.02,
     ),
+    # Cycle E v4 — after 11 sweeps, tank emerged as new final best. Push
+    # the "stiff terminal + heavy HP" lane further.
+    "tank_plus": RewardConfig(
+        combat_win=0.20, elite_kill=0.60, boss_kill=5.0, act_completion=2.0,
+        run_victory=15.0, floor_advance=0.005, living_cost=-0.001, death=-2.5,
+        hp_delta_weight=0.025,
+    ),
+    "balanced": RewardConfig(
+        combat_win=0.12, elite_kill=0.35, boss_kill=2.5, act_completion=1.2,
+        run_victory=8.0, floor_advance=0.015, living_cost=-0.0008, death=-1.5,
+        hp_delta_weight=0.01,
+    ),
 }
 
 
