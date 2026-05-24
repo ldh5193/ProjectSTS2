@@ -42,8 +42,16 @@ def make_env(ascension: int = 0) -> ActionMasker:
     return ActionMasker(RunEnv(ascension=ascension), _mask_fn)
 
 
-def evaluate(model, n_episodes: int, ascension: int, seed_base: int = 100_000) -> dict:
-    """Deterministic eval. Returns aggregates suited to the full-run env."""
+def evaluate(model, n_episodes: int, ascension: int, seed_base: int = 100_000,
+             max_steps_per_episode: int = 1500) -> dict:
+    """Deterministic eval. Returns aggregates suited to the full-run env.
+
+    `max_steps_per_episode` is a watchdog only — without it, a deterministic
+    policy that lands in an unsolvable state (currently possible while the
+    multi-monster refactor is in flight) would loop forever and stall the
+    training process. The cap is high enough that healthy runs are never
+    truncated (full-run episodes typically end ≤ 400 steps).
+    """
     env = make_env(ascension=ascension)
     wins = 0
     deaths = 0
@@ -70,7 +78,7 @@ def evaluate(model, n_episodes: int, ascension: int, seed_base: int = 100_000) -
             if result is not None and result.boss_killed:
                 ep_bosses += 1
             steps += 1
-            if term:
+            if term or steps >= max_steps_per_episode:
                 break
         rs = env.unwrapped.rs
         if rs.is_victorious:

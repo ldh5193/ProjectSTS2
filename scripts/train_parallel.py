@@ -50,8 +50,16 @@ def make_env_factory(ascension: int, reward_cfg: RewardConfig, seed_offset: int)
 
 
 def evaluate_solo(model, ascension: int, reward_cfg: RewardConfig,
-                  n_episodes: int, seed_base: int = 100_000) -> dict:
-    """Solo (non-vectorized) eval for clean per-episode aggregates."""
+                  n_episodes: int, seed_base: int = 100_000,
+                  max_steps_per_episode: int = 1500) -> dict:
+    """Solo (non-vectorized) eval for clean per-episode aggregates.
+
+    `max_steps_per_episode` is a watchdog: a deterministic policy can occa-
+    sionally land in an unsolvable RunState (currently possible while the
+    multi-monster combat refactor is in progress) and the env loop would
+    otherwise spin forever, stalling the entire sweep with no log output.
+    The cap is generous enough that healthy episodes are never truncated.
+    """
     env = ActionMasker(RunEnv(ascension=ascension, reward_config=reward_cfg), _mask_fn)
     wins = 0
     deaths = 0
@@ -70,7 +78,7 @@ def evaluate_solo(model, ascension: int, reward_cfg: RewardConfig,
             if result is not None and result.boss_killed:
                 ep_bosses += 1
             steps += 1
-            if term:
+            if term or steps >= max_steps_per_episode:
                 break
         rs = env.unwrapped.rs
         if rs.is_victorious:
