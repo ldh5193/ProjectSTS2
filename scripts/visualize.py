@@ -212,6 +212,48 @@ def curve(history_path: Path, out: Path | None) -> None:
     print(f"Saved curve to {out}")
 
 
+def sweep(history_paths: list[Path], out: Path | None) -> None:
+    """Overlay multiple training-history JSONs (one per reward preset)
+    on the same axes so we can compare the trajectories side-by-side."""
+    series: list[tuple[str, list[dict]]] = []
+    for p in history_paths:
+        if not p.exists():
+            print(f"skipping missing {p}")
+            continue
+        h = json.loads(p.read_text())
+        if h:
+            series.append((p.stem, h))
+    if not series:
+        print("no histories to plot")
+        return
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8), sharex=True)
+    metric_axis = [
+        ("win_rate",   axes[0, 0], "Win rate",     (0, 1.05)),
+        ("mean_reward",axes[0, 1], "Mean reward",  None),
+        ("mean_floor", axes[1, 0], "Mean floor reached", None),
+        ("mean_bosses",axes[1, 1], "Mean bosses killed", None),
+    ]
+    for label, history in series:
+        steps = [h["timesteps"] for h in history]
+        for key, ax, title, ylim in metric_axis:
+            ax.plot(steps, [h[key] for h in history], "o-", label=label)
+            ax.set_title(title)
+            ax.grid(alpha=0.3)
+            if ylim:
+                ax.set_ylim(*ylim)
+    axes[1, 0].set_xlabel("timesteps")
+    axes[1, 1].set_xlabel("timesteps")
+    axes[0, 0].legend(loc="best", fontsize=9)
+    fig.suptitle("Reward-shape sweep — full-run training")
+    fig.tight_layout()
+    if out is None:
+        out = Path("runs/sweep_compare.png")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=120)
+    print(f"Saved sweep comparison to {out}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="mode", required=True)
@@ -233,6 +275,11 @@ def main() -> None:
     p_curve.add_argument("--history", type=Path, required=True)
     p_curve.add_argument("--out", type=Path, default=None)
 
+    p_sweep = sub.add_parser("sweep", help="overlay multiple preset histories")
+    p_sweep.add_argument("--histories", type=Path, nargs="+", required=True,
+                         help="One JSON path per preset (e.g. runs/sweeps/*.json)")
+    p_sweep.add_argument("--out", type=Path, default=None)
+
     args = parser.parse_args()
     if args.mode == "trace":
         trace(args.model, args.env, args.seed, args.out)
@@ -240,6 +287,8 @@ def main() -> None:
         histogram(args.model, args.env, args.episodes, args.seed_base, args.out)
     elif args.mode == "curve":
         curve(args.history, args.out)
+    elif args.mode == "sweep":
+        sweep(args.histories, args.out)
 
 
 if __name__ == "__main__":

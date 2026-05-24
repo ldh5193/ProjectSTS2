@@ -16,18 +16,27 @@ from enum import Enum
 from .cards import (
     ANGER,
     BASH,
+    BATTLE_TRANCE,
     BLOODLETTING,
+    BLUDGEON,
     CINDER,
     DEFEND_IRONCLAD,
+    DISMANTLE,
+    HEADBUTT,
     INFLAME,
     IRON_WAVE,
+    PERFECTED_STRIKE,
     POMMEL_STRIKE,
+    RAGE,
     SHRUG_IT_OFF,
+    STONE_ARMOR,
     STRIKE_IRONCLAD,
     STRIKE_SCALING,
+    TAUNT,
     THUNDERCLAP,
     TREMBLE,
     TWIN_STRIKE,
+    UPPERCUT,
 )
 from .dsl import CardDef, CardType, Effect, EffectOp, Target
 
@@ -176,6 +185,15 @@ _IMPLEMENTED: dict[str, CardDef] = {
     BLOODLETTING.id: BLOODLETTING,
     ANGER.id: ANGER,
     CINDER.id: CINDER,
+    BLUDGEON.id: BLUDGEON,
+    UPPERCUT.id: UPPERCUT,
+    TAUNT.id: TAUNT,
+    STONE_ARMOR.id: STONE_ARMOR,
+    RAGE.id: RAGE,
+    BATTLE_TRANCE.id: BATTLE_TRANCE,
+    HEADBUTT.id: HEADBUTT,
+    DISMANTLE.id: DISMANTLE,
+    PERFECTED_STRIKE.id: PERFECTED_STRIKE,
 }
 
 

@@ -184,6 +184,105 @@ CINDER = CardDef(
 INFLAME_HIGH = INFLAME  # alias for callers
 
 
+# Additional Cycle B cards — depend only on existing Powers / EffectOps.
+
+BLUDGEON = CardDef(
+    id="bludgeon", name="Bludgeon", cost=3, type=CardType.ATTACK, count=0,
+    effects=(
+        Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+               amount=32, scaling=STRIKE_SCALING),
+    ),
+)
+
+CLOTHESLINE = CardDef(  # represents "Headbutt"-shaped 12-dmg + weak combo if it existed
+    id="clothesline", name="Clothesline", cost=2, type=CardType.ATTACK, count=0,
+    effects=(
+        Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+               amount=12, scaling=STRIKE_SCALING),
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+               power_id="weak", amount=2),
+    ),
+)
+
+UPPERCUT = CardDef(
+    id="uppercut", name="Uppercut", cost=2, type=CardType.ATTACK, count=0,
+    effects=(
+        Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+               amount=13, scaling=STRIKE_SCALING),
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+               power_id="weak", amount=1),
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+               power_id="vulnerable", amount=1),
+    ),
+)
+
+TAUNT = CardDef(
+    id="taunt", name="Taunt", cost=1, type=CardType.SKILL, count=0,
+    effects=(
+        Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=7),
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+               power_id="vulnerable", amount=1),
+    ),
+)
+
+STONE_ARMOR = CardDef(
+    id="stone_armor", name="Stone Armor", cost=1, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="plating", amount=4),
+    ),
+)
+
+RAGE = CardDef(  # simplified: +3 strength (real Rage applies RagePower)
+    id="rage", name="Rage", cost=0, type=CardType.SKILL, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="strength", amount=3),
+    ),
+)
+
+BATTLE_TRANCE = CardDef(
+    id="battle_trance", name="Battle Trance", cost=0, type=CardType.SKILL, count=0,
+    effects=(
+        Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=3),
+        # NoDraw power deferred — skip for now (still draws 3 unconditionally).
+    ),
+)
+
+HEADBUTT = CardDef(
+    id="headbutt", name="Headbutt", cost=1, type=CardType.ATTACK, count=0,
+    effects=(
+        Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+               amount=9, scaling=STRIKE_SCALING),
+        # "move card from discard to draw top" — needs new EffectOp; skip second effect.
+    ),
+)
+
+DISMANTLE = CardDef(
+    id="dismantle", name="Dismantle", cost=1, type=CardType.ATTACK, count=0,
+    effects=(
+        Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+               amount=8, scaling=STRIKE_SCALING, hit_count=2),
+    ),
+)
+
+PERFECTED_STRIKE = CardDef(
+    id="perfected_strike", name="Perfected Strike", cost=2, type=CardType.ATTACK, count=0,
+    effects=(
+        Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+               amount=6, scaling=STRIKE_SCALING + (
+                   __import__("sim.dsl", fromlist=["Scaling", "ScalingKind"]).Scaling(
+                       kind=__import__("sim.dsl", fromlist=["ScalingKind"]).ScalingKind.STRIKE_TAG_COUNT,
+                       owner="dealer"),
+               )),
+    ),
+)
+
+
+IRONCLAD_LIBRARY_EXT = (BLUDGEON, CLOTHESLINE, UPPERCUT, TAUNT, STONE_ARMOR, RAGE,
+                        BATTLE_TRANCE, HEADBUTT, DISMANTLE, PERFECTED_STRIKE)
+
+
 # Catalog of every CardDef this module knows about. Keep in sync with the
 # additions above so consumers (env builders, future card-reward systems)
 # can enumerate without re-importing each constant.
@@ -201,6 +300,9 @@ IRONCLAD_LIBRARY: tuple[CardDef, ...] = (
     BLOODLETTING,
     ANGER,
     CINDER,
+    # Cycle B extras
+    BLUDGEON, UPPERCUT, TAUNT, STONE_ARMOR, RAGE, BATTLE_TRANCE,
+    HEADBUTT, DISMANTLE, PERFECTED_STRIKE,
 )
 
 
