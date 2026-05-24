@@ -228,7 +228,12 @@ def _rewards_mask(state: dict, r: ActionRange) -> Iterable[int]:
     """Multi-reward screen: mod nests `items` under `rewards` dict and
     flips `can_proceed` when nothing left to claim. We expose the
     claim slots here; the proceed-after-empty case is handled by
-    _misc_mask."""
+    _misc_mask.
+
+    Filter out potion rewards when the belt is full — claiming one
+    opens a discard-a-potion overlay we can't drive yet, so the policy
+    spins on the same claim_reward index forever (observed in-game).
+    """
     rewards = state.get("rewards")
     if isinstance(rewards, dict):
         items = rewards.get("items") or []
@@ -236,7 +241,19 @@ def _rewards_mask(state: dict, r: ActionRange) -> Iterable[int]:
         items = rewards
     else:
         items = []
-    return range(min(len(items), r.size))
+    player = state.get("player") or {}
+    potions = player.get("potions") or []
+    max_potions = int(player.get("max_potion_slots", 0) or 0)
+    potions_full = max_potions > 0 and len(potions) >= max_potions
+    out: list[int] = []
+    for i, it in enumerate(items):
+        if i >= r.size:
+            break
+        if potions_full and isinstance(it, dict) \
+                and str(it.get("type", "")).lower() == "potion":
+            continue
+        out.append(i)
+    return out
 
 
 def _misc_mask(state: dict, r: ActionRange) -> Iterable[int]:
@@ -250,11 +267,12 @@ def _misc_mask(state: dict, r: ActionRange) -> Iterable[int]:
     button slot and finds the mask empty, hanging the run forever."""
     st = state.get("state_type")
     if st == "rewards":
+        # Trust can_proceed alone — when remaining items are unclaimable
+        # (e.g. potions with a full belt that we already filtered out of
+        # the rewards mask), the items list stays non-empty but we still
+        # need an escape hatch.
         rewards = state.get("rewards")
-        if isinstance(rewards, dict) \
-                and rewards.get("can_proceed") and not (rewards.get("items") or []):
-            return (0,)
-        return ()
+        return (0,) if isinstance(rewards, dict) and rewards.get("can_proceed") else ()
     if st == "rest_site":
         rs = state.get("rest_site") or {}
         return (0,) if rs.get("can_proceed") else ()

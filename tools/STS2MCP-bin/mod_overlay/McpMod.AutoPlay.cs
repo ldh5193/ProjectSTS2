@@ -225,7 +225,7 @@ public static partial class McpMod
                 ? _FormatRecommendation(d.action, d.data, state)
                 : $"idx {action} (decode failed)";
             if (decoded is { } dec)
-                _HighlightRecommendation(st, dec.action, dec.data);
+                _HighlightRecommendation(st, dec.action, dec.data, state);
             _SetRecommendMessage($"[center][color=#4ec1ff]AI recommends:[/color]  {summary}[/center]");
             return true;
         });
@@ -695,7 +695,8 @@ public static partial class McpMod
     /// to the text-only advisory band. Always called inside RunOnMainThread.
     /// </summary>
     private static void _HighlightRecommendation(string st, string action,
-                                                 Dictionary<string, JsonElement> data)
+                                                 Dictionary<string, JsonElement> data,
+                                                 Dictionary<string, object?> state)
     {
         switch (st)
         {
@@ -708,6 +709,15 @@ public static partial class McpMod
                     var holders = NPlayerHand.Instance?.ActiveHolders;
                     if (holders != null && cardIdx >= 0 && cardIdx < holders.Count)
                         _HighlightNode(holders[cardIdx] as Control);
+                    // If the recommended play has a target enemy, light it
+                    // up too so the player can see both ends of the action.
+                    if (data.TryGetValue("target", out var tgtElem))
+                    {
+                        string targetId = tgtElem.ValueKind == JsonValueKind.String
+                            ? (tgtElem.GetString() ?? "")
+                            : tgtElem.ToString();
+                        _HighlightTargetEnemy(state, targetId);
+                    }
                 }
                 break;
             case "hand_select":
@@ -737,6 +747,55 @@ public static partial class McpMod
             // need scene-specific helpers we haven't ported from
             // McpMod.Actions yet. Adding incrementally is straightforward.
         }
+    }
+
+    /// <summary>
+    /// Map an entity_id string (e.g. "jaw_worm_0") back to its live
+    /// NCreature node so we can tint it the same way we tint card
+    /// holders. We resolve via state.battle.enemies position rather than
+    /// CombatId because entity_id is what the decoder emits.
+    /// </summary>
+    private static void _HighlightTargetEnemy(Dictionary<string, object?> state, string entityId)
+    {
+        if (string.IsNullOrEmpty(entityId)) return;
+        var battle = AsDict(state, "battle");
+        var enemies = AsList(battle, "enemies");
+        // Match the enemy by either entity_id (preferred) or combat_id
+        // (numeric fallback). Both are emitted by StateBuilder.BuildEnemyState.
+        uint? wantCombatId = null;
+        int enemyIndex = -1;
+        for (int i = 0; i < enemies.Count; i++)
+        {
+            if (enemies[i] is not Dictionary<string, object?> e) continue;
+            if (string.Equals(AsString(e, "entity_id", ""), entityId, StringComparison.Ordinal))
+            {
+                wantCombatId = (uint?)ToInt(e, "combat_id", -1);
+                enemyIndex = i;
+                break;
+            }
+        }
+        var room = NCombatRoom.Instance;
+        if (room == null) return;
+        Control? matched = null;
+        int aliveIdx = 0;
+        foreach (var creature in room.CreatureNodes)
+        {
+            if (creature?.Entity == null) continue;
+            if (creature.Entity.Side == MegaCrit.Sts2.Core.Combat.CombatSide.Player) continue;
+            if (!creature.Entity.IsAlive) continue;
+            if (wantCombatId.HasValue && creature.Entity.CombatId == wantCombatId.Value)
+            {
+                matched = creature;
+                break;
+            }
+            if (enemyIndex >= 0 && aliveIdx == enemyIndex)
+            {
+                matched = creature;
+                // keep iterating only to allow CombatId match to win
+            }
+            aliveIdx++;
+        }
+        _HighlightNode(matched);
     }
 
     private static bool IsInstanceValid(GodotObject obj)

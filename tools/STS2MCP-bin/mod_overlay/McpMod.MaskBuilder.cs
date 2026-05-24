@@ -148,27 +148,40 @@ public static partial class McpMod
 
     private static IEnumerable<int> RewardsMask(Dictionary<string, object?> state, ActionRange r)
     {
-        if (state.TryGetValue("rewards", out var v) && v is Dictionary<string, object?> rd)
+        // Potion slots are finite. Claiming a potion reward when the belt
+        // is already full opens a "discard a potion?" overlay that we
+        // can't drive — so the policy gets stuck firing claim_reward on
+        // the same index forever (seen in the game log). Filter potions
+        // out of the mask when full so the policy can claim other
+        // rewards and reach proceed instead.
+        var player = AsDict(state, "player");
+        int potionCount = AsList(player, "potions").Count;
+        int maxPotion   = ToInt(player, "max_potion_slots", 0);
+        bool potionsFull = maxPotion > 0 && potionCount >= maxPotion;
+
+        var items = state.TryGetValue("rewards", out var v) && v is Dictionary<string, object?> rd
+            ? AsList(rd, "items") : AsList(state, "rewards");
+        int n = Math.Min(items.Count, r.Size);
+        for (int i = 0; i < n; i++)
         {
-            var items = AsList(rd, "items");
-            int n = Math.Min(items.Count, r.Size);
-            for (int i = 0; i < n; i++) yield return i;
-        }
-        else
-        {
-            var items = AsList(state, "rewards");
-            int n = Math.Min(items.Count, r.Size);
-            for (int i = 0; i < n; i++) yield return i;
+            if (potionsFull && items[i] is Dictionary<string, object?> it
+                && string.Equals(AsString(it, "type", ""), "potion", StringComparison.OrdinalIgnoreCase))
+                continue;
+            yield return i;
         }
     }
 
     private static IEnumerable<int> MiscMask(Dictionary<string, object?> state)
     {
         string st = AsString(state, "state_type", "");
+        // Rewards proceed: drop the items.Count == 0 condition. If any
+        // remaining items are unclaimable (e.g. a potion when the belt
+        // is full and we filtered it out of the rewards mask) the policy
+        // would otherwise stay deadlocked. can_proceed is the game's
+        // own "you may leave the rewards screen now" signal — trust it.
         if (st == "rewards" && state.TryGetValue("rewards", out var rv)
             && rv is Dictionary<string, object?> rd
-            && AsBool(rd, "can_proceed")
-            && AsList(rd, "items").Count == 0)
+            && AsBool(rd, "can_proceed"))
             yield return 0;
         // Rest sites: after the player picks an option (and any extra picks
         // a relic/item granted, e.g. dual-rest effects), the rest screen
