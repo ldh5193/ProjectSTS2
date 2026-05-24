@@ -174,14 +174,16 @@ public static partial class McpMod
     private static IEnumerable<int> MiscMask(Dictionary<string, object?> state)
     {
         string st = AsString(state, "state_type", "");
-        // Rewards proceed: drop the items.Count == 0 condition. If any
-        // remaining items are unclaimable (e.g. a potion when the belt
-        // is full and we filtered it out of the rewards mask) the policy
-        // would otherwise stay deadlocked. can_proceed is the game's
-        // own "you may leave the rewards screen now" signal — trust it.
+        // Rewards proceed fires only when NO claimable item is left.
+        // "Claimable" mirrors RewardsMask's filter (e.g. potion items
+        // are dropped when the belt is full) so the policy doesn't
+        // bail on a card / relic / gold pickup it should still grab,
+        // but ALSO doesn't deadlock when the only remaining items are
+        // potions we can't take.
         if (st == "rewards" && state.TryGetValue("rewards", out var rv)
             && rv is Dictionary<string, object?> rd
-            && AsBool(rd, "can_proceed"))
+            && AsBool(rd, "can_proceed")
+            && _CountClaimableRewards(state, rd) == 0)
             yield return 0;
         // Rest sites: after the player picks an option (and any extra picks
         // a relic/item granted, e.g. dual-rest effects), the rest screen
@@ -232,6 +234,31 @@ public static partial class McpMod
     private static IEnumerable<int> Sequence(int count)
     {
         for (int i = 0; i < count; i++) yield return i;
+    }
+
+    /// <summary>
+    /// Count rewards items the policy is allowed to claim — same filter
+    /// that RewardsMask applies. Used by MiscMask to decide when the
+    /// proceed slot becomes legal (only when claimable_count == 0).
+    /// </summary>
+    private static int _CountClaimableRewards(Dictionary<string, object?> state,
+                                              Dictionary<string, object?> rewardsDict)
+    {
+        var player = AsDict(state, "player");
+        int potionCount = AsList(player, "potions").Count;
+        int maxPotion   = ToInt(player, "max_potion_slots", 0);
+        bool potionsFull = maxPotion > 0 && potionCount >= maxPotion;
+        var items = AsList(rewardsDict, "items");
+        int count = 0;
+        foreach (var it in items)
+        {
+            if (it is not Dictionary<string, object?> id) { count++; continue; }
+            if (potionsFull
+                && string.Equals(AsString(id, "type", ""), "potion", StringComparison.OrdinalIgnoreCase))
+                continue;
+            count++;
+        }
+        return count;
     }
 
     internal static ActionRange? FindRange(int idx)

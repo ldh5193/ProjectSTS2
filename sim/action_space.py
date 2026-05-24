@@ -267,12 +267,23 @@ def _misc_mask(state: dict, r: ActionRange) -> Iterable[int]:
     button slot and finds the mask empty, hanging the run forever."""
     st = state.get("state_type")
     if st == "rewards":
-        # Trust can_proceed alone — when remaining items are unclaimable
-        # (e.g. potions with a full belt that we already filtered out of
-        # the rewards mask), the items list stays non-empty but we still
-        # need an escape hatch.
+        # Only fire proceed when no claimable item remains. Mirrors
+        # RewardsMask's potion-full filter so a card/relic/gold still
+        # sitting in the rewards list keeps the policy on the screen,
+        # but a leftover unclaimable potion doesn't deadlock.
         rewards = state.get("rewards")
-        return (0,) if isinstance(rewards, dict) and rewards.get("can_proceed") else ()
+        if not isinstance(rewards, dict) or not rewards.get("can_proceed"):
+            return ()
+        player = state.get("player") or {}
+        potions_full = (int(player.get("max_potion_slots", 0) or 0) > 0
+                        and len(player.get("potions") or []) >= int(player.get("max_potion_slots", 0) or 0))
+        claimable = 0
+        for it in rewards.get("items") or []:
+            if potions_full and isinstance(it, dict) \
+                    and str(it.get("type", "")).lower() == "potion":
+                continue
+            claimable += 1
+        return (0,) if claimable == 0 else ()
     if st == "rest_site":
         rs = state.get("rest_site") or {}
         return (0,) if rs.get("can_proceed") else ()
