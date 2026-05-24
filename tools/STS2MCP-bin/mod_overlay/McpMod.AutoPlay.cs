@@ -348,12 +348,24 @@ public static partial class McpMod
             {
                 var goOptions = AsList(AsDict(state, "game_over"), "options");
                 if (goOptions.Count == 0) goOptions = AsList(AsDict(state, "victory"), "options");
-                if (goOptions.Count > 0)
+                // Try the known options list first, but fall back to a
+                // hardcoded priority list because the game_over JSON
+                // sometimes returns an empty options array even when the
+                // end-screen buttons are interactable.
+                string[] candidates = goOptions.Count > 0
+                    ? new[] { goOptions[0]?.ToString() ?? "main_menu" }
+                    : new[] { "main_menu", "abandon_run", "back", "quit_to_main_menu" };
+                foreach (var opt in candidates)
                 {
-                    string opt = goOptions[0]?.ToString() ?? "main_menu";
-                    try { ExecuteAction("menu_select", new Dictionary<string, JsonElement>
-                        { ["option"] = JsonDocument.Parse($"\"{opt}\"").RootElement.Clone() }); }
-                    catch { }
+                    if (string.IsNullOrEmpty(opt)) continue;
+                    // ExecuteAction's RunManager.IsInProgress guard rejects
+                    // menu_select calls once the run has ended (IsInProgress
+                    // flips false on game_over). _SendMenuSelect bypasses
+                    // it by calling ExecuteMenuSelect directly — same fix
+                    // the live menu navigator already uses. Without this
+                    // the autoplay loop spammed menu_select main_menu
+                    // 200+ times per game_over screen, all silently no-op.
+                    _SendMenuSelect(opt);
                     GD.Print($"[STS2 MCP][AUTO] run ended ({st}) -> menu_select({opt}) to restart");
                     return true;
                 }
