@@ -10,6 +10,7 @@
 // the bit. play_live.py (Python sidecar) reads the bit each step and
 // pauses POSTs when disabled.
 
+using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -49,6 +50,7 @@ public static partial class McpMod
     {
         // Edge-triggered: only toggle when the key transitions from up to down.
         bool wasDown = false;
+        bool lastTitleState = !AutoPlayEnabled;  // force first sync
         while (true)
         {
             try
@@ -68,8 +70,35 @@ public static partial class McpMod
                 // the hotkey thread silently no-ops; the POST endpoint
                 // still works.
             }
+            // Update window title indicator whenever the flag changed.
+            if (AutoPlayEnabled != lastTitleState)
+            {
+                lastTitleState = AutoPlayEnabled;
+                _QueueTitleUpdate();
+            }
             Thread.Sleep(50);
         }
+    }
+
+    private static void _QueueTitleUpdate()
+    {
+        // Window title must change on the main thread (Godot SceneTree is
+        // not thread-safe). Push a closure onto the mod's existing main-
+        // thread queue.
+        _mainThreadQueue.Enqueue(() =>
+        {
+            try
+            {
+                // Godot 4 API: DisplayServer.WindowSetTitle(title).
+                string baseTitle = "Slay the Spire 2";
+                string indicator = AutoPlayEnabled ? " [AUTOPLAY ON]" : "";
+                DisplayServer.WindowSetTitle(baseTitle + indicator);
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[STS2 MCP] Title update failed: {ex.Message}");
+            }
+        });
     }
 
     internal static Dictionary<string, object?> HandleAutoPlayGet()

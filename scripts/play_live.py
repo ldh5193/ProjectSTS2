@@ -172,9 +172,24 @@ def _build_obs_from_live(state: dict) -> np.ndarray:
     return v
 
 
+def _find_latest_model() -> Path:
+    """Pick the most recently saved final.zip across models/sweeps/.
+    This is what the user usually wants — the freshest trained
+    policy gets used without having to hand-pick a path."""
+    root = Path("models/sweeps")
+    candidates = sorted(root.glob("*/final.zip"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        # Fallback to the MVP model if no sweep has run yet.
+        return Path("models/mvp_ppo.zip")
+    return candidates[0]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--model", type=Path, default=None,
+                        help="Path to a trained .zip model. If omitted, picks "
+                             "the most recently saved models/sweeps/*/final.zip.")
     parser.add_argument("--preset", default="tank",
                         help="Reward preset only used for log clarity; doesn't "
                              "affect the agent's policy.")
@@ -194,6 +209,9 @@ def main() -> None:
     args = parser.parse_args()
     args.log.parent.mkdir(parents=True, exist_ok=True)
 
+    if args.model is None:
+        args.model = _find_latest_model()
+        print(f"--model not given; using latest sweep checkpoint: {args.model}")
     print(f"Loading model {args.model}")
     model = MaskablePPO.load(args.model)
 
