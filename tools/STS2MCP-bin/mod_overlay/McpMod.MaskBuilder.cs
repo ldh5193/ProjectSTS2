@@ -80,9 +80,28 @@ public static partial class McpMod
             "select_card"   => SelectCardMask(state, r),
             "map"           => MapMask(state, r),
             "event"         => EventMask(state, r),
-            "menu_select"   => Sequence(Math.Min(AsList(state, "options").Count, r.Size)),
+            "menu_select"   => MenuSelectMask(state, r),
             _               => Array.Empty<int>(),
         };
+
+    private static IEnumerable<int> MenuSelectMask(Dictionary<string, object?> state, ActionRange r)
+    {
+        // Menu options are dicts {name, enabled, ...}. Honor `enabled`
+        // so the policy never picks a locked character / disabled
+        // confirm/embark/back. Empty dicts and bare strings default to
+        // enabled.
+        var opts = AsList(state, "options");
+        int n = Math.Min(opts.Count, r.Size);
+        for (int i = 0; i < n; i++)
+        {
+            if (opts[i] is Dictionary<string, object?> od)
+            {
+                if (od.TryGetValue("enabled", out var en) && en is bool eb && !eb)
+                    continue;
+            }
+            yield return i;
+        }
+    }
 
     private static IEnumerable<int> RestMask(Dictionary<string, object?> state, ActionRange r)
     {

@@ -218,7 +218,17 @@ def _combat_mask(state: dict, r: ActionRange) -> Iterable[int]:
 def _by_visible_options(key: str) -> MaskPredicate:
     def f(state: dict, r: ActionRange) -> Iterable[int]:
         opts = state.get(key) or []
-        return range(min(len(opts), r.size))
+        out: list[int] = []
+        for i, o in enumerate(opts):
+            if i >= r.size:
+                break
+            # Many menu/option lists are dicts with an `enabled` flag —
+            # honor it so the mask never marks a locked character / disabled
+            # confirm/embark legal. Bare strings are always assumed enabled.
+            if isinstance(o, dict) and o.get("enabled") is False:
+                continue
+            out.append(i)
+        return out
     return f
 
 
@@ -606,7 +616,13 @@ def decode(idx: int, state: dict) -> dict:
         opts = state.get("options") or []
         if local >= len(opts):
             return {"action": "invalid", "reason": "menu option out of range"}
-        return {"action": "menu_select", "option": opts[local]}
+        opt = opts[local]
+        # Mod expects `option` to be the string name. The live state list
+        # is a sequence of dicts like {"name": "IRONCLAD", "enabled": True}
+        # — extract the name; fall back to str(opt) for legacy fixtures.
+        if isinstance(opt, dict):
+            opt = opt.get("name") or opt.get("id") or opt.get("title") or ""
+        return {"action": "menu_select", "option": str(opt)}
 
     if r.name == "misc":
         misc = ["proceed", "advance_dialogue", "crystal_sphere_proceed",

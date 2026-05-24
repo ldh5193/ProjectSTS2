@@ -112,8 +112,23 @@ public static partial class McpMod
                 {
                     var opts = AsList(state, "options");
                     if (local >= opts.Count) return null;
-                    string opt = opts[local]?.ToString() ?? "";
-                    return ("menu_select", PayloadString("option", opt));
+                    string optName;
+                    if (opts[local] is Dictionary<string, object?> od)
+                    {
+                        // Live mod state encodes each menu entry as a dict
+                        // {name, enabled, ...}. mod's ExecuteMenuSelect
+                        // expects the string `name`, not the dict — the old
+                        // code sent the dict's ToString() and every menu
+                        // click silently no-op'd.
+                        optName = AsString(od, "name", "");
+                        if (string.IsNullOrEmpty(optName))
+                            optName = AsString(od, "id", AsString(od, "title", ""));
+                    }
+                    else
+                    {
+                        optName = opts[local]?.ToString() ?? "";
+                    }
+                    return ("menu_select", PayloadString("option", optName));
                 }
 
             case "misc":
