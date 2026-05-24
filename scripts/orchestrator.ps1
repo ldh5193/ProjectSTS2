@@ -75,9 +75,15 @@ while ($true) {
         # AutoPlay sometimes lands as OFF after natural game restarts
         # (the in-mod toggle defaults to False on boot and the post-launch
         # POST occasionally misses the mod-ready window). Cheap to re-POST.
+        #
+        # IMPORTANT: query via GET, not POST {} — POST with an empty body
+        # TOGGLES AutoPlayEnabled (mod's HandleAutoPlayPost line 1255
+        # interprets missing "enabled" key as a toggle request). Using
+        # POST {} for querying was flipping the state OFF on every tick
+        # and causing a loop where orchestrator alternated ON ↔ OFF.
         try {
-            $cur = Invoke-RestMethod -Uri "$mcpUrl/api/v1/autoplay" -Method Post `
-                -ContentType 'application/json' -Body '{}' -ErrorAction Stop
+            $cur = Invoke-RestMethod -Uri "$mcpUrl/api/v1/autoplay" -Method Get `
+                -TimeoutSec 3 -ErrorAction Stop
             if (-not $cur.enabled) {
                 Invoke-RestMethod -Uri "$mcpUrl/api/v1/autoplay" -Method Post `
                     -ContentType 'application/json' `
