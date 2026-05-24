@@ -378,7 +378,12 @@ public static partial class McpMod
             {
                 bool canUse = AsBool(potion, "can_use_in_combat", true);
                 if (canUse) yield return slot;
-                yield return 3 + slot;
+                // discard_potion in combat is almost never optimal — wastes
+                // a turn and the potion. Observed live: untrained policy
+                // alternates discard ↔ use forever in elite round 1 with
+                // 1 playable card available. Drop it from the combat mask
+                // and force the policy toward play_card / end_turn.
+                // Discard stays available on map (room-cleared cleanup).
             }
             else
             {

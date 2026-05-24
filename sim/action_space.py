@@ -442,7 +442,10 @@ def _potion_mask(state: dict, r: ActionRange) -> Iterable[int]:
             can_use = potion.get("can_use_in_combat", True) if isinstance(potion, dict) else True
             if can_use:
                 out.append(slot)
-            out.append(3 + slot)
+            # discard_potion in combat is almost never optimal — drop it
+            # from the mask so the policy doesn't get stuck alternating
+            # discard↔use when better actions exist. Discard stays
+            # available on map for between-room loadout management.
         else:
             out.append(3 + slot)  # map: discard-only
     return out
