@@ -383,33 +383,33 @@ def _rest_mask(state: dict, r: ActionRange) -> Iterable[int]:
 
 def _potion_mask(state: dict, r: ActionRange) -> Iterable[int]:
     """Potion range layout: 0..2 use_potion(slot), 3..5 discard_potion(slot).
-    Combat-only potions are only legal when state_type is a battle. Discard
-    is legal anywhere a potion exists (mirrors the in-game belt UI). 6..7
-    reserved per the action_space doc.
 
-    Empty `state.player.potions` (the sim's default until potion rewards
-    are real) yields nothing — the predicate is a no-op for now and
-    fires properly the moment the live mod sees the player carry a
-    potion.
+    Hard gated by state_type — the live mod's potion handlers no-op on
+    overlay screens (rewards, relic_select, bundle_select, card_select,
+    ...) and the policy then loops on the same slot forever. Only fire:
+        - combat (monster/elite/boss): use + discard
+        - map: discard only (belt loadout management between rooms)
+    Other states get zero potion slots.
     """
-    player = state.get("player") or {}
-    potions = player.get("potions") or []
     st = state.get("state_type", "")
     in_combat = st in ("monster", "elite", "boss")
+    on_map = st == "map"
+    if not (in_combat or on_map):
+        return ()
+    player = state.get("player") or {}
+    potions = player.get("potions") or []
     out: list[int] = []
     for slot in range(min(3, len(potions))):
         potion = potions[slot]
         if not potion:
             continue
-        if isinstance(potion, dict):
-            usage = str(potion.get("usage", "AnyTime")).lower()
-            can_use_now = potion.get("can_use_in_combat", True) \
-                          if in_combat else usage in ("anytime", "outside_combat", "anywhere")
+        if in_combat:
+            can_use = potion.get("can_use_in_combat", True) if isinstance(potion, dict) else True
+            if can_use:
+                out.append(slot)
+            out.append(3 + slot)
         else:
-            can_use_now = in_combat  # be conservative for plain-string sim potions
-        if can_use_now:
-            out.append(slot)              # use_potion(slot)
-        out.append(3 + slot)               # discard_potion(slot) — always legal
+            out.append(3 + slot)  # map: discard-only
     return out
 
 

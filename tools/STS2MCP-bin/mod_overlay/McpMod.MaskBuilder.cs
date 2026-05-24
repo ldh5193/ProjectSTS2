@@ -302,21 +302,35 @@ public static partial class McpMod
     private static IEnumerable<int> PotionMask(Dictionary<string, object?> state, ActionRange r)
     {
         // Range layout: 0..2 use_potion(slot), 3..5 discard_potion(slot),
-        // 6..7 reserved. Combat-only potions fire use_ only in combat;
-        // every occupied slot is always eligible for discard_.
-        var player = AsDict(state, "player");
-        var potions = AsList(player, "potions");
+        // 6..7 reserved.
+        //
+        // Hard gate: the mod's ExecuteUsePotion / ExecuteDiscardPotion
+        // handlers silently no-op on overlay screens (rewards, relic_select,
+        // bundle_select, card_select, ...) — the policy then spams the
+        // same slot forever. Restrict potion actions to states where
+        // they actually affect the game: combat (use + discard) and map
+        // (discard only, for room-cleared loadout management).
         string st = AsString(state, "state_type", "");
         bool inCombat = st == "monster" || st == "elite" || st == "boss";
+        bool onMap    = st == "map";
+        if (!inCombat && !onMap) yield break;
+
+        var player = AsDict(state, "player");
+        var potions = AsList(player, "potions");
         for (int slot = 0; slot < 3 && slot < potions.Count; slot++)
         {
             if (potions[slot] is not Dictionary<string, object?> potion) continue;
-            string usage = AsString(potion, "usage", "AnyTime").ToLowerInvariant();
-            bool canUseNow = inCombat
-                ? AsBool(potion, "can_use_in_combat", true)
-                : (usage == "anytime" || usage == "outside_combat" || usage == "anywhere");
-            if (canUseNow) yield return slot;           // use_potion(slot)
-            yield return 3 + slot;                       // discard_potion(slot)
+            if (inCombat)
+            {
+                bool canUse = AsBool(potion, "can_use_in_combat", true);
+                if (canUse) yield return slot;
+                yield return 3 + slot;
+            }
+            else
+            {
+                // Map: discard only — keeps the use-in-combat habit clean.
+                yield return 3 + slot;
+            }
         }
     }
 
