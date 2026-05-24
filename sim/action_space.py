@@ -72,7 +72,12 @@ RANGES: tuple[ActionRange, ...] = (
     ),
     ActionRange(
         "card_reward", 72, 6,
-        state_types=("card_select", "card_reward"),
+        # POST-COMBAT only — NCardRewardSelectionScreen uses
+        # select_card_reward. Grid/choose-style pickers (state_type =
+        # card_select) need the `select_card` range + `select_card`
+        # action instead; they used to share this range and silently
+        # failed because the mod-side handler rejects the wrong screen.
+        state_types=("card_reward",),
         doc="0..4=select_card_reward(idx); 5=skip_card_reward.",
     ),
     ActionRange(
@@ -304,21 +309,44 @@ def _misc_mask(state: dict, r: ActionRange) -> Iterable[int]:
 
 
 def _card_reward_mask(state: dict, r: ActionRange) -> Iterable[int]:
-    """Card-reward mask: mod nests cards under `card_reward.cards`.
-    Also allow the `card_select` top-level list shape as a fallback.
-    Index r.size - 1 is the skip slot (covered by predicate only if
-    can_skip=true).
+    """POST-COMBAT card reward (NCardRewardSelectionScreen).
+
+    Reads state.card_reward.cards exclusively — grid-style pickers
+    (card_select state_type) use `_select_card_mask` instead because
+    the mod-side action differs (select_card vs select_card_reward).
     """
     reward = state.get("card_reward") or {}
-    cards = reward.get("cards") if isinstance(reward, dict) else None
-    if not cards:
-        cards = state.get("card_select") or []
+    if not isinstance(reward, dict):
+        return ()
+    cards = reward.get("cards") or []
     picks = list(range(min(len(cards), r.size - 1)))
-    # Skip slot is at local index 5 in our 6-wide range; mod only allows
-    # skipping when can_skip is true.
-    if isinstance(reward, dict) and reward.get("can_skip"):
+    if reward.get("can_skip"):
         picks.append(r.size - 1)
     return picks
+
+
+def _select_card_mask(state: dict, r: ActionRange) -> Iterable[int]:
+    """Grid / choose-card picker (NCardGridSelectionScreen,
+    NChooseACardSelectionScreen). Smith upgrade, transform, event
+    rewards, etc. Slot layout: 0..9 select_card(idx), 10 confirm_selection
+    (multi-pick screens only), 11 cancel/skip.
+
+    Reads state.card_select.cards (NOT raw state.card_select — both
+    StateBuilder variants nest the card list under .cards).
+    """
+    cs = state.get("card_select")
+    if not isinstance(cs, dict):
+        return ()
+    cards = cs.get("cards") or []
+    out: list[int] = []
+    for i, c in enumerate(cards[:10]):
+        idx = c.get("index", i) if isinstance(c, dict) else i
+        out.append(int(idx))
+    if cs.get("can_confirm"):
+        out.append(10)
+    if cs.get("can_skip") or cs.get("can_cancel"):
+        out.append(11)
+    return out
 
 
 def _hand_select_mask(state: dict, r: ActionRange) -> Iterable[int]:
@@ -438,6 +466,7 @@ _PREDICATES: dict[str, MaskPredicate] = {
     "misc": _misc_mask,
     "relic_select": _relic_select_mask,
     "bundle_select": _bundle_select_mask,
+    "select_card": _select_card_mask,
     "map": lambda state, r: range(min(
         len((state.get("map") or {}).get("next_options")
             or (state.get("map") or {}).get("options") or []),

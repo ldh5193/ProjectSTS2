@@ -73,19 +73,50 @@ def test_mask_in_combat_allows_end_turn_targeted_strike_and_self_defend():
 
 
 def test_mask_in_card_reward_marks_visible_picks_and_skip():
+    """Post-combat card reward (NCardRewardSelectionScreen).
+    state_type = 'card_reward' (NOT 'card_select' which is the grid
+    picker — that one routes through the select_card range now)."""
     state = {
-        "state_type": "card_select",
-        "card_select": [
-            {"id": "iron_wave"}, {"id": "inflame"}, {"id": "anger"},
-        ],
+        "state_type": "card_reward",
+        "card_reward": {
+            "cards": [
+                {"id": "iron_wave"}, {"id": "inflame"}, {"id": "anger"},
+            ],
+            "can_skip": True,
+        },
     }
     mask = build_mask(state)
-    # card_reward starts at 72, three picks legal (72, 73, 74)
     cr = range_named("card_reward")
     assert mask[cr.start] and mask[cr.start + 1] and mask[cr.start + 2]
     assert mask[cr.start + 3] is False
-    # skip lives at the end of the range (local 5)
-    assert mask[cr.start + 5] is False  # skip is masked because predicate yields 0..2 only
+    # skip slot legal because can_skip=True
+    assert mask[cr.start + 5] is True
+
+
+def test_mask_in_card_select_uses_select_card_range():
+    """Smith / transform / event 'choose-a-card' (state_type = 'card_select')
+    fires the dedicated select_card range, not card_reward — different
+    mod API on the action side (select_card vs select_card_reward)."""
+    state = {
+        "state_type": "card_select",
+        "card_select": {
+            "cards": [
+                {"index": 0, "id": "strike"},
+                {"index": 1, "id": "defend"},
+            ],
+            "can_confirm": True,
+            "can_cancel": True,
+        },
+    }
+    mask = build_mask(state)
+    sc = range_named("select_card")
+    assert mask[sc.start + 0] is True
+    assert mask[sc.start + 1] is True
+    assert mask[sc.start + 10] is True   # confirm
+    assert mask[sc.start + 11] is True   # cancel
+    # card_reward range should NOT fire on a card_select state
+    cr = range_named("card_reward")
+    assert all(m is False for m in mask[cr.start:cr.stop])
 
 
 def test_mask_in_menu_uses_options_list():

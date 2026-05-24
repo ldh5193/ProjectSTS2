@@ -36,7 +36,7 @@ public static partial class McpMod
     {
         new("combat",         0,   61, new[] {"monster", "elite", "boss"}),
         new("hand_select",    61,  11, new[] {"hand_select"}),
-        new("card_reward",    72,  6,  new[] {"card_select", "card_reward"}),
+        new("card_reward",    72,  6,  new[] {"card_reward"}),  // POST-COMBAT only — NCardRewardSelectionScreen
         new("rewards",        78,  8,  new[] {"rewards"}),
         new("relic_select",   86,  6,  new[] {"relic_select"}),
         new("bundle_select",  92,  12, new[] {"bundle_select"}),  // 0..9 pick bundle, 10 confirm, 11 cancel
@@ -77,6 +77,7 @@ public static partial class McpMod
             "misc"          => MiscMask(state),
             "relic_select"  => RelicSelectMask(state, r),
             "bundle_select" => BundleSelectMask(state, r),
+            "select_card"   => SelectCardMask(state, r),
             "map"           => MapMask(state, r),
             "event"         => EventMask(state, r),
             "menu_select"   => Sequence(Math.Min(AsList(state, "options").Count, r.Size)),
@@ -133,19 +134,40 @@ public static partial class McpMod
 
     private static IEnumerable<int> CardRewardMask(Dictionary<string, object?> state, ActionRange r)
     {
-        List<object?> cards = new();
-        if (state.TryGetValue("card_reward", out var cr) && cr is Dictionary<string, object?> crd)
+        // ONLY fires for state_type == "card_reward" — the post-combat
+        // NCardRewardSelectionScreen, which uses the `select_card_reward`
+        // mod API. NCardGridSelectionScreen / NChooseACardSelectionScreen
+        // (state_type "card_select") needs a different action and goes
+        // through SelectCardMask below.
+        var cr = AsDict(state, "card_reward");
+        var cards = AsList(cr, "cards");
+        int n = Math.Min(cards.Count, r.Size - 1);
+        for (int i = 0; i < n; i++) yield return i;
+        if (AsBool(cr, "can_skip")) yield return r.Size - 1;
+    }
+
+    private static IEnumerable<int> SelectCardMask(Dictionary<string, object?> state, ActionRange r)
+    {
+        // Grid / choose-style card pickers — smith upgrade, transform,
+        // event "choose a card to gain", etc. Slot layout: 0..9 pick card,
+        // 10 confirm_selection (multi-pick screens only — `can_confirm`
+        // flag in state), 11 cancel/skip (`can_skip` or `can_cancel`).
+        //
+        // Reads state.card_select.cards (NOT raw state.card_select — the
+        // mod's StateBuilder.BuildCardSelectState / BuildChooseCardState
+        // both nest the card list under .cards).
+        var cs = AsDict(state, "card_select");
+        var cards = AsList(cs, "cards");
+        int n = Math.Min(cards.Count, 10);
+        for (int i = 0; i < n; i++)
         {
-            cards = AsList(crd, "cards");
-            if (cards.Count == 0) cards = AsList(state, "card_select");
-            int n = Math.Min(cards.Count, r.Size - 1);
-            for (int i = 0; i < n; i++) yield return i;
-            if (AsBool(crd, "can_skip")) yield return r.Size - 1;
-            yield break;
+            if (cards[i] is Dictionary<string, object?> cd)
+                yield return ToInt(cd, "index", i);
+            else
+                yield return i;
         }
-        cards = AsList(state, "card_select");
-        int m = Math.Min(cards.Count, r.Size - 1);
-        for (int i = 0; i < m; i++) yield return i;
+        if (AsBool(cs, "can_confirm")) yield return 10;
+        if (AsBool(cs, "can_skip") || AsBool(cs, "can_cancel")) yield return 11;
     }
 
     private static IEnumerable<int> RewardsMask(Dictionary<string, object?> state, ActionRange r)
