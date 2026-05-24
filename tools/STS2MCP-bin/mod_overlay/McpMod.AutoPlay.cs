@@ -18,11 +18,19 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
 using Godot;
+using System.Linq;
 using MegaCrit.Sts2.addons.mega_text;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.Events;
 using MegaCrit.Sts2.Core.Nodes.RestSite;
+using MegaCrit.Sts2.Core.Nodes.Rewards;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
+using MegaCrit.Sts2.Core.Nodes.Screens;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
+using MegaCrit.Sts2.Core.Nodes.Screens.Map;
+using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
+using MegaCrit.Sts2.Core.Map;
 
 namespace STS2_MCP;
 
@@ -742,10 +750,65 @@ public static partial class McpMod
                     }
                 }
                 break;
-            // map / card_reward / rewards / shop / relic_select still use
-            // the text-only advisory band — node lookups for those overlays
-            // need scene-specific helpers we haven't ported from
-            // McpMod.Actions yet. Adding incrementally is straightforward.
+            case "map":
+                if (action == "choose_map_node" && data.TryGetValue("index", out var mi)
+                    && mi.TryGetInt32(out int mapIdx))
+                {
+                    var mapScreen = NMapScreen.Instance;
+                    if (mapScreen != null)
+                    {
+                        var travelable = FindAll<NMapPoint>(mapScreen)
+                            .Where(mp => mp.State == MapPointState.Travelable && mp.Point != null)
+                            .OrderBy(mp => mp.Point!.coord.col)
+                            .ToList();
+                        if (mapIdx >= 0 && mapIdx < travelable.Count)
+                            _HighlightNode(travelable[mapIdx]);
+                    }
+                }
+                break;
+            case "rewards":
+                if (action == "claim_reward" && data.TryGetValue("index", out var ri2)
+                    && ri2.TryGetInt32(out int rewardIdx))
+                {
+                    if (NOverlayStack.Instance?.Peek() is NRewardsScreen rs)
+                    {
+                        var btns = FindAll<NRewardButton>(rs)
+                            .Where(b => b.IsEnabled && b.Reward != null).ToList();
+                        if (rewardIdx >= 0 && rewardIdx < btns.Count)
+                            _HighlightNode(btns[rewardIdx]);
+                    }
+                }
+                break;
+            case "card_select":
+            case "card_reward":
+                if (action == "select_card_reward" && data.TryGetValue("card_index", out var ci2)
+                    && ci2.TryGetInt32(out int crIdx))
+                {
+                    if (NOverlayStack.Instance?.Peek() is NCardRewardSelectionScreen scr)
+                    {
+                        var holders = FindAllSortedByPosition<NCardHolder>(scr);
+                        if (crIdx >= 0 && crIdx < holders.Count)
+                            _HighlightNode(holders[crIdx]);
+                    }
+                }
+                break;
+            case "event":
+            case "fake_merchant":
+                if (action == "choose_event_option" && data.TryGetValue("index", out var ei)
+                    && ei.TryGetInt32(out int evtIdx))
+                {
+                    var evtRoom = NEventRoom.Instance;
+                    if (evtRoom != null)
+                    {
+                        var btns = FindAll<NEventOptionButton>(evtRoom);
+                        if (evtIdx >= 0 && evtIdx < btns.Count)
+                            _HighlightNode(btns[evtIdx]);
+                    }
+                }
+                break;
+            // shop / relic_select / bundle_select / treasure still use the
+            // text-only advisory band — UI lookups for those overlays land
+            // in a follow-up.
         }
     }
 
