@@ -126,6 +126,13 @@ def test_every_known_mod_verb_is_reachable():
         body = decode(idx, state)
         assert body.get("action") == verb, \
             f"index {idx} in state {state.get('state_type')} -> {body}, expected {verb}"
+        # All non-special body fields besides "action" should be `index` or
+        # a small whitelist (card_index, target, slot, option, coord, tool).
+        ALLOWED_KEYS = {"action", "index", "card_index", "target",
+                        "slot", "option", "coord", "tool"}
+        unexpected = set(body) - ALLOWED_KEYS
+        assert not unexpected, \
+            f"verb {verb} body has unexpected fields {unexpected}: {body}"
         seen.add(verb)
     # All 24 distinct mod verbs covered (28 from §3.1 minus duplicates like
     # `proceed` reused across screens and `crystal_sphere_set_tool` /

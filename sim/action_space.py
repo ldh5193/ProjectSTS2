@@ -139,6 +139,9 @@ RANGES: tuple[ActionRange, ...] = (
     ),
     ActionRange(
         "misc", 238, 8,
+        # Empty state_types tuple = always considered eligible. The
+        # _misc_mask predicate is what decides if proceed/advance-dialogue
+        # is actually legal in the current state.
         state_types=(),
         doc="0=proceed; 1=advance_dialogue; 2=crystal_sphere_proceed; "
             "3=undo_end_turn (MP only); 4..7=reserved.",
@@ -203,13 +206,73 @@ def _by_visible_options(key: str) -> MaskPredicate:
     return f
 
 
+def _event_mask(state: dict, r: ActionRange) -> Iterable[int]:
+    """Event mask: mod exposes options inside `event.options` (not top-level)."""
+    event = state.get("event") or {}
+    opts = event.get("options") or state.get("event") or []
+    return range(min(len(opts), r.size))
+
+
+def _rewards_mask(state: dict, r: ActionRange) -> Iterable[int]:
+    """Multi-reward screen: mod nests `items` under `rewards` dict and
+    flips `can_proceed` when nothing left to claim. We expose the
+    claim slots here; the proceed-after-empty case is handled by
+    _misc_mask."""
+    rewards = state.get("rewards")
+    if isinstance(rewards, dict):
+        items = rewards.get("items") or []
+    elif isinstance(rewards, list):
+        items = rewards
+    else:
+        items = []
+    return range(min(len(items), r.size))
+
+
+def _misc_mask(state: dict, r: ActionRange) -> Iterable[int]:
+    """Misc range covers proceed/advance-dialogue/etc. We activate
+    `proceed` (local 0) whenever the live mod state has stalled with
+    an explicit can_proceed flag (rewards screen with empty items,
+    event in_dialogue, etc.)."""
+    st = state.get("state_type")
+    rewards = state.get("rewards")
+    if st == "rewards" and isinstance(rewards, dict) \
+            and rewards.get("can_proceed") and not (rewards.get("items") or []):
+        return [0]  # proceed
+    event = state.get("event") or {}
+    if st == "event" and event.get("in_dialogue"):
+        return [1]  # advance_dialogue
+    return []
+
+
+def _card_reward_mask(state: dict, r: ActionRange) -> Iterable[int]:
+    """Card-reward mask: mod nests cards under `card_reward.cards`.
+    Also allow the `card_select` top-level list shape as a fallback.
+    Index r.size - 1 is the skip slot (covered by predicate only if
+    can_skip=true).
+    """
+    reward = state.get("card_reward") or {}
+    cards = reward.get("cards") if isinstance(reward, dict) else None
+    if not cards:
+        cards = state.get("card_select") or []
+    picks = list(range(min(len(cards), r.size - 1)))
+    # Skip slot is at local index 5 in our 6-wide range; mod only allows
+    # skipping when can_skip is true.
+    if isinstance(reward, dict) and reward.get("can_skip"):
+        picks.append(r.size - 1)
+    return picks
+
+
 _PREDICATES: dict[str, MaskPredicate] = {
     "combat": _combat_mask,
-    "card_reward": _by_visible_options("card_select"),
-    "rewards": _by_visible_options("rewards"),
+    "card_reward": _card_reward_mask,
+    "rewards": _rewards_mask,
+    "misc": _misc_mask,
     "relic_select": _by_visible_options("relic_select"),
-    "map": lambda state, r: range(min(len((state.get("map") or {}).get("options") or []), r.size)),
-    "event": _by_visible_options("event"),
+    "map": lambda state, r: range(min(
+        len((state.get("map") or {}).get("next_options")
+            or (state.get("map") or {}).get("options") or []),
+        r.size)),
+    "event": _event_mask,
     "menu_select": _by_visible_options("options"),
 }
 
@@ -261,10 +324,15 @@ def decode(idx: int, state: dict) -> dict:
         enemies = (state.get("battle") or {}).get("enemies") or []
         if enemy_slot >= len(enemies):
             return {"action": "invalid", "reason": "enemy slot vacant"}
+        # Mod expects target as the enemy's *string* entity_id, not the
+        # numeric combat_id. Fall back to combat_id only if entity_id
+        # is missing (older mod versions / test fixtures).
+        enemy = enemies[enemy_slot]
+        target = enemy.get("entity_id") or str(enemy.get("combat_id", ""))
         return {
             "action": "play_card",
             "card_index": card_slot,
-            "target": enemies[enemy_slot].get("combat_id") or enemies[enemy_slot].get("entity_id"),
+            "target": target,
         }
 
     if r.name == "card_reward":
@@ -273,36 +341,32 @@ def decode(idx: int, state: dict) -> dict:
         return {"action": "select_card_reward", "card_index": local}
 
     if r.name == "rewards":
-        return {"action": "claim_reward", "reward_index": local}
+        return {"action": "claim_reward", "index": local}
 
     if r.name == "relic_select":
         if local == 5:
             return {"action": "skip_relic_selection"}
         # Treasure rooms use claim_treasure_relic; ordinary relic picks
-        # (event-spawned, boss-relic style) use select_relic. The mod
-        # exposes both via state_type — treasure rooms set state_type to
-        # "treasure" rather than reusing relic_select, so we route by
-        # state_type to keep the right verb on the wire.
+        # (event-spawned, boss-relic style) use select_relic.
         if state.get("state_type") == "treasure":
-            return {"action": "claim_treasure_relic", "relic_index": local}
-        return {"action": "select_relic", "relic_index": local}
+            return {"action": "claim_treasure_relic", "index": local}
+        return {"action": "select_relic", "index": local}
 
     if r.name == "map":
-        return {"action": "choose_map_node", "node_index": local}
+        return {"action": "choose_map_node", "index": local}
 
     if r.name == "event":
         if local == 7:
             return {"action": "advance_dialogue"}
-        return {"action": "choose_event_option", "option": local}
+        return {"action": "choose_event_option", "index": local}
 
     if r.name == "rest":
-        opts = ["rest", "upgrade", "shop", "dig", "key", "lift"]
-        return {"action": "choose_rest_option", "option": opts[local]}
+        return {"action": "choose_rest_option", "index": local}
 
     if r.name == "shop":
         if local == 15:
             return {"action": "proceed"}
-        return {"action": "shop_purchase", "item_index": local}
+        return {"action": "shop_purchase", "index": local}
 
     if r.name == "potion":
         if local < 3:
@@ -321,14 +385,14 @@ def decode(idx: int, state: dict) -> dict:
             return {"action": "confirm_bundle_selection"}
         if local == 11:
             return {"action": "cancel_bundle_selection"}
-        return {"action": "select_bundle", "bundle_index": local}
+        return {"action": "select_bundle", "index": local}
 
     if r.name == "select_card":
         if local == 10:
             return {"action": "confirm_selection"}
         if local == 11:
             return {"action": "cancel_selection"}
-        return {"action": "select_card", "option_index": local}
+        return {"action": "select_card", "index": local}
 
     if r.name == "crystal_sphere":
         if local < 8:

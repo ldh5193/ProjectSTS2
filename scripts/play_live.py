@@ -149,10 +149,17 @@ def _build_obs_from_live(state: dict) -> np.ndarray:
     # Pending card reward (3)
     if st in ("card_select", "card_reward"):
         choices = state.get("card_select") or state.get("card_reward") or []
+        # Mod sometimes returns list of dicts (with .type) and sometimes
+        # a flat list of strings. Tolerate both.
         v[cursor + 0] = len(choices) / 3.0
-        v[cursor + 1] = sum(1 for c in choices
-                            if str(c.get("type", "")).lower() == "attack") \
-                       / max(1, len(choices))
+        attack_n = 0
+        for c in choices:
+            if isinstance(c, dict):
+                if str(c.get("type", "")).lower() == "attack":
+                    attack_n += 1
+            elif "STRIKE" in str(c).upper() or "ATTACK" in str(c).upper():
+                attack_n += 1
+        v[cursor + 1] = attack_n / max(1, len(choices))
     cursor += 3
 
     # Map fanout (1)
