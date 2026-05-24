@@ -129,6 +129,10 @@ public static partial class McpMod
     // upgrade-2, etc.) accumulate selections instead of toggling slot 0
     // on and off forever.
     private static int _cardSelectPickedSlot = -1;
+    // Count consecutive rewards ↔ card_reward alternations — when the
+    // policy opens a card reward then skips it then immediately picks
+    // it again (loop guard can't catch because state_type alternates).
+    private static int _rewardsAltCount = 0;
     private const int HandSelectRetryTicks = 5;  // ~1 s @ 200 ms tick
 
     // Loop-detector: track the last (state_type, action_index) we executed
@@ -546,6 +550,43 @@ public static partial class McpMod
                 return false;
             }
             _cardSelectTicksSinceSelect = -1;
+
+            // Cross-state loop fallback: rewards ↔ card_reward alternation
+            // (policy picks claim_reward(card) → opens card_reward overlay →
+            // skip → returns to rewards → repeat) doesn't trip the
+            // single-state loop guard because the (state, idx) key swings
+            // between the two states. After N alternations between rewards
+            // and card_reward with no overall state advance, force-fire
+            // misc proceed (slot 0 of misc range = idx 238) to escape.
+            if ((st == "rewards" || st == "card_reward") && _lastStateAction != null)
+            {
+                bool isAltern = (st == "rewards" && _lastStateAction.StartsWith("card_reward:"))
+                             || (st == "card_reward" && _lastStateAction.StartsWith("rewards:"));
+                if (isAltern)
+                {
+                    _rewardsAltCount++;
+                    if (_rewardsAltCount >= 6)
+                    {
+                        // Try proceed via the same path the rewards-screen
+                        // proceed button uses. ExecuteProceed re-validates
+                        // so it's safe to attempt.
+                        try { ExecuteAction("proceed", new Dictionary<string, JsonElement>()); }
+                        catch { }
+                        GD.Print($"[STS2 MCP][AUTO] {st} -> proceed (rewards↔card_reward loop {_rewardsAltCount} — force escape)");
+                        _rewardsAltCount = 0;
+                        _lastStateAction = null;
+                        return true;
+                    }
+                }
+                else if (st != "rewards" && st != "card_reward")
+                {
+                    _rewardsAltCount = 0;
+                }
+            }
+            else if (st != "rewards" && st != "card_reward")
+            {
+                _rewardsAltCount = 0;
+            }
 
             bool[] mask = BuildMask(state);
             // Loop suppression: if we've repeated the same (state, idx) too
