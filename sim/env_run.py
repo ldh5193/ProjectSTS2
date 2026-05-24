@@ -107,6 +107,19 @@ REWARD_PRESETS: dict[str, RewardConfig] = {
         combat_win=0.08, elite_kill=0.25, boss_kill=2.0, act_completion=0.5,
         run_victory=5.0, floor_advance=0.02, living_cost=0.0, death=-0.5,
     ),
+    # Cycle E v3 — seeded by the 7th sweep where survival (HP shaping) jumped
+    # from 7.5% → 17.5% win after Thorns/Plating started actually defending.
+    # These chase the "HP-aware" lane harder.
+    "survival_v2": RewardConfig(
+        combat_win=0.10, elite_kill=0.40, boss_kill=4.0, act_completion=1.5,
+        run_victory=12.0, floor_advance=0.01, living_cost=-0.0005, death=-3.0,
+        hp_delta_weight=0.01,  # 2× the survival baseline (0.005)
+    ),
+    "tank": RewardConfig(
+        combat_win=0.20, elite_kill=0.50, boss_kill=3.0, act_completion=1.0,
+        run_victory=10.0, floor_advance=0.005, living_cost=-0.001, death=-2.0,
+        hp_delta_weight=0.02,
+    ),
 }
 
 
