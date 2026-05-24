@@ -144,14 +144,17 @@ def run_one_experiment(preset: str, ascension: int, workers: int, steps: int,
     VecCls = SubprocVecEnv if workers > 1 else DummyVecEnv
     vec_env = VecCls(factories)
 
-    # Bumped n_steps from 256 to 1024 (full-run episodes are 100+ steps so
-    # the smaller rollout was sampling barely two episodes per update and
-    # collapsing to a fixed policy in just a few iterations). ent_coef 0.01
-    # keeps exploration alive past the first sharp drop.
+    # n_steps 1024 + ent_coef 0.01 set after 3rd sweep; tunable via env vars
+    # for cycle-E v5 hyperparameter sweeps without rewriting the script.
+    import os
+    lr = float(os.getenv("PPO_LR", "3e-4"))
+    ent = float(os.getenv("PPO_ENT", "0.01"))
+    n_steps = int(os.getenv("PPO_N_STEPS", "1024"))
+    batch = int(os.getenv("PPO_BATCH", "128"))
     model = MaskablePPO("MlpPolicy", vec_env, verbose=0, seed=seed,
                         tensorboard_log=str(tb_dir) if tb_dir else None,
-                        n_steps=1024, batch_size=128, ent_coef=0.01,
-                        learning_rate=3e-4)
+                        n_steps=n_steps, batch_size=batch, ent_coef=ent,
+                        learning_rate=lr)
 
     callback = PeriodicEvalCallback(ascension, reward_cfg,
                                     eval_every, eval_episodes, label=preset)
