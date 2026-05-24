@@ -246,16 +246,24 @@ public static partial class McpMod
     private static IEnumerable<int> MiscMask(Dictionary<string, object?> state)
     {
         string st = AsString(state, "state_type", "");
-        // Rewards proceed fires only when NO claimable item is left.
-        // "Claimable" mirrors RewardsMask's filter (e.g. potion items
-        // are dropped when the belt is full) so the policy doesn't
-        // bail on a card / relic / gold pickup it should still grab,
-        // but ALSO doesn't deadlock when the only remaining items are
-        // potions we can't take.
+        // Rewards proceed: always expose it when can_proceed=true.
+        // Earlier code gated proceed behind "0 claimable items remain",
+        // but that deadlocked on a recurring 2-item screen (gold +
+        // card) — the policy fixated on claim_reward(card) → opens
+        // card_reward overlay → skip → returns to rewards with gold
+        // unclaimed → infinite loop because neither claim_reward(gold)
+        // nor proceed was chosen. Loop guard can't catch this because
+        // the two actions live in DIFFERENT states (rewards / card_reward)
+        // so the (state, idx) key never repeats.
+        //
+        // Letting the policy take proceed early occasionally costs a
+        // gold/relic pickup, but that's far cheaper than the alternative
+        // (whole run dies on a rewards screen until the cron kills the
+        // game). With more training the policy learns to claim first
+        // anyway.
         if (st == "rewards" && state.TryGetValue("rewards", out var rv)
             && rv is Dictionary<string, object?> rd
-            && AsBool(rd, "can_proceed")
-            && _CountClaimableRewards(state, rd) == 0)
+            && AsBool(rd, "can_proceed"))
             yield return 0;
         // Rest sites: after the player picks an option (and any extra picks
         // a relic/item granted, e.g. dual-rest effects), the rest screen
