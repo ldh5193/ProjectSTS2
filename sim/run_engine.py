@@ -104,7 +104,11 @@ def reachable_map_nodes(rs: RunState) -> list[MapNode]:
     """Return the list of map nodes the agent can transition into.
 
     Floor 0 (pre-map) allows entering any floor-1 node; otherwise the
-    current node's `children` list is consulted.
+    current node's `children` list is consulted. children store
+    (floor, x) pairs where x is the map-grid column, NOT a python list
+    index — so we search the next floor's nodes by `.x` rather than
+    indexing by position. This is important because narrow floors
+    (treasure / boss) collapse to a single node at col 3.
     """
     rmap = rs.maps[rs.act - 1]
     if rmap is None:
@@ -116,11 +120,19 @@ def reachable_map_nodes(rs: RunState) -> list[MapNode]:
         return []
     if floor == rmap.boss_floor:
         return []
-    node = rmap.floors[floor - 1][x] if x < len(rmap.floors[floor - 1]) else None
-    if node is None:
+    floor_nodes = rmap.floors[floor - 1]
+    cur = next((n for n in floor_nodes if n.x == x), None)
+    if cur is None:
         return []
-    return [rmap.floors[f - 1][nx] for (f, nx) in node.children
-            if f - 1 < len(rmap.floors) and nx < len(rmap.floors[f - 1])]
+    out: list[MapNode] = []
+    for (f, nx) in cur.children:
+        if not (1 <= f <= rmap.boss_floor):
+            continue
+        for n in rmap.floors[f - 1]:
+            if n.x == nx:
+                out.append(n)
+                break
+    return out
 
 
 def step(rs: RunState, body: dict) -> StepResult:
