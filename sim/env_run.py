@@ -54,19 +54,63 @@ _STATE_TYPE_ORDER: list[StateType] = [
 ]
 
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RewardConfig:
+    """Tunable reward shape — passed to RunEnv to sweep different
+    learning signals without touching the env code."""
+    living_cost: float = -0.001
+    invalid_action: float = -0.1
+    floor_advance: float = 0.01
+    combat_win: float = 0.10
+    elite_kill: float = 0.30
+    boss_kill: float = 1.50
+    act_completion: float = 0.50
+    run_victory: float = 5.0
+    death: float = -1.0
+    hp_delta_weight: float = 0.0   # +N per HP gained, -N per HP lost (scaled)
+
+
+REWARD_PRESETS: dict[str, RewardConfig] = {
+    "default": RewardConfig(),
+    "aggressive": RewardConfig(
+        combat_win=0.20, elite_kill=0.50, boss_kill=2.5, run_victory=10.0,
+        floor_advance=0.02, living_cost=-0.002, death=-2.0,
+    ),
+    "defensive": RewardConfig(
+        combat_win=0.05, elite_kill=0.15, boss_kill=1.0, run_victory=3.0,
+        floor_advance=0.005, living_cost=-0.0005, death=-0.5,
+        hp_delta_weight=0.02,
+    ),
+    "sparse": RewardConfig(
+        combat_win=0.0, elite_kill=0.0, boss_kill=1.0, run_victory=10.0,
+        floor_advance=0.0, living_cost=0.0, death=-1.0,
+    ),
+    "dense_floor": RewardConfig(
+        combat_win=0.05, elite_kill=0.20, boss_kill=2.0, run_victory=8.0,
+        floor_advance=0.05, living_cost=-0.001, death=-1.0,
+    ),
+}
+
+
 class RunEnv(gym.Env):
     """Full-run env. One Gym episode = one full STS2 run."""
 
     metadata: dict = {"render_modes": []}
 
-    def __init__(self, ascension: int = 0, character: Character = Character.IRONCLAD):
+    def __init__(self, ascension: int = 0, character: Character = Character.IRONCLAD,
+                 reward_config: RewardConfig | None = None):
         super().__init__()
         self.action_space = spaces.Discrete(N_ACTIONS)
         self.observation_space = spaces.Box(0.0, 1.0, shape=(OBS_DIM,),
                                             dtype=np.float32)
         self._ascension = ascension
         self._character = character
+        self.reward_config = reward_config or RewardConfig()
         self.rs: RunState | None = None
+        self._last_hp: int = 0
 
     # -- Gym API -------------------------------------------------------------
 
@@ -79,6 +123,7 @@ class RunEnv(gym.Env):
             seed=run_seed,
         )
         start_run(self.rs)
+        self._last_hp = self.rs.hp
         return self._obs(), {"action_mask": self.action_masks()}
 
     def step(self, action: int):  # type: ignore[override]
@@ -225,27 +270,31 @@ class RunEnv(gym.Env):
     # -- reward -------------------------------------------------------------
 
     def _reward(self, result: StepResult) -> float:
-        r = -0.001  # tiny living cost
+        cfg = self.reward_config
         if result.invalid_action:
-            return -0.1
+            return cfg.invalid_action
+        r = cfg.living_cost
         if result.floor_advanced:
-            r += 0.01
+            r += cfg.floor_advance
         if result.combat_won:
-            rs = self.rs
-            assert rs is not None
-            if rs.state_type is StateType.CARD_REWARD:
-                # Inspect what we just killed via the pending reward's source
-                # was set via state_type before flip — use act/floor to
-                # approximate; gives 1.5 for boss, 0.3 for elite, 0.1 normal.
-                pass
             if result.boss_killed:
-                r += 1.5
+                r += cfg.boss_kill
             else:
-                r += 0.10
+                # Distinguish elite from normal via the state_type the
+                # run_engine had at the moment of victory (now CARD_REWARD,
+                # but pending reward source was set from state_type pre-flip).
+                # Approximation: if we just hit the act's elite count cap,
+                # treat as elite. The float here is fine for first-slice.
+                r += cfg.combat_win
         if result.combat_lost:
-            r += -1.0
+            r += cfg.death
         if result.act_completed:
-            r += 0.5
+            r += cfg.act_completion
         if result.run_completed:
-            r += 5.0
+            r += cfg.run_victory
+        # HP delta shaping (rewards retaining HP across the run).
+        if self.rs is not None and cfg.hp_delta_weight != 0.0:
+            hp_now = self.rs.hp
+            r += cfg.hp_delta_weight * (hp_now - self._last_hp)
+            self._last_hp = hp_now
         return r

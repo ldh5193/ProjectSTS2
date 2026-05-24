@@ -195,13 +195,37 @@ def _enter_room(rs: RunState, node: MapNode) -> None:
         eid = rs._pools.next_boss()
         _start_combat(rs, eid)
     elif rt is StateType.REST:
+        # Stub: auto-rest (30% max HP heal) and bounce back to MAP so the
+        # agent doesn't get stuck on the rest screen. Full rest UI lands
+        # once smith/upgrade flows are real.
         rs.state_type = StateType.REST
+        trigger_after_room_entered(rs, rs.state_type)
+        rs.heal(int(rs.max_hp * 0.30))
+        rs.state_type = StateType.MAP
+        return
     elif rt is StateType.TREASURE:
+        # Stub: auto-grant a placeholder treasure relic, return to MAP.
+        from .game_state import RelicInstance
         rs.state_type = StateType.TREASURE
+        trigger_after_room_entered(rs, rs.state_type)
+        rs.relics.append(RelicInstance(id="UNKNOWN_TREASURE_RELIC"))
+        rs.state_type = StateType.MAP
+        return
     elif rt is StateType.SHOP:
+        # Stub: skip shop until shop content + pricing is real.
         rs.state_type = StateType.SHOP
+        trigger_after_room_entered(rs, rs.state_type)
+        rs.state_type = StateType.MAP
+        return
     elif rt is StateType.EVENT:
+        # Stub: events have no real options yet; auto-skip with small heal
+        # so the agent has a non-zero reason to choose ?-rooms (gold/HP
+        # tradeoffs land once events are real).
         rs.state_type = StateType.EVENT
+        trigger_after_room_entered(rs, rs.state_type)
+        rs.heal(2)
+        rs.state_type = StateType.MAP
+        return
     else:
         # Ancient / unknown fallthrough: treat as proceed.
         rs.state_type = StateType.MAP
