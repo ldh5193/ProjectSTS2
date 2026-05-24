@@ -27,10 +27,12 @@ tools/*
 tools/RngOracle/bin/
 tools/RngOracle/obj/
 
-# STS2MCP mod: source tree is .gitignored (external repo), but our
-# small patches and the build-deploy README live in STS2MCP-bin/
-# alongside the downloaded binary. Track only the .cs.new / .patch /
-# README files there, never the .dll / .pdb / .json from the release.
+# STS2MCP mod: upstream source tree is .gitignored (external repo).
+# Files we author or modify live in tools/STS2MCP-bin/mod_overlay/ as
+# drop-in replacements; users copy them into their STS2MCP clone and
+# run `dotnet build`. The trained ONNX policy + deploy README also live
+# in tools/STS2MCP-bin/. Do NOT track the upstream binaries (.dll,
+# .pdb, .json from the release) — they are reproducible from source.
 !tools/STS2MCP-bin/
 tools/STS2MCP-bin/*.dll
 tools/STS2MCP-bin/*.pdb

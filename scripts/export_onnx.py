@@ -82,8 +82,40 @@ def main() -> None:
             "action_logits": {0: "batch"},
         },
     )
+    # The newer torch.onnx exporter spills weights to a sidecar
+    # `<name>.onnx.data` whenever they're "large enough." For a ~100KB
+    # MLP we'd rather ship a single file, so collapse external weights
+    # back into the main .onnx and remove the sidecar.
+    _embed_external_weights(args.out)
+
     size = args.out.stat().st_size
     print(f"Done. {args.out} = {size:,} bytes")
+
+
+def _embed_external_weights(onnx_path: Path) -> None:
+    """Re-save the model with all initializers embedded (no .data sidecar).
+    Idempotent and safe to call on a model that already has them embedded."""
+    import onnx
+    from onnx import external_data_helper
+
+    model = onnx.load(str(onnx_path), load_external_data=True)
+    # Force every initializer back into the graph proto itself.
+    for tensor in model.graph.initializer:
+        external_data_helper.uses_external_data(tensor)  # noop call
+    # Convert any external-data initializers to inline raw_data.
+    for tensor in model.graph.initializer:
+        if tensor.HasField("data_location") \
+                and tensor.data_location == onnx.TensorProto.EXTERNAL:
+            external_data_helper.load_external_data_for_tensor(
+                tensor, str(onnx_path.parent))
+            tensor.ClearField("data_location")
+            tensor.ClearField("external_data")
+    onnx.save(model, str(onnx_path))
+    # Clean up sidecar if present.
+    sidecar = onnx_path.with_suffix(onnx_path.suffix + ".data")
+    if sidecar.exists():
+        sidecar.unlink()
+        print(f"  removed external sidecar {sidecar.name}")
 
 
 if __name__ == "__main__":

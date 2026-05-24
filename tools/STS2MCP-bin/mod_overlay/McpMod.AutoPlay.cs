@@ -53,9 +53,107 @@ public static partial class McpMod
         };
         _hotkeyThread.Start();
         GD.Print("[STS2 MCP] AutoPlay hotkey installed (F8 toggles enabled).");
+        EnsureAutoPlayThinker();
         // Force a title + overlay refresh on the next frame so the button
         // shows up immediately (before the user touches anything).
         _QueueTitleUpdate();
+    }
+
+    // ---- Embedded autoplay loop --------------------------------------------
+    // When AutoPlayEnabled, every ~200ms we read state, build obs+mask, run
+    // the ONNX policy, decode, and execute the action — all in-process. No
+    // Python sidecar, no HTTP. The thinker thread only schedules work; the
+    // actual state read + ExecuteAction call runs on the main thread via
+    // RunOnMainThread (game state is not thread-safe).
+
+    private static Thread? _thinkerThread;
+    private static bool _thinkerInstalled;
+    private const int ThinkerPollMs = 200;
+
+    internal static void EnsureAutoPlayThinker()
+    {
+        if (_thinkerInstalled) return;
+        _thinkerInstalled = true;
+        _thinkerThread = new Thread(_ThinkerLoop)
+        {
+            IsBackground = true,
+            Name = "STS2MCP-AutoPlayThinker",
+        };
+        _thinkerThread.Start();
+        GD.Print("[STS2 MCP] AutoPlay thinker installed (embedded ONNX inference).");
+    }
+
+    private static void _ThinkerLoop()
+    {
+        while (true)
+        {
+            try
+            {
+                if (AutoPlayEnabled && EnsurePolicyLoaded())
+                {
+                    _ThinkOneStep();
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[STS2 MCP] AutoPlay step failed: {ex.Message}");
+            }
+            Thread.Sleep(ThinkerPollMs);
+        }
+    }
+
+    private static void _ThinkOneStep()
+    {
+        // Marshal both the state read and the action execution onto the
+        // main thread so we operate on a coherent snapshot.
+        var task = RunOnMainThread(() =>
+        {
+            Dictionary<string, object?> state;
+            try { state = BuildGameState(); }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[STS2 MCP] BuildGameState failed: {ex.Message}");
+                return false;
+            }
+            string st = AsString(state, "state_type", "");
+            if (st == "game_over" || st == "victory")
+            {
+                // Stop spamming actions at end-of-run; the player can
+                // restart manually or use menu_select via the UI.
+                return false;
+            }
+            // In combat we wait for the play phase so animations resolve.
+            if (st == "monster" || st == "elite" || st == "boss")
+            {
+                var battle = AsDict(state, "battle");
+                if (!AsBool(battle, "is_play_phase")) return false;
+            }
+            bool[] mask = BuildMask(state);
+            int legalCount = 0;
+            for (int i = 0; i < mask.Length; i++) if (mask[i]) legalCount++;
+            if (legalCount == 0) return false;
+
+            float[] obs = BuildObs(state);
+            int action = PredictAction(obs, mask);
+            if (action < 0) return false;
+
+            var decoded = DecodeAction(action, state);
+            if (decoded is not { } dec) return false;
+            try
+            {
+                var result = ExecuteAction(dec.action, dec.data);
+                GD.Print($"[STS2 MCP][AUTO] {st} -> {dec.action} (idx={action})");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[STS2 MCP][AUTO] ExecuteAction({dec.action}) failed: {ex.Message}");
+                return false;
+            }
+        });
+        // Don't wait forever — if the main thread is busy, drop this tick.
+        if (!task.Wait(1000))
+            GD.PrintErr("[STS2 MCP][AUTO] Step timed out on main thread.");
     }
 
     private static void _HotkeyLoop()
@@ -145,7 +243,6 @@ public static partial class McpMod
                 AutoPlayEnabled = !AutoPlayEnabled;
                 GD.Print($"[STS2 MCP] AutoPlay {(AutoPlayEnabled ? "ON" : "OFF")} (button)");
                 _QueueTitleUpdate();
-                EnsureSidecarRunning();
             };
             _overlayCanvas.AddChild(_overlayButton);
             tree.Root.AddChild(_overlayCanvas);

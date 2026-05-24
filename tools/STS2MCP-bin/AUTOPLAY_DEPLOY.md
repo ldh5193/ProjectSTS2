@@ -1,54 +1,72 @@
-# STS2MCP AutoPlay — install, toggle, run
+# STS2MCP AutoPlay — build, deploy, run (embedded ONNX edition)
 
-The vanilla STS2MCP v0.4.0 mod has no autoplay. We extended it to:
+The vanilla STS2MCP v0.4.0 mod has no autoplay. We extend it so the mod
+**runs the trained RL policy in-process**:
 
-- expose `GET/POST /api/v1/autoplay` on `localhost:15526`
-- bind **F8** as a global in-game hotkey
-- show **`[AUTOPLAY ON]`** in the OS window title bar while enabled
-- pin an **on-screen toggle button** (top-left corner, green when ON,
-  white when OFF) so you can flip autoplay with the mouse from any
-  screen — main menu, map, combat, rewards, events
+- exposes `GET/POST /api/v1/autoplay` on `localhost:15526`
+- binds **F8** as a global in-game hotkey
+- shows **`[AUTOPLAY ON]`** in the OS window title bar while enabled
+- pins an **on-screen toggle button** (top-left, green when ON, white
+  when OFF) so you can flip autoplay with the mouse anywhere
+- **every ~200ms while autoplay is ON, the mod reads the live game
+  state, builds the same observation + action mask the training env
+  used, runs an ONNX inference of the trained MaskablePPO policy, and
+  executes the chosen action — no Python sidecar, no HTTP round-trip**
 
-The actual trained policy still runs as a Python sidecar
-(`scripts/play_live.py`). The mod just publishes a flag; the sidecar
-polls it and POSTs actions only while ON.
+The full RL → ONNX → mod pipeline is documented in the project README
+under "강화학습 파이프라인". This file is the *deployment* recipe.
 
 ## What's in this folder
 
 | File | What it is | Tracked? |
 |---|---|---|
-| `STS2_MCP.dll`           | rebuilt mod binary (latest)        | no |
-| `STS2_MCP.json`          | mod manifest (same as upstream)    | no |
-| `STS2_MCP.pdb`           | debug symbols                      | no |
-| `McpMod.AutoPlay.cs.new` | the new C# file we add             | **yes** |
-| `autoplay_endpoint.patch`| `git apply`-able diff vs McpMod.cs | **yes** |
-| `AUTOPLAY_DEPLOY.md`     | this guide                         | **yes** |
+| `STS2_MCP.dll`                        | rebuilt mod binary               | no |
+| `STS2_MCP.pdb`                        | debug symbols                    | no |
+| `STS2_MCP.json`                       | mod manifest (upstream)          | no |
+| `Microsoft.ML.OnnxRuntime.dll`        | managed ORT interop              | no |
+| `onnxruntime.dll`                     | native ORT (Windows x64)         | no |
+| `onnxruntime_providers_shared.dll`    | native ORT shared providers      | no |
+| `policy.onnx`                         | trained RL policy weights        | **yes** |
+| `mod_overlay/`                        | our authored .cs files + csproj  | **yes** |
+| `AUTOPLAY_DEPLOY.md`                  | this guide                       | **yes** |
 
-DLLs are reproducible from source — only the patch + new file are
-in git.
+DLLs are reproducible from source. The committed artifacts are the
+overlay sources, the ONNX policy, and this guide.
 
-## Install (one-time, also after upstream updates)
+## Install (one-time, also after every upstream mod update)
 
 ```powershell
 # In tools/STS2MCP-src/ (your local clone of Gennadiyev/STS2MCP):
-cp ../STS2MCP-bin/McpMod.AutoPlay.cs.new ./McpMod.AutoPlay.cs
-git apply ../STS2MCP-bin/autoplay_endpoint.patch
+cp ..\STS2MCP-bin\mod_overlay\*.cs ..\STS2MCP-bin\mod_overlay\*.csproj .
+dotnet restore
 dotnet build -p:STS2GameDir="D:\Games\Steam\steamapps\common\Slay the Spire 2"
-cp bin/Debug/net9.0/STS2_MCP.dll ../STS2MCP-bin/STS2_MCP.dll
 ```
 
-## Deploy into the game (requires game closed)
+After build, `bin/Debug/net9.0/` contains everything the mod needs at
+runtime: the rebuilt `STS2_MCP.dll`, the managed `Microsoft.ML.OnnxRuntime.dll`,
+the native `onnxruntime*.dll` (under `runtimes/win-x64/native/`), and
+any other transitive dependencies.
+
+## Deploy into the game (requires game closed — DLLs are locked while running)
 
 ```powershell
-# 1. close STS2 (DLL is locked while running)
+# 1. Close the game
 Get-Process SlayTheSpire2 -ErrorAction SilentlyContinue | Stop-Process -Force
 
-# 2. replace the installed mod
-Copy-Item -Force tools\STS2MCP-bin\STS2_MCP.dll `
-   "D:\Games\Steam\steamapps\common\Slay the Spire 2\mods\STS2_MCP.dll"
+# 2. Copy six files into the game's mods folder
+$mods = "D:\Games\Steam\steamapps\common\Slay the Spire 2\mods"
+$bin  = "tools\STS2MCP-bin"
+Copy-Item -Force $bin\STS2_MCP.dll                       $mods\
+Copy-Item -Force $bin\Microsoft.ML.OnnxRuntime.dll       $mods\
+Copy-Item -Force $bin\onnxruntime.dll                    $mods\
+Copy-Item -Force $bin\onnxruntime_providers_shared.dll   $mods\
+Copy-Item -Force $bin\policy.onnx                        $mods\
 
-# 3. restart STS2 from Steam
+# 3. Restart STS2 from Steam
 ```
+
+The mod loader picks up STS2_MCP.dll, which p/invokes onnxruntime.dll
+for inference and reads policy.onnx from the same folder.
 
 ## Verify the install
 
@@ -59,71 +77,55 @@ After the game restarts and the mod loads:
 curl http://localhost:15526/api/v1/autoplay
 ```
 
-The first GET also arms the F8 hotkey thread (lazy init so we don't
-poll the keyboard before the mod is actually wanted).
+In the game window, the **AUTO: OFF** button appears at top-left and
+the mod logs print:
+
+```
+[STS2 MCP] AutoPlay hotkey installed (F8 toggles enabled).
+[STS2 MCP] AutoPlay thinker installed (embedded ONNX inference).
+[STS2 MCP] ONNX policy loaded from .../mods/policy.onnx.
+[STS2 MCP] AutoPlay overlay button installed (top-left).
+```
 
 ## Day-to-day use
 
-```powershell
-# Start the sidecar — uses the latest trained model by default.
-.\.venv\Scripts\python.exe scripts\play_live.py `
-    --max-steps 1000 --poll-ms 200 --watch-toggle
-```
+1. Launch STS2 from Steam.
+2. Get into any game state — main menu, mid-combat, on the map, on a
+   card reward, anywhere. The mod reads the live state each tick; it
+   never assumes a clean sim start.
+3. **Press F8** (or click the overlay button) to toggle autoplay.
+   - Title bar changes to `Slay the Spire 2 [AUTOPLAY ON]`
+   - Button turns green and reads `AUTO: ON`
+   - Console prints `[STS2 MCP][AUTO] <state> -> <action> (idx=...)`
+     once per ~200ms step
+4. Press F8 again (or click the button) to stop. The mod stays in
+   place; flip back on any time.
 
-Then **press F8 anywhere in the game** to toggle:
-
-- Title bar changes to `Slay the Spire 2 [AUTOPLAY ON]` when ON
-- Returns to `Slay the Spire 2` when OFF
-- Sidecar console prints `[toggle] autoplay OFF - waiting...`
-  while OFF, resumes posting actions when ON
-
-## Model selection
-
-By default the sidecar walks `models/sweeps/*/final.zip`, picks the
-one with the freshest modification time, and uses that. So whenever
-a new sweep finishes (e.g. via `scripts/train_parallel.py`) the next
-sidecar launch automatically uses the latest policy — no manual
-`--model` path needed.
-
-Override explicitly if you want a specific checkpoint:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\play_live.py `
-    --model models\sweeps\sparse\final.zip --watch-toggle
-```
-
-## Starting from any state
-
-The sidecar does NOT init a Python-side RunState. Every step it just:
-
-1. `GET /api/v1/singleplayer`
-2. build the observation from the live mod JSON
-3. build the action mask from the live state
-4. `model.predict(obs, action_masks=mask)` → action index
-5. `action_space.decode(idx, state)` → POST body
-6. POST
-
-So flipping autoplay ON works equally well on the main menu, on the
-map, mid-combat after manually playing two cards, on a card-reward
-overlay, anywhere. The first-step `Initial state_type: <...>` line
-confirms what the sidecar saw on startup.
-
-## Cross-platform note
-
-`GetAsyncKeyState` is a Windows API. On Linux/macOS the F8 thread
-fails silently — the POST endpoint is still the working toggle there.
-
-## Update procedure when retraining
+## Updating the policy weights
 
 After a new `scripts/train_parallel.py` sweep finishes:
 
-1. (Nothing to deploy in the mod — the policy is the sidecar's
-   problem.) Just restart the sidecar:
+```powershell
+# 1. Pick the freshest checkpoint and convert to ONNX. The exporter
+#    always overwrites tools/STS2MCP-bin/policy.onnx.
+$env:PYTHONIOENCODING = "utf-8"
+.\.venv\Scripts\python.exe scripts\show_latest_weight.py   # see which sweep is latest
+.\.venv\Scripts\python.exe scripts\export_onnx.py `
+    --model models\sweeps\tank\final.zip `
+    --out tools\STS2MCP-bin\policy.onnx
 
-   ```powershell
-   .\.venv\Scripts\python.exe scripts\play_live.py --watch-toggle
-   ```
+# 2. Drop the new policy.onnx into the game's mods folder. No need
+#    to rebuild the mod — only the weight file changed.
+Copy-Item -Force tools\STS2MCP-bin\policy.onnx `
+    "D:\Games\Steam\steamapps\common\Slay the Spire 2\mods\policy.onnx"
 
-   The "uses latest" rule picks up the freshest sweep automatically.
+# 3. Restart the game (the mod loads policy.onnx once at startup).
+```
 
-2. F8 to start playing.
+## Cross-platform note
+
+`GetAsyncKeyState` is Windows-only — on Linux/macOS the F8 thread
+silently no-ops, but the on-screen button and the POST endpoint both
+still toggle autoplay. ORT is cross-platform: copy the matching
+`libonnxruntime.{so,dylib}` from `runtimes/{linux,osx}-x64/native/`
+alongside the mod DLL.
