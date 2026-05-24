@@ -1047,15 +1047,23 @@ public static partial class McpMod
     {
         try
         {
-            var payload = new Dictionary<string, JsonElement>
+            // ExecuteAction guards with `if (!RunManager.Instance.IsInProgress)
+            // return Error("No run in progress")` on its very first line, so
+            // ANY menu_select called via ExecuteAction at a pre-run screen
+            // (main menu / character_select / singleplayer submenu / popup)
+            // silently returns the error without ever reaching the button
+            // click. HandlePostAction in McpMod.cs bypasses this by calling
+            // ExecuteMenuSelect directly — mirror that here.
+            var result = ExecuteMenuSelect(optName);
+            if (result != null && result.TryGetValue("status", out var status)
+                && (status as string) == "error")
             {
-                ["option"] = JsonDocument.Parse($"\"{optName}\"").RootElement.Clone(),
-            };
-            ExecuteAction("menu_select", payload);
+                GD.PrintErr($"[STS2 MCP][AUTO][menu] menu_select({optName}) error: {result.GetValueOrDefault("error")}");
+            }
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"[STS2 MCP][AUTO][menu] menu_select({optName}) failed: {ex.Message}");
+            GD.PrintErr($"[STS2 MCP][AUTO][menu] menu_select({optName}) exception: {ex.Message}");
         }
     }
 
