@@ -183,6 +183,14 @@ def main() -> None:
     parser.add_argument("--log", type=Path, default=Path("runs/live_play.jsonl"))
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the action that would be sent but don't POST it.")
+    parser.add_argument("--watch-toggle", action="store_true",
+                        help="Pause/resume based on /api/v1/autoplay flag in the "
+                             "mod. When the flag is false the script polls but "
+                             "does not POST. Needs the mod rebuilt with the "
+                             "autoplay endpoint (see "
+                             "tools/STS2MCP-bin/autoplay_endpoint.patch).")
+    parser.add_argument("--toggle-poll-s", type=float, default=1.0,
+                        help="Seconds between autoplay toggle re-checks.")
     args = parser.parse_args()
     args.log.parent.mkdir(parents=True, exist_ok=True)
 
@@ -195,7 +203,31 @@ def main() -> None:
     log_f = args.log.open("a", encoding="utf-8")
 
     try:
+        last_toggle_msg = None
         for step in range(1, args.max_steps + 1):
+            # Honor the mod-side autoplay toggle. When --watch-toggle is on,
+            # we sleep in place while the flag is false, then resume once
+            # the player flips it back on.
+            if args.watch_toggle:
+                while True:
+                    try:
+                        r = requests.get(f"{BASE}/api/v1/autoplay", timeout=TIMEOUT)
+                        flag = r.json().get("enabled", False) if r.status_code == 200 else None
+                    except Exception:
+                        flag = None
+                    if flag is None:
+                        msg = "[toggle] /api/v1/autoplay missing; mod not rebuilt yet"
+                    elif flag:
+                        msg = None
+                    else:
+                        msg = "[toggle] autoplay OFF - waiting..."
+                    if msg != last_toggle_msg and msg is not None:
+                        print(msg)
+                    last_toggle_msg = msg
+                    if flag:
+                        break
+                    time.sleep(args.toggle_poll_s)
+
             state = _wait_play_phase(poll_ms=args.poll_ms)
             st = state.get("state_type")
             if st in ("game_over", "victory"):

@@ -1,0 +1,64 @@
+// AutoPlay toggle — exposes an in-game flag the external Python policy
+// (scripts/play_live.py) polls to decide whether to send actions.
+//
+// Endpoints (added in McpMod.cs route table):
+//   GET  /api/v1/autoplay -> {"enabled": true|false, "hotkey": "F12"}
+//   POST /api/v1/autoplay -> body {"enabled": true|false}
+//
+// In-game hotkey: F12 toggles enabled. Player sees a small notification
+// each toggle. The mod itself does NOT run the policy — it just exposes
+// the bit. play_live.py (Python sidecar) reads the bit each step and
+// pauses POSTs when disabled.
+
+using System.Collections.Generic;
+using System.Text.Json;
+
+namespace STS2_MCP;
+
+public static partial class McpMod
+{
+    public static bool AutoPlayEnabled { get; private set; }
+
+    // Called once from McpMod.Initialize() (we hook it via a no-op
+    // call site at the bottom of McpMod.cs's existing init path).
+    private static bool _hotkeyInstalled;
+    internal static void EnsureAutoPlayHotkey()
+    {
+        if (_hotkeyInstalled) return;
+        _hotkeyInstalled = true;
+        // Polling the input from the listener thread isn't ideal but
+        // mirrors how the existing settings UI handles things: we don't
+        // touch the main thread at all; we just flip a bool.
+        // For a true keyboard hook this needs to live on the game's
+        // main loop — see Godot Engine.Singleton input polling. For
+        // first slice, the toggle is also reachable via POST.
+    }
+
+    internal static Dictionary<string, object?> HandleAutoPlayGet()
+    {
+        return new Dictionary<string, object?>
+        {
+            ["enabled"] = AutoPlayEnabled,
+            ["hotkey"] = "F12 (polled via POST until in-game keybind hook lands)",
+        };
+    }
+
+    internal static Dictionary<string, object?> HandleAutoPlayPost(
+        Dictionary<string, System.Text.Json.JsonElement> data)
+    {
+        if (data != null && data.TryGetValue("enabled", out var v))
+        {
+            AutoPlayEnabled = v.GetBoolean();
+        }
+        else
+        {
+            // Toggle when body has no explicit value.
+            AutoPlayEnabled = !AutoPlayEnabled;
+        }
+        return new Dictionary<string, object?>
+        {
+            ["enabled"] = AutoPlayEnabled,
+            ["status"] = "ok",
+        };
+    }
+}

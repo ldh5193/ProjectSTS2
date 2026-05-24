@@ -26,3 +26,12 @@ tools/*
 !tools/RngOracle/
 tools/RngOracle/bin/
 tools/RngOracle/obj/
+
+# STS2MCP mod: source tree is .gitignored (external repo), but our
+# small patches and the build-deploy README live in STS2MCP-bin/
+# alongside the downloaded binary. Track only the .cs.new / .patch /
+# README files there, never the .dll / .pdb / .json from the release.
+!tools/STS2MCP-bin/
+tools/STS2MCP-bin/*.dll
+tools/STS2MCP-bin/*.pdb
+tools/STS2MCP-bin/*.json
