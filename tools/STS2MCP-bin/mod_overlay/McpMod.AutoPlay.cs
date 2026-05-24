@@ -330,10 +330,37 @@ public static partial class McpMod
                 _LogIdle("state_type missing — no run loaded?");
                 return false;
             }
+
+            // End-to-end autonomy: when the game ends, click the
+            // first end-screen option (typically "main_menu") so the
+            // next tick lands on the main menu and the menu auto-
+            // navigator below starts a fresh run.
             if (st == "game_over" || st == "victory")
             {
-                _LogIdle($"run ended ({st}); manually restart to continue");
+                var goOptions = AsList(AsDict(state, "game_over"), "options");
+                if (goOptions.Count == 0) goOptions = AsList(AsDict(state, "victory"), "options");
+                if (goOptions.Count > 0)
+                {
+                    string opt = goOptions[0]?.ToString() ?? "main_menu";
+                    try { ExecuteAction("menu_select", new Dictionary<string, JsonElement>
+                        { ["option"] = JsonDocument.Parse($"\"{opt}\"").RootElement.Clone() }); }
+                    catch { }
+                    GD.Print($"[STS2 MCP][AUTO] run ended ({st}) -> menu_select({opt}) to restart");
+                    return true;
+                }
+                _LogIdle($"run ended ({st}) but no options surface — wait");
                 return false;
+            }
+
+            // Deterministic menu navigator. The policy was never trained
+            // on character-select / mode-select, so a tiny state machine
+            // is much more reliable than letting argmax pick. Order:
+            //   character_select  → IRONCLAD → embark
+            //   any other menu    → first enabled option
+            if (st == "menu")
+            {
+                if (_AutoMenuStep(state)) return true;
+                // fall through to policy if menu navigation couldn't act
             }
             // In combat we wait for the play phase so animations resolve.
             if (st == "monster" || st == "elite" || st == "boss")
@@ -851,6 +878,102 @@ public static partial class McpMod
             // shop / relic_select / bundle_select / treasure still use the
             // text-only advisory band — UI lookups for those overlays land
             // in a follow-up.
+        }
+    }
+
+    // Tracks how many ticks ago we last sent `embark` on character_select,
+    // so we don't spam it before the screen has time to react.
+    private static int _ticksSinceEmbark = 999;
+    private const int EmbarkCooldownTicks = 4;
+
+    /// <summary>
+    /// Deterministic menu navigator. Bypasses the policy for menu states
+    /// (which it was never trained on). Returns true if an action was
+    /// fired, false to let the regular policy/loop-guard path handle it.
+    ///
+    /// Strategy:
+    ///   character_select: click IRONCLAD if not yet selected, then embark
+    ///                     (the screen toggles a selection state; embark
+    ///                      becomes enabled once a character is selected).
+    ///   other menus     : pick the first enabled option.
+    /// </summary>
+    private static bool _AutoMenuStep(Dictionary<string, object?> state)
+    {
+        _ticksSinceEmbark++;
+        string screen = AsString(state, "menu_screen", "");
+        var opts = AsList(state, "options");
+
+        // Resolve the option name (handle both bare-string and dict shapes).
+        string OptName(object? o)
+        {
+            if (o is Dictionary<string, object?> od)
+                return AsString(od, "name", AsString(od, "id", AsString(od, "title", "")));
+            return o?.ToString() ?? "";
+        }
+        bool OptEnabled(object? o)
+        {
+            if (o is Dictionary<string, object?> od)
+                return AsBool(od, "enabled", true);
+            return true;
+        }
+
+        if (screen == "character_select")
+        {
+            // First look for "embark" / "confirm" already enabled — means
+            // a character is selected and we just need to launch the run.
+            for (int i = 0; i < opts.Count; i++)
+            {
+                string nm = OptName(opts[i]);
+                if ((nm == "embark" || nm == "confirm") && OptEnabled(opts[i])
+                    && _ticksSinceEmbark > EmbarkCooldownTicks)
+                {
+                    _SendMenuSelect(nm);
+                    _ticksSinceEmbark = 0;
+                    GD.Print($"[STS2 MCP][AUTO][menu] embark → run start");
+                    return true;
+                }
+            }
+            // Otherwise: click IRONCLAD if available.
+            for (int i = 0; i < opts.Count; i++)
+            {
+                string nm = OptName(opts[i]);
+                if (nm == "IRONCLAD" && OptEnabled(opts[i]))
+                {
+                    _SendMenuSelect(nm);
+                    GD.Print($"[STS2 MCP][AUTO][menu] pick IRONCLAD");
+                    return true;
+                }
+            }
+        }
+
+        // Generic menu: pick the first enabled non-trivial option. We
+        // avoid "back"/"cancel"/"settings"/"quit" so we always advance.
+        var avoid = new HashSet<string> { "back", "cancel", "settings", "quit", "unready" };
+        for (int i = 0; i < opts.Count; i++)
+        {
+            string nm = OptName(opts[i]);
+            if (string.IsNullOrEmpty(nm) || avoid.Contains(nm.ToLowerInvariant())) continue;
+            if (!OptEnabled(opts[i])) continue;
+            _SendMenuSelect(nm);
+            GD.Print($"[STS2 MCP][AUTO][menu] pick '{nm}' on screen '{screen}'");
+            return true;
+        }
+        return false;
+    }
+
+    private static void _SendMenuSelect(string optName)
+    {
+        try
+        {
+            var payload = new Dictionary<string, JsonElement>
+            {
+                ["option"] = JsonDocument.Parse($"\"{optName}\"").RootElement.Clone(),
+            };
+            ExecuteAction("menu_select", payload);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[STS2 MCP][AUTO][menu] menu_select({optName}) failed: {ex.Message}");
         }
     }
 
