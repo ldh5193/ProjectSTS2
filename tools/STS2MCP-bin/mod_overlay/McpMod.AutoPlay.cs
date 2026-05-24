@@ -375,6 +375,31 @@ public static partial class McpMod
                     _LogIdle($"{st}: waiting for play phase");
                     return false;
                 }
+                // Deterministic end_turn fallback: the trained policy
+                // overweights potion actions, so when energy hits 0 with
+                // no playable cards it spams discard_potion / use_potion
+                // in a loop guard cycle (5x discard → suppress → use →
+                // 5x discard again) instead of ending the turn. Combat
+                // never advances. Force end_turn whenever the hand has
+                // zero can_play=True cards — that's the only sensible
+                // move and matches what any real player would do.
+                var player = AsDict(state, "player");
+                var hand = AsList(player, "hand");
+                bool anyPlayable = false;
+                foreach (var cObj in hand)
+                {
+                    if (cObj is Dictionary<string, object?> c && AsBool(c, "can_play"))
+                    {
+                        anyPlayable = true; break;
+                    }
+                }
+                if (!anyPlayable)
+                {
+                    ExecuteAction("end_turn", new Dictionary<string, JsonElement>());
+                    GD.Print($"[STS2 MCP][AUTO] {st} -> end_turn (no playable cards, deterministic)");
+                    _lastIdleReason = "";
+                    return true;
+                }
             }
 
             // hand_select shortcut: the trained policy never saw this state
