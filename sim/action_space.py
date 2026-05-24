@@ -105,7 +105,9 @@ RANGES: tuple[ActionRange, ...] = (
     ),
     ActionRange(
         "rest", 132, 6,
-        state_types=("rest",),
+        # The live mod emits `rest_site` (see McpMod.StateBuilder.cs); the
+        # legacy `rest` value is kept for back-compat with older tests.
+        state_types=("rest", "rest_site"),
         doc="choose_rest_option: 0=rest, 1=upgrade, 2=shop, 3=dig, 4=key, 5=lift.",
     ),
     ActionRange(
@@ -293,11 +295,30 @@ def _hand_select_mask(state: dict, r: ActionRange) -> Iterable[int]:
     return picks
 
 
+def _rest_mask(state: dict, r: ActionRange) -> Iterable[int]:
+    """rest_site exposes options[] with per-option `index` and `is_enabled`.
+    Smith/dig/key/lift are disabled unless the per-run prereqs are met,
+    so the mask must follow `is_enabled` to keep the policy from picking
+    a button the game would reject. Mirrors C# MaskBuilder.RestMask."""
+    rs = state.get("rest_site") or {}
+    opts = rs.get("options") or []
+    yielded: list[int] = []
+    for o in opts:
+        if not isinstance(o, dict):
+            continue
+        if o.get("is_enabled"):
+            idx = int(o.get("index", len(yielded)))
+            if 0 <= idx < r.size:
+                yielded.append(idx)
+    return yielded
+
+
 _PREDICATES: dict[str, MaskPredicate] = {
     "combat": _combat_mask,
     "hand_select": _hand_select_mask,
     "card_reward": _card_reward_mask,
     "rewards": _rewards_mask,
+    "rest": _rest_mask,
     "misc": _misc_mask,
     "relic_select": _by_visible_options("relic_select"),
     "map": lambda state, r: range(min(

@@ -42,7 +42,7 @@ public static partial class McpMod
         new("bundle_select",  92,  12, new[] {"bundle_select"}),
         new("map",            104, 20, new[] {"map"}),
         new("event",          124, 8,  new[] {"event", "fake_merchant"}),
-        new("rest",           132, 6,  new[] {"rest"}),
+        new("rest",           132, 6,  new[] {"rest","rest_site"}),
         new("shop",           138, 16, new[] {"shop"}),
         new("potion",         154, 8,  _NoStates),
         new("crystal_sphere", 162, 32, new[] {"crystal_sphere"}),
@@ -72,6 +72,7 @@ public static partial class McpMod
             "hand_select"   => HandSelectMask(state, r),
             "card_reward"   => CardRewardMask(state, r),
             "rewards"       => RewardsMask(state, r),
+            "rest"          => RestMask(state, r),
             "misc"          => MiscMask(state),
             "relic_select"  => Sequence(Math.Min(AsList(state, "relic_select").Count, r.Size)),
             "map"           => MapMask(state, r),
@@ -79,6 +80,22 @@ public static partial class McpMod
             "menu_select"   => Sequence(Math.Min(AsList(state, "options").Count, r.Size)),
             _               => Array.Empty<int>(),
         };
+
+    private static IEnumerable<int> RestMask(Dictionary<string, object?> state, ActionRange r)
+    {
+        // Rest sites expose state.rest_site.options[]; each entry has its
+        // own `index` plus an `is_enabled` flag (smith/dig/key/lift may be
+        // disabled if their per-run requirements aren't met). Only mark
+        // the enabled ones legal so the policy never picks a button the
+        // game will reject.
+        var rs = AsDict(state, "rest_site");
+        var opts = AsList(rs, "options");
+        for (int i = 0; i < opts.Count && i < r.Size; i++)
+        {
+            if (opts[i] is Dictionary<string, object?> opt && AsBool(opt, "is_enabled"))
+                yield return ToInt(opt, "index", i);
+        }
+    }
 
     private static IEnumerable<int> HandSelectMask(Dictionary<string, object?> state, ActionRange r)
     {
