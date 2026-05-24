@@ -82,6 +82,13 @@ public static partial class McpMod
     {
         try
         {
+            // Install the assembly resolver FIRST so any code path that touches
+            // Microsoft.ML.OnnxRuntime later (PolicyNet, AutoPlay) can find the
+            // managed DLL we shipped under `mods/`. Doing this before the JIT
+            // compiles any method whose body references ORT types avoids the
+            // "FileNotFoundException: Microsoft.ML.OnnxRuntime" load failure.
+            EnsureAssemblyResolver();
+
             // Optional settings UI patches should not block the HTTP bridge itself.
             TryApplyHarmonyPatches();
 

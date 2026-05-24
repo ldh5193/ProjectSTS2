@@ -27,6 +27,39 @@ public static partial class McpMod
 
     private static InferenceSession? _policySession;
     private static readonly object _policyLock = new();
+    private static bool _resolverInstalled;
+
+    /// <summary>
+    /// Register an AppDomain.AssemblyResolve so Microsoft.ML.OnnxRuntime and
+    /// any of its managed deps can be loaded from the mod folder. Without
+    /// this, .NET only looks next to the host executable (the game's data
+    /// dir) and never finds the DLLs we shipped under `mods/`.
+    /// </summary>
+    private static void EnsureAssemblyResolver()
+    {
+        if (_resolverInstalled) return;
+        _resolverInstalled = true;
+        string modDir = Path.GetDirectoryName(typeof(McpMod).Assembly.Location) ?? ".";
+        AppDomain.CurrentDomain.AssemblyResolve += (sender, args) =>
+        {
+            try
+            {
+                // args.Name is e.g. "Microsoft.ML.OnnxRuntime, Version=1.20.1.0, ..."
+                string shortName = args.Name.Split(',')[0].Trim();
+                string candidate = Path.Combine(modDir, shortName + ".dll");
+                if (File.Exists(candidate))
+                {
+                    GD.Print($"[STS2 MCP] AssemblyResolve: loading {shortName} from {modDir}");
+                    return System.Reflection.Assembly.LoadFrom(candidate);
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[STS2 MCP] AssemblyResolve failed for {args.Name}: {ex.Message}");
+            }
+            return null;
+        };
+    }
 
     /// <summary>
     /// Load the ONNX policy from disk. Looks next to the mod DLL first,
@@ -38,6 +71,11 @@ public static partial class McpMod
         lock (_policyLock)
         {
             if (_policySession != null) return true;
+
+            // Wire the assembly resolver before the first managed call into
+            // OnnxRuntime triggers a load from a path the .NET probing rules
+            // wouldn't otherwise check.
+            EnsureAssemblyResolver();
 
             string? path = FindPolicyOnnx();
             if (path == null)
