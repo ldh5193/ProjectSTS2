@@ -140,3 +140,149 @@ class NibbitWeak(Monster):
         self.last_move = move
         self.next_move = self.roll_next_move(rng)
         return event
+
+
+# --- CeremonialBeast (Act 1 boss, solo) ------------------------------------
+# Cites:
+#   decompiled/MegaCrit.Sts2.Core.Models.Monsters/CeremonialBeast.cs (move table)
+#   decompiled/MegaCrit.Sts2.Core.Models.Encounters/CeremonialBeastBoss.cs
+# Sim is the non-Ascension column; the Plow / Ringing debuffs are
+# approximated by Strength / Weak respectively until those powers land.
+
+
+class BeastMove(str, Enum):
+    STAMP = "stamp"       # buff (Plow stack); sim: small strength gain
+    PLOW = "plow"         # 18 dmg + Strength +2
+    STUN = "stun"         # no-op turn
+    BEAST_CRY = "cry"     # apply Weak (sim approximation of Ringing)
+    STOMP = "stomp"       # 15 dmg
+    CRUSH = "crush"       # 17 dmg + Strength +3
+
+
+BEAST_HP_MIN = 252
+BEAST_HP_MAX = 252
+
+_BEAST_CYCLE = (
+    BeastMove.STAMP, BeastMove.PLOW, BeastMove.STUN,
+    BeastMove.BEAST_CRY, BeastMove.STOMP, BeastMove.CRUSH,
+)
+
+
+@dataclass
+class CeremonialBeast(Monster):
+    last_move: BeastMove | None = None
+    next_move: BeastMove | None = None
+    cycle_index: int = 0
+
+    @classmethod
+    def spawn(cls, rng: random.Random) -> "CeremonialBeast":
+        m = cls(name="Ceremonial Beast", hp=BEAST_HP_MIN, max_hp=BEAST_HP_MAX)
+        m.next_move = _BEAST_CYCLE[0]
+        m.cycle_index = 0
+        return m
+
+    def roll_next_move(self, rng: random.Random) -> BeastMove:
+        self.cycle_index = (self.cycle_index + 1) % len(_BEAST_CYCLE)
+        return _BEAST_CYCLE[self.cycle_index]
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        move = self.next_move or self.roll_next_move(rng)
+        event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
+
+        if move is BeastMove.PLOW:
+            blocked, hp_loss = deal_damage(18, self, player)
+            event.update(damage=18, blocked=blocked, hp_loss=hp_loss)
+            strength = StrengthPower(amount=2)
+            strength._owner = self
+            self.add_or_stack_power(strength)
+        elif move is BeastMove.STAMP:
+            # Plow stack: approximate with +1 Strength.
+            strength = StrengthPower(amount=1)
+            strength._owner = self
+            self.add_or_stack_power(strength)
+        elif move is BeastMove.STUN:
+            pass  # no-op turn
+        elif move is BeastMove.BEAST_CRY:
+            # Ringing debuff -> approximate as Weak on player.
+            from .powers import make_power
+            player.add_or_stack_power(make_power("weak", 2, player))
+        elif move is BeastMove.STOMP:
+            blocked, hp_loss = deal_damage(15, self, player)
+            event.update(damage=15, blocked=blocked, hp_loss=hp_loss)
+        elif move is BeastMove.CRUSH:
+            blocked, hp_loss = deal_damage(17, self, player)
+            event.update(damage=17, blocked=blocked, hp_loss=hp_loss)
+            strength = StrengthPower(amount=3)
+            strength._owner = self
+            self.add_or_stack_power(strength)
+
+        self.last_move = move
+        self.next_move = self.roll_next_move(rng)
+        return event
+
+
+# --- VantomBoss (Act 1 boss, solo) ----------------------------------------
+# Cites: decompiled/MegaCrit.Sts2.Core.Models.Monsters/Vantom.cs
+# 4-state cycle. Wound-on-DISMEMBER is approximated by Weak (sim has no
+# status-card system yet).
+
+
+class VantomMove(str, Enum):
+    INK_BLOT = "ink_blot"      # 7 dmg
+    INKY_LANCE = "inky_lance"  # 6 dmg x2 hits
+    DISMEMBER = "dismember"    # 27 dmg + Weak (approx for Wound add)
+    PREPARE = "prepare"        # Strength +2
+
+
+VANTOM_HP = 173
+
+_VANTOM_CYCLE = (
+    VantomMove.INK_BLOT, VantomMove.INKY_LANCE,
+    VantomMove.DISMEMBER, VantomMove.PREPARE,
+)
+
+
+@dataclass
+class Vantom(Monster):
+    last_move: VantomMove | None = None
+    next_move: VantomMove | None = None
+    cycle_index: int = 0
+
+    @classmethod
+    def spawn(cls, rng: random.Random) -> "Vantom":
+        m = cls(name="Vantom", hp=VANTOM_HP, max_hp=VANTOM_HP)
+        m.next_move = _VANTOM_CYCLE[0]
+        m.cycle_index = 0
+        return m
+
+    def roll_next_move(self, rng: random.Random) -> VantomMove:
+        self.cycle_index = (self.cycle_index + 1) % len(_VANTOM_CYCLE)
+        return _VANTOM_CYCLE[self.cycle_index]
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        move = self.next_move or self.roll_next_move(rng)
+        event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
+
+        if move is VantomMove.INK_BLOT:
+            blocked, hp_loss = deal_damage(7, self, player)
+            event.update(damage=7, blocked=blocked, hp_loss=hp_loss)
+        elif move is VantomMove.INKY_LANCE:
+            for _ in range(2):
+                blocked, hp_loss = deal_damage(6, self, player)
+                event["damage"] += 6
+                event["blocked"] += blocked
+                event["hp_loss"] += hp_loss
+        elif move is VantomMove.DISMEMBER:
+            blocked, hp_loss = deal_damage(27, self, player)
+            event.update(damage=27, blocked=blocked, hp_loss=hp_loss)
+            # 3 Wound -> approximate by Weak +1 (sim has no status cards yet).
+            from .powers import make_power
+            player.add_or_stack_power(make_power("weak", 1, player))
+        elif move is VantomMove.PREPARE:
+            strength = StrengthPower(amount=2)
+            strength._owner = self
+            self.add_or_stack_power(strength)
+
+        self.last_move = move
+        self.next_move = self.roll_next_move(rng)
+        return event

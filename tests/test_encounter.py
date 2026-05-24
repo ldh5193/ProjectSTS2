@@ -96,7 +96,9 @@ def test_modeled_encounters_resolve_to_real_monsters():
     rng = Rng(0)
     assert is_modeled("NibbitsWeak")
     assert is_modeled("SludgeSpinnerWeak")
-    assert not is_modeled("CeremonialBeastBoss")  # not yet ported
+    assert is_modeled("CeremonialBeastBoss")
+    assert is_modeled("VantomBoss")
+    assert not is_modeled("TheKinBoss")  # multi-monster, still deferred
 
     n = build_monster_for("NibbitsWeak", rng)
     assert isinstance(n, NibbitWeak)
@@ -104,6 +106,13 @@ def test_modeled_encounters_resolve_to_real_monsters():
 
     s = build_monster_for("SludgeSpinnerWeak", rng)
     assert isinstance(s, SludgeSpinnerWeak)
+
+    from sim.monsters import CeremonialBeast, Vantom
+    cb = build_monster_for("CeremonialBeastBoss", rng)
+    assert isinstance(cb, CeremonialBeast) and cb.hp == 252
+
+    v = build_monster_for("VantomBoss", rng)
+    assert isinstance(v, Vantom) and v.hp == 173
 
 
 def test_unmodeled_encounter_falls_back_so_run_loop_can_advance():
