@@ -16,6 +16,13 @@ $root      = 'D:\workspace\ProjectSTS2'
 $gameDir   = 'D:\Games\Steam\steamapps\common\Slay the Spire 2'
 $gameExe   = "$gameDir\SlayTheSpire2.exe"
 $gameMods  = "$gameDir\mods"
+$steamAppId = '2868840'
+# Make sure steam_appid.txt exists so direct-exe launches don't fail
+# Steamworks init with "No appID found".
+$appidFile = "$gameDir\steam_appid.txt"
+if (-not (Test-Path $appidFile)) {
+    Set-Content -Path $appidFile -Value $steamAppId -Encoding ASCII -NoNewline
+}
 $modDll    = "$root\tools\STS2MCP-bin\STS2_MCP.dll"
 $onnxDest  = "$root\tools\STS2MCP-bin\policy.onnx"
 $pyExe     = "$root\.venv\Scripts\python.exe"
