@@ -18,6 +18,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
 using Godot;
+using MegaCrit.Sts2.addons.mega_text;
 
 namespace STS2_MCP;
 
@@ -32,12 +33,24 @@ public static partial class McpMod
     private static bool _hotkeyInstalled;
     private static Thread? _hotkeyThread;
 
-    // Persistent on-screen button. Set once on the first SceneTree
-    // ProcessFrame we can find a root for; reused across all scene
-    // transitions because CanvasLayer sits above the SceneTree's
-    // viewports.
+    // Persistent on-screen toggle. Built lazily on the main thread. Stays
+    // alive across scene reloads because CanvasLayer sits above the
+    // SceneTree's viewports. Uses MegaRichTextLabel for the caption so the
+    // text picks up the game's BBCode-aware label font automatically, and
+    // anchors to the BOTTOM-RIGHT corner where STS2 HUD is sparse (the
+    // top-left has HP/gold, top-right has act/floor, bottom-center is the
+    // hand, bottom-right "End Turn" sits a bit further right than us).
     private static CanvasLayer? _overlayCanvas;
     private static Button? _overlayButton;
+    private static MegaRichTextLabel? _overlayLabel;
+
+    // Anchored offsets from the bottom-right corner of the viewport. ~24 px
+    // padding gives breathing room over any HUD background, and the 184x44
+    // size matches the visual weight of the game's native menu buttons.
+    private const int OverlayWidth  = 184;
+    private const int OverlayHeight = 44;
+    private const int OverlayPadRight  = 24;
+    private const int OverlayPadBottom = 24;
 
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
@@ -225,19 +238,40 @@ public static partial class McpMod
                 Layer = 100,             // above gameplay HUD
                 Name = "STS2MCP_AutoPlayOverlay",
             };
+            // Anchor to the bottom-right of the viewport so the button moves
+            // with window resizes and stays clear of HUD elements that live
+            // in the other corners. The Button is the click target; the
+            // MegaRichTextLabel inside provides the game-native caption.
             _overlayButton = new Button
             {
-                Text = AutoPlayEnabled ? "AUTO: ON" : "AUTO: OFF",
+                Name = "STS2MCP_AutoPlayButton",
+                Text = "",  // text is drawn by the inner MegaRichTextLabel
                 FocusMode = Control.FocusModeEnum.None,
-                // Anchor top-right via OffsetLeft/Top isn't enough without
-                // setting anchors; cheap option: absolute Position in the
-                // root viewport. 10 px padding from top-left works on every
-                // screen we care about.
-                Position = new Vector2(10, 10),
-                CustomMinimumSize = new Vector2(140, 36),
+                AnchorLeft   = 1f,
+                AnchorRight  = 1f,
+                AnchorTop    = 1f,
+                AnchorBottom = 1f,
+                OffsetLeft   = -(OverlayWidth + OverlayPadRight),
+                OffsetTop    = -(OverlayHeight + OverlayPadBottom),
+                OffsetRight  = -OverlayPadRight,
+                OffsetBottom = -OverlayPadBottom,
+                MouseFilter  = Control.MouseFilterEnum.Stop,
             };
-            // Color the button so the state is obvious.
-            _overlayButton.AddThemeColorOverride("font_color", new Color(1f, 1f, 1f));
+            // Caption uses the game's BBCode-aware label widget — the same
+            // one settings-screen rows use for option labels — so it picks
+            // up the project font/theme automatically. We feed BBCode into
+            // Text for centering + color; SettingsUI.cs uses this same
+            // class with plain text, so falling back to plain works too.
+            _overlayLabel = new MegaRichTextLabel
+            {
+                Name = "Caption",
+                BbcodeEnabled = true,
+                AnchorLeft = 0f, AnchorTop = 0f,
+                AnchorRight = 1f, AnchorBottom = 1f,
+                OffsetLeft = 0, OffsetTop = 0, OffsetRight = 0, OffsetBottom = 0,
+                MouseFilter = Control.MouseFilterEnum.Ignore,  // clicks pass through to Button
+            };
+            _overlayButton.AddChild(_overlayLabel);
             _overlayButton.Pressed += () =>
             {
                 AutoPlayEnabled = !AutoPlayEnabled;
@@ -246,7 +280,7 @@ public static partial class McpMod
             };
             _overlayCanvas.AddChild(_overlayButton);
             tree.Root.AddChild(_overlayCanvas);
-            GD.Print("[STS2 MCP] AutoPlay overlay button installed (top-left).");
+            GD.Print("[STS2 MCP] AutoPlay overlay button installed (bottom-right, game font).");
         }
         catch (Exception ex)
         {
@@ -259,11 +293,19 @@ public static partial class McpMod
         if (_overlayButton == null || !IsInstanceValid(_overlayButton)) return;
         try
         {
-            _overlayButton.Text = AutoPlayEnabled ? "AUTO: ON" : "AUTO: OFF";
-            // Background tint via modulate makes ON/OFF unambiguous.
-            _overlayButton.Modulate = AutoPlayEnabled
-                ? new Color(0.2f, 1f, 0.4f)   // green when ON
-                : new Color(1f, 1f, 1f);
+            // Tint via BBCode so the ON/OFF state is unambiguous while still
+            // using the game's font and centering. A small ● glyph mirrors
+            // the visual cue used in NFastModeTickbox.
+            string color = AutoPlayEnabled ? "#3ef27a" : "#cccccc";
+            string dot   = AutoPlayEnabled ? "●" : "○";
+            string state = AutoPlayEnabled ? "AUTO ON" : "AUTO OFF";
+            if (_overlayLabel != null && IsInstanceValid(_overlayLabel))
+            {
+                _overlayLabel.Text = $"[center][color={color}]{dot}  {state}[/color][/center]";
+            }
+            // Leave the Button's modulate at white so the background stylebox
+            // (provided by the game theme) renders normally; we communicate
+            // state through the caption color only.
         }
         catch { /* button may have been freed during scene reload */ }
     }
