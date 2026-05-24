@@ -39,7 +39,7 @@ public static partial class McpMod
         new("card_reward",    72,  6,  new[] {"card_select", "card_reward"}),
         new("rewards",        78,  8,  new[] {"rewards"}),
         new("relic_select",   86,  6,  new[] {"relic_select"}),
-        new("bundle_select",  92,  12, new[] {"bundle_select"}),
+        new("bundle_select",  92,  12, new[] {"bundle_select"}),  // 0..9 pick bundle, 10 confirm, 11 cancel
         new("map",            104, 20, new[] {"map"}),
         new("event",          124, 8,  new[] {"event", "fake_merchant"}),
         new("rest",           132, 6,  new[] {"rest","rest_site"}),
@@ -75,7 +75,8 @@ public static partial class McpMod
             "rest"          => RestMask(state, r),
             "potion"        => PotionMask(state, r),
             "misc"          => MiscMask(state),
-            "relic_select"  => Sequence(Math.Min(AsList(state, "relic_select").Count, r.Size)),
+            "relic_select"  => RelicSelectMask(state, r),
+            "bundle_select" => BundleSelectMask(state, r),
             "map"           => MapMask(state, r),
             "event"         => EventMask(state, r),
             "menu_select"   => Sequence(Math.Min(AsList(state, "options").Count, r.Size)),
@@ -230,6 +231,50 @@ public static partial class McpMod
         if (opts.Count == 0) opts = AsList(state, "event");
         int n = Math.Min(opts.Count, r.Size);
         for (int i = 0; i < n; i++) yield return i;
+    }
+
+    private static IEnumerable<int> RelicSelectMask(Dictionary<string, object?> state, ActionRange r)
+    {
+        // mod state shape (see McpMod.StateBuilder.BuildRelicSelectState):
+        //   state.relic_select = {relics: [{index, id, name, ...}], can_skip: bool}
+        // The legacy attempt read state["relic_select"] as a plain list and
+        // saw zero options every tick — hence the auto-play hang the user
+        // reported at the very first relic offer.
+        var rs = AsDict(state, "relic_select");
+        var relics = AsList(rs, "relics");
+        int n = Math.Min(relics.Count, r.Size - 1);  // last slot reserved for skip
+        for (int i = 0; i < n; i++)
+        {
+            if (relics[i] is Dictionary<string, object?> rd)
+                yield return ToInt(rd, "index", i);
+            else
+                yield return i;
+        }
+        if (AsBool(rs, "can_skip")) yield return r.Size - 1;
+    }
+
+    private static IEnumerable<int> BundleSelectMask(Dictionary<string, object?> state, ActionRange r)
+    {
+        // Bundle pick (e.g. "choose 1 of 3 card bundles" relic/event reward,
+        // and multi-reward relics that grant a whole packet of cards at once).
+        // state.bundle_select = {bundles: [{index, card_count, cards: [...]}, ...]}
+        // Slot layout: 0..9 select_bundle(idx), 10 confirm, 11 cancel.
+        var bs = AsDict(state, "bundle_select");
+        var bundles = AsList(bs, "bundles");
+        int n = Math.Min(bundles.Count, 10);
+        for (int i = 0; i < n; i++)
+        {
+            if (bundles[i] is Dictionary<string, object?> bd)
+                yield return ToInt(bd, "index", i);
+            else
+                yield return i;
+        }
+        // Confirm becomes legal once a bundle has been highlighted in the
+        // preview pane — the mod exposes that via `preview_showing`.
+        if (AsBool(bs, "preview_showing"))
+            yield return 10;
+        // Cancel always — lets the player back out of an accidental pick.
+        yield return 11;
     }
 
     private static IEnumerable<int> PotionMask(Dictionary<string, object?> state, ActionRange r)

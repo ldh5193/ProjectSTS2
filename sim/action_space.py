@@ -385,6 +385,49 @@ def _potion_mask(state: dict, r: ActionRange) -> Iterable[int]:
     return out
 
 
+def _bundle_select_mask(state: dict, r: ActionRange) -> Iterable[int]:
+    """Bundle selection (e.g. 'choose 1 of 3 card packets' from a relic
+    reward or multi-card grant). state.bundle_select = {bundles: [...],
+    preview_showing: bool}. Slot layout: 0..9 select_bundle(idx),
+    10 confirm_bundle_selection (once preview is open), 11 cancel.
+    """
+    bs = state.get("bundle_select")
+    if not isinstance(bs, dict):
+        return ()
+    bundles = bs.get("bundles") or []
+    out: list[int] = []
+    for i, b in enumerate(bundles[:10]):
+        idx = b.get("index", i) if isinstance(b, dict) else i
+        out.append(int(idx))
+    if bs.get("preview_showing"):
+        out.append(10)
+    out.append(11)
+    return out
+
+
+def _relic_select_mask(state: dict, r: ActionRange) -> Iterable[int]:
+    """Relic select state shape from the mod (StateBuilder.BuildRelicSelectState):
+        state.relic_select = {"relics": [{"index": int, "id": str, ...}], "can_skip": bool}
+    Old code assumed `state["relic_select"]` was a plain list — it's a dict,
+    so the mask was always empty and AutoPlay stalled at the first relic offer.
+    """
+    rs = state.get("relic_select")
+    if not isinstance(rs, dict):
+        return ()
+    relics = rs.get("relics") or []
+    out: list[int] = []
+    skip_slot = r.size - 1
+    for i, entry in enumerate(relics):
+        if i >= skip_slot:
+            break
+        idx = entry.get("index", i) if isinstance(entry, dict) else i
+        if 0 <= int(idx) < skip_slot:
+            out.append(int(idx))
+    if rs.get("can_skip"):
+        out.append(skip_slot)
+    return out
+
+
 _PREDICATES: dict[str, MaskPredicate] = {
     "combat": _combat_mask,
     "hand_select": _hand_select_mask,
@@ -393,7 +436,8 @@ _PREDICATES: dict[str, MaskPredicate] = {
     "rest": _rest_mask,
     "potion": _potion_mask,
     "misc": _misc_mask,
-    "relic_select": _by_visible_options("relic_select"),
+    "relic_select": _relic_select_mask,
+    "bundle_select": _bundle_select_mask,
     "map": lambda state, r: range(min(
         len((state.get("map") or {}).get("next_options")
             or (state.get("map") or {}).get("options") or []),
