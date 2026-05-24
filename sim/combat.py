@@ -94,14 +94,83 @@ class CombatState:
 
     def _resolve_effects(self, card: CardDef) -> None:
         for eff in card.effects:
-            target = self.monster if eff.target is Target.SELECTED_ENEMY else self.player
-            if eff.op is EffectOp.DEAL_DAMAGE:
-                deal_damage(eff.amount, self.player, target)
-            elif eff.op is EffectOp.GAIN_BLOCK:
-                gain_block(target, eff.amount)
-            elif eff.op is EffectOp.APPLY_POWER:
-                assert eff.power_id is not None
-                target.add_or_stack_power(make_power(eff.power_id, eff.amount, target))
+            self._resolve_single_effect(card, eff)
+
+    def _resolve_single_effect(self, card: CardDef, eff) -> None:  # noqa: PLR0912
+        # Resolve target list. The first-slice combat has one monster so
+        # ALL_ENEMIES / RANDOM_ENEMY collapse to a single-element list.
+        if eff.target is Target.SELF:
+            targets = [self.player]
+        elif eff.target in (Target.SELECTED_ENEMY, Target.RANDOM_ENEMY):
+            targets = [self.monster]
+        elif eff.target is Target.ALL_ENEMIES:
+            targets = [self.monster]
+        else:
+            targets = []
+
+        if eff.op is EffectOp.DEAL_DAMAGE:
+            # Damage scaling: block-amount or strike-tag-count override base amount.
+            base_amount = eff.amount
+            for sc in eff.scaling:
+                if sc.kind.value == "block_amount":
+                    base_amount = self.player.block
+                    break
+                if sc.kind.value == "strike_tag_count":
+                    base_amount += sum(1 for c in self.draw_pile + self.discard_pile + self.hand
+                                       if "strike" in c.id)
+                    break
+            for _ in range(max(1, eff.hit_count)):
+                for t in targets:
+                    if t.alive:
+                        deal_damage(base_amount, self.player, t)
+            return
+        if eff.op is EffectOp.GAIN_BLOCK:
+            for t in targets:
+                gain_block(t, eff.amount)
+            return
+        if eff.op is EffectOp.APPLY_POWER:
+            assert eff.power_id is not None
+            for t in targets:
+                t.add_or_stack_power(make_power(eff.power_id, eff.amount, t))
+            return
+        if eff.op is EffectOp.DRAW_CARD:
+            self.draw(eff.amount)
+            return
+        if eff.op is EffectOp.ENERGY_GAIN:
+            self.player.energy += eff.amount
+            return
+        if eff.op is EffectOp.SELF_HP_LOSE:
+            # Unblockable self-damage (Bloodletting, Bloodwall, Breakthrough).
+            self.player.lose_hp(eff.amount)
+            return
+        if eff.op is EffectOp.EXHAUST_RANDOM:
+            if self.hand:
+                idx = self.rng.randrange(len(self.hand))
+                self.exhaust_pile.append(self.hand.pop(idx))
+            return
+        if eff.op is EffectOp.EXHAUST_SELF:
+            # Move the just-played card from discard back to exhaust.
+            if self.discard_pile and self.discard_pile[-1] is card:
+                self.exhaust_pile.append(self.discard_pile.pop())
+            return
+        if eff.op is EffectOp.COPY_TO_DISCARD:
+            self.discard_pile.append(card)
+            return
+        if eff.op is EffectOp.UPGRADE_ALL_IN_HAND:
+            # Placeholder: tag id with '+' (Cycle B leaves real per-card upgrades for later).
+            from dataclasses import replace
+            for i, c in enumerate(self.hand):
+                if not c.id.endswith("+"):
+                    self.hand[i] = replace(c, id=c.id + "+", name=c.name + "+")
+            return
+        if eff.op is EffectOp.AUTO_PLAY_FROM_DRAW:
+            # Havoc: play the top of draw pile, then exhaust it.
+            if self.draw_pile:
+                c = self.draw_pile.pop()
+                # Resolve its effects against the current target context.
+                self._resolve_effects(c)
+                self.exhaust_pile.append(c)
+            return
 
     def end_player_turn(self) -> None:
         self.is_player_turn = False
