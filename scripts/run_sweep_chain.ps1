@@ -7,15 +7,39 @@
 # prints a colored header before each sweep so it's obvious which
 # preset is running.
 #
+# CPU-friendly defaults: the wrapper drops its own process to
+# BelowNormal priority so other apps preempt it on demand; the user's
+# computer stays responsive even though training pegs a core.
+#
+# Env-var knobs (set BEFORE running the script):
+#   $env:PPO_DEVICE = "cuda"            # move gradient step to GPU (≈ 80%
+#                                       #  slower but frees the CPU thread)
+#   $env:PPO_CPU_LIMIT = "4"            # restrict training to N CPU cores
+#   $env:PPO_PRIORITY = "Normal"        # override the BelowNormal default
+#
 # Launch with:
 #   powershell -NoExit -File scripts\run_sweep_chain.ps1
-# (the -NoExit keeps the window open after all four finish so the user
-#  can read the final DONE summaries.)
 
 $ErrorActionPreference = 'Continue'
 $root = 'D:\workspace\ProjectSTS2'
 $py   = "$root\.venv\Scripts\python.exe"
 $presets = @('survival_v2','boss_heavy','balanced','sparse')
+
+# Drop the wrapper itself to BelowNormal. Child python inherits this
+# class, so every gradient step + env.step lives under the same
+# scheduling tier. `Normal` overrides for the impatient.
+$priorityName = if ($env:PPO_PRIORITY) { $env:PPO_PRIORITY } else { 'BelowNormal' }
+try { (Get-Process -Id $PID).PriorityClass = $priorityName } catch { }
+
+# CPU affinity bitmask (1 bit per core). PPO_CPU_LIMIT=4 → first 4 cores.
+if ($env:PPO_CPU_LIMIT) {
+    $n = [int]$env:PPO_CPU_LIMIT
+    $mask = [long]((1L -shl $n) - 1)
+    try { (Get-Process -Id $PID).ProcessorAffinity = [IntPtr]$mask } catch { }
+    Write-Host "  cpu affinity: $n cores (mask 0x$($mask.ToString('X')))" -ForegroundColor DarkGray
+}
+Write-Host "  process priority: $priorityName" -ForegroundColor DarkGray
+if ($env:PPO_DEVICE) { Write-Host "  PPO_DEVICE: $env:PPO_DEVICE" -ForegroundColor DarkGray }
 
 $logDir = "$env:TEMP\sts2_chain_$(Get-Date -Format yyyyMMdd_HHmmss)"
 New-Item -ItemType Directory -Force $logDir | Out-Null
