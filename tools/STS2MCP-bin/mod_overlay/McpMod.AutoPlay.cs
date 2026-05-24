@@ -96,6 +96,14 @@ public static partial class McpMod
         GD.Print("[STS2 MCP] AutoPlay thinker installed (embedded ONNX inference).");
     }
 
+    // ThinkerLoop heartbeat: when autoplay is on but no action is being
+    // executed (mask empty, wrong state, etc), we log a single diagnostic
+    // line every ~2 seconds so the player can see *why* progress stalls
+    // without spamming the console on every 200 ms tick.
+    private static string _lastIdleReason = "";
+    private static DateTime _lastIdleLog = DateTime.MinValue;
+    private static readonly TimeSpan IdleLogInterval = TimeSpan.FromSeconds(2);
+
     private static void _ThinkerLoop()
     {
         while (true)
@@ -115,6 +123,18 @@ public static partial class McpMod
         }
     }
 
+    private static void _LogIdle(string reason)
+    {
+        // Rate-limited: re-emit only when the reason changes, or every
+        // IdleLogInterval if the same reason persists. Without this the
+        // game console would get 5 lines/sec while waiting on animations.
+        var now = DateTime.UtcNow;
+        if (reason == _lastIdleReason && (now - _lastIdleLog) < IdleLogInterval) return;
+        _lastIdleReason = reason;
+        _lastIdleLog = now;
+        GD.Print($"[STS2 MCP][AUTO] idle: {reason}");
+    }
+
     private static void _ThinkOneStep()
     {
         // Marshal both the state read and the action execution onto the
@@ -129,33 +149,54 @@ public static partial class McpMod
                 return false;
             }
             string st = AsString(state, "state_type", "");
+            if (string.IsNullOrEmpty(st))
+            {
+                _LogIdle("state_type missing — no run loaded?");
+                return false;
+            }
             if (st == "game_over" || st == "victory")
             {
-                // Stop spamming actions at end-of-run; the player can
-                // restart manually or use menu_select via the UI.
+                _LogIdle($"run ended ({st}); manually restart to continue");
                 return false;
             }
             // In combat we wait for the play phase so animations resolve.
             if (st == "monster" || st == "elite" || st == "boss")
             {
                 var battle = AsDict(state, "battle");
-                if (!AsBool(battle, "is_play_phase")) return false;
+                if (!AsBool(battle, "is_play_phase"))
+                {
+                    _LogIdle($"{st}: waiting for play phase");
+                    return false;
+                }
             }
             bool[] mask = BuildMask(state);
             int legalCount = 0;
             for (int i = 0; i < mask.Length; i++) if (mask[i]) legalCount++;
-            if (legalCount == 0) return false;
+            if (legalCount == 0)
+            {
+                _LogIdle($"{st}: 0 legal actions in mask (state shape may not match training env)");
+                return false;
+            }
 
             float[] obs = BuildObs(state);
             int action = PredictAction(obs, mask);
-            if (action < 0) return false;
+            if (action < 0)
+            {
+                _LogIdle($"{st}: PredictAction returned -1 (legal={legalCount})");
+                return false;
+            }
 
             var decoded = DecodeAction(action, state);
-            if (decoded is not { } dec) return false;
+            if (decoded is not { } dec)
+            {
+                _LogIdle($"{st}: DecodeAction({action}) returned null");
+                return false;
+            }
             try
             {
                 var result = ExecuteAction(dec.action, dec.data);
-                GD.Print($"[STS2 MCP][AUTO] {st} -> {dec.action} (idx={action})");
+                _lastIdleReason = "";  // reset idle tracking after a real action
+                GD.Print($"[STS2 MCP][AUTO] {st} -> {dec.action} (idx={action}, legal={legalCount})");
                 return true;
             }
             catch (Exception ex)
