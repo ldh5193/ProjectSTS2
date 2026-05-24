@@ -169,6 +169,37 @@ public static partial class McpMod
                     return false;
                 }
             }
+
+            // hand_select shortcut: the trained policy never saw this state
+            // (the simulator doesn't reach card-effect hand prompts yet), so
+            // letting it pick freely tends to spam combat_confirm_selection
+            // with zero cards selected → game ignores → infinite loop.
+            // Force the canonical interaction here: pick the first hand
+            // card if none selected, otherwise confirm. This is the only
+            // automation path that actually progresses overlays like
+            // Headbutt / Burn / Discovery without policy retraining.
+            if (st == "hand_select")
+            {
+                var hs = AsDict(state, "hand_select");
+                var selected = AsList(hs, "selected_cards");
+                var hand = AsList(AsDict(state, "player"), "hand");
+                if (selected.Count == 0 && hand.Count > 0)
+                {
+                    var payload = new Dictionary<string, JsonElement>
+                    {
+                        ["card_index"] = JsonDocument.Parse("0").RootElement.Clone(),
+                    };
+                    ExecuteAction("combat_select_card", payload);
+                    GD.Print($"[STS2 MCP][AUTO] hand_select -> combat_select_card(0) (fallback)");
+                    _lastIdleReason = "";
+                    return true;
+                }
+                ExecuteAction("combat_confirm_selection", new Dictionary<string, JsonElement>());
+                GD.Print($"[STS2 MCP][AUTO] hand_select -> combat_confirm_selection (fallback, {selected.Count} picked)");
+                _lastIdleReason = "";
+                return true;
+            }
+
             bool[] mask = BuildMask(state);
             int legalCount = 0;
             for (int i = 0; i < mask.Length; i++) if (mask[i]) legalCount++;
