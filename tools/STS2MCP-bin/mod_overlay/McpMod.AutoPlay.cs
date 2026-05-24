@@ -120,6 +120,10 @@ public static partial class McpMod
     // last select. Reset on every entry/exit and after a successful
     // confirm so a future prompt starts fresh.
     private static int _handSelectTicksSinceSelect = -1;
+    // Same retry pattern for the out-of-combat grid pickers (smith /
+    // transform / NEOW upgrade). -1 = not in a card_select; 0..N = ticks
+    // since the last select_card call.
+    private static int _cardSelectTicksSinceSelect = -1;
     private const int HandSelectRetryTicks = 5;  // ~1 s @ 200 ms tick
 
     // Loop-detector: track the last (state_type, action_index) we executed
@@ -435,6 +439,56 @@ public static partial class McpMod
             // Reset the hand_select retry counter when we leave the overlay
             // so the next prompt starts with a fresh select.
             _handSelectTicksSinceSelect = -1;
+
+            // card_select fallback — same logic as hand_select but for the
+            // out-of-combat grid pickers (smith / transform / NEOW upgrade /
+            // event card grants). The policy was never trained on these
+            // either; without a fallback the loop guard suppresses one
+            // pick per second forever while can_confirm sits true.
+            if (st == "card_select")
+            {
+                var cs = AsDict(state, "card_select");
+                bool canConfirm = AsBool(cs, "can_confirm");
+                var selected = AsList(cs, "selected_cards");
+                var cards = AsList(cs, "cards");
+                if (canConfirm && selected.Count > 0)
+                {
+                    ExecuteAction("confirm_selection", new Dictionary<string, JsonElement>());
+                    GD.Print($"[STS2 MCP][AUTO] card_select -> confirm_selection ({selected.Count} picked)");
+                    return true;
+                }
+                if (cards.Count > 0)
+                {
+                    bool shouldFire = _cardSelectTicksSinceSelect < 0
+                                   || _cardSelectTicksSinceSelect >= HandSelectRetryTicks;
+                    if (shouldFire)
+                    {
+                        int firstIdx = 0;
+                        if (cards[0] is Dictionary<string, object?> first0)
+                            firstIdx = ToInt(first0, "index", 0);
+                        var payload = new Dictionary<string, JsonElement>
+                        {
+                            ["index"] = JsonDocument.Parse(firstIdx.ToString()).RootElement.Clone(),
+                        };
+                        ExecuteAction("select_card", payload);
+                        _cardSelectTicksSinceSelect = 0;
+                        GD.Print($"[STS2 MCP][AUTO] card_select -> select_card({firstIdx})");
+                        return true;
+                    }
+                    _cardSelectTicksSinceSelect++;
+                    _LogIdle($"card_select: waiting for can_confirm or selection to land ({_cardSelectTicksSinceSelect}/{HandSelectRetryTicks})");
+                    return false;
+                }
+                // Empty grid — if cancel is legal escape it
+                if (AsBool(cs, "can_skip") || AsBool(cs, "can_cancel"))
+                {
+                    ExecuteAction("cancel_selection", new Dictionary<string, JsonElement>());
+                    GD.Print("[STS2 MCP][AUTO] card_select -> cancel_selection (empty grid)");
+                    return true;
+                }
+                return false;
+            }
+            _cardSelectTicksSinceSelect = -1;
 
             bool[] mask = BuildMask(state);
             // Loop suppression: if we've repeated the same (state, idx) too
