@@ -82,6 +82,13 @@ public static partial class McpMod
     private static Thread? _thinkerThread;
     private static bool _thinkerInstalled;
     private const int ThinkerPollMs = 200;
+    // hand_select retry state: we sent a select_card call and are waiting
+    // for the slide animation to land it in SelectedHandCardContainer.
+    // -1 = not in a hand_select prompt right now. 0..N = ticks since the
+    // last select. Reset on every entry/exit and after a successful
+    // confirm so a future prompt starts fresh.
+    private static int _handSelectTicksSinceSelect = -1;
+    private const int HandSelectRetryTicks = 5;  // ~1 s @ 200 ms tick
 
     internal static void EnsureAutoPlayThinker()
     {
@@ -183,22 +190,53 @@ public static partial class McpMod
                 var hs = AsDict(state, "hand_select");
                 var selected = AsList(hs, "selected_cards");
                 var hand = AsList(AsDict(state, "player"), "hand");
-                if (selected.Count == 0 && hand.Count > 0)
+
+                // Path A: at least one card is already in SelectedHandCardContainer
+                // (either the player picked one before flipping AutoPlay ON,
+                // or our previous select call has landed). Confirm immediately —
+                // the same code path works whether the overlay was entered with
+                // a card pre-selected or whether we picked it ourselves.
+                if (selected.Count > 0)
                 {
-                    var payload = new Dictionary<string, JsonElement>
-                    {
-                        ["card_index"] = JsonDocument.Parse("0").RootElement.Clone(),
-                    };
-                    ExecuteAction("combat_select_card", payload);
-                    GD.Print($"[STS2 MCP][AUTO] hand_select -> combat_select_card(0) (fallback)");
+                    ExecuteAction("combat_confirm_selection", new Dictionary<string, JsonElement>());
+                    GD.Print($"[STS2 MCP][AUTO] hand_select -> combat_confirm_selection ({selected.Count} picked)");
+                    _handSelectTicksSinceSelect = -1;
                     _lastIdleReason = "";
                     return true;
                 }
-                ExecuteAction("combat_confirm_selection", new Dictionary<string, JsonElement>());
-                GD.Print($"[STS2 MCP][AUTO] hand_select -> combat_confirm_selection (fallback, {selected.Count} picked)");
-                _lastIdleReason = "";
-                return true;
+
+                // Path B: nothing selected yet. We send select_card(0) and
+                // wait up to HandSelectRetryTicks (~1 s) for the slide animation
+                // to deposit it in SelectedHandCardContainer. If the state
+                // still reports 0 selected after that, retry — never get
+                // stuck forever (the previous version did because we never
+                // re-fired select).
+                if (hand.Count > 0)
+                {
+                    bool shouldFire = _handSelectTicksSinceSelect < 0
+                                   || _handSelectTicksSinceSelect >= HandSelectRetryTicks;
+                    if (shouldFire)
+                    {
+                        var payload = new Dictionary<string, JsonElement>
+                        {
+                            ["card_index"] = JsonDocument.Parse("0").RootElement.Clone(),
+                        };
+                        ExecuteAction("combat_select_card", payload);
+                        _handSelectTicksSinceSelect = 0;
+                        GD.Print($"[STS2 MCP][AUTO] hand_select -> combat_select_card(0)");
+                        _lastIdleReason = "";
+                        return true;
+                    }
+                    _handSelectTicksSinceSelect++;
+                    _LogIdle($"hand_select: waiting for select to land ({_handSelectTicksSinceSelect}/{HandSelectRetryTicks})");
+                    return false;
+                }
+                _LogIdle("hand_select: hand empty?");
+                return false;
             }
+            // Reset the hand_select retry counter when we leave the overlay
+            // so the next prompt starts with a fresh select.
+            _handSelectTicksSinceSelect = -1;
 
             bool[] mask = BuildMask(state);
             int legalCount = 0;
