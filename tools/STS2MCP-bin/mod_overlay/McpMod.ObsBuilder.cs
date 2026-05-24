@@ -41,24 +41,30 @@ public static partial class McpMod
     };
 
     /// <summary>
-    /// Sum of stack amounts for a given power id on a creature dict
-    /// (state.player or state.battle.enemies[i]).
+    /// Sum of stack amounts for a given power id on a creature dict.
+    /// Matches both the sim's lowercase ids ("vulnerable") and the live
+    /// mod's "<NAME>_POWER" style ("VULNERABLE_POWER") so the same obs
+    /// code works in both contexts. Also accepts the localized `type`
+    /// field as a fallback.
     /// </summary>
     private static float _PowerAmount(Dictionary<string, object?>? creature, string id)
     {
         if (creature == null) return 0f;
-        // Mod schema: creature.status = [{id, amount, ...}, ...] OR
-        // creature.powers = [{id, amount, ...}, ...] depending on version.
         var status = AsList(creature, "status");
         if (status.Count == 0) status = AsList(creature, "powers");
+        string target = id.ToLowerInvariant();
         float total = 0f;
         foreach (var p in status)
         {
-            if (p is Dictionary<string, object?> pd
-                && string.Equals(AsString(pd, "id", ""), id, StringComparison.OrdinalIgnoreCase))
-            {
-                total += ToFloat(pd, "amount", 0f);
-            }
+            if (p is not Dictionary<string, object?> pd) continue;
+            string pid = AsString(pd, "id", "").ToLowerInvariant();
+            // Strip the optional "_power" suffix the live mod appends.
+            if (pid.EndsWith("_power")) pid = pid.Substring(0, pid.Length - 6);
+            if (pid == target) { total += ToFloat(pd, "amount", 0f); continue; }
+            // Fallback: some power dicts have only a localized `name` and a
+            // `type` ("Debuff" / "Buff") — try the english `name` if present.
+            string pname = AsString(pd, "name", "").ToLowerInvariant();
+            if (pname == target) total += ToFloat(pd, "amount", 0f);
         }
         return total;
     }
