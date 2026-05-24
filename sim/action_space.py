@@ -87,9 +87,10 @@ RANGES: tuple[ActionRange, ...] = (
     ),
     ActionRange(
         "relic_select", 86, 6,
-        state_types=("relic_select",),
+        state_types=("relic_select", "treasure"),
         doc="0..4=select_relic(idx) or claim_treasure_relic(idx); "
-            "5=skip_relic_selection.",
+            "5=skip_relic_selection. Active in both standalone "
+            "relic-pick overlays AND treasure rooms (claim_treasure_relic).",
     ),
     ActionRange(
         "bundle_select", 92, 12,
@@ -472,11 +473,18 @@ def _relic_select_mask(state: dict, r: ActionRange) -> Iterable[int]:
         state.relic_select = {"relics": [{"index": int, "id": str, ...}], "can_skip": bool}
     Old code assumed `state["relic_select"]` was a plain list — it's a dict,
     so the mask was always empty and AutoPlay stalled at the first relic offer.
+
+    Treasure rooms reuse this range (claim_treasure_relic) — read from
+    state.treasure when state_type=treasure instead of state.relic_select.
     """
-    rs = state.get("relic_select")
-    if not isinstance(rs, dict):
+    st = state.get("state_type")
+    if st == "treasure":
+        src = state.get("treasure") or {}
+    else:
+        src = state.get("relic_select") or {}
+    if not isinstance(src, dict):
         return ()
-    relics = rs.get("relics") or []
+    relics = src.get("relics") or []
     out: list[int] = []
     skip_slot = r.size - 1
     for i, entry in enumerate(relics):
@@ -485,7 +493,7 @@ def _relic_select_mask(state: dict, r: ActionRange) -> Iterable[int]:
         idx = entry.get("index", i) if isinstance(entry, dict) else i
         if 0 <= int(idx) < skip_slot:
             out.append(int(idx))
-    if rs.get("can_skip"):
+    if src.get("can_skip"):
         out.append(skip_slot)
     return out
 

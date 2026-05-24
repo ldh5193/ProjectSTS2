@@ -38,7 +38,7 @@ public static partial class McpMod
         new("hand_select",    61,  11, new[] {"hand_select"}),
         new("card_reward",    72,  6,  new[] {"card_reward"}),  // POST-COMBAT only — NCardRewardSelectionScreen
         new("rewards",        78,  8,  new[] {"rewards"}),
-        new("relic_select",   86,  6,  new[] {"relic_select"}),
+        new("relic_select",   86,  6,  new[] {"relic_select", "treasure"}),
         new("bundle_select",  92,  12, new[] {"bundle_select"}),  // 0..9 pick bundle, 10 confirm, 11 cancel
         new("map",            104, 20, new[] {"map"}),
         new("event",          124, 8,  new[] {"event", "fake_merchant"}),
@@ -264,8 +264,9 @@ public static partial class McpMod
         // pick. Same pattern works for shops and treasure proceed too.
         if (st == "rest_site")
         {
-            var rs = AsDict(state, "rest_site");
-            if (AsBool(rs, "can_proceed")) yield return 0;
+            // Same problem as shop: can_proceed sometimes False even when
+            // the rest-room exit is interactable. Force-yield proceed.
+            yield return 0;
         }
         if (st == "shop")
         {
@@ -274,8 +275,9 @@ public static partial class McpMod
         }
         if (st == "treasure")
         {
-            var tr = AsDict(state, "treasure");
-            if (AsBool(tr, "can_proceed")) yield return 0;
+            // Same problem as shop / rest: can_proceed is unreliable.
+            // Always yield proceed; ExecuteProceed re-validates.
+            yield return 0;
         }
         if (st == "event")
         {
@@ -310,7 +312,11 @@ public static partial class McpMod
         // The legacy attempt read state["relic_select"] as a plain list and
         // saw zero options every tick — hence the auto-play hang the user
         // reported at the very first relic offer.
-        var rs = AsDict(state, "relic_select");
+        // Treasure rooms reuse this range with claim_treasure_relic; the
+        // mod publishes the relic list at state.treasure when state_type
+        // is "treasure", so swap source by state.
+        string st = AsString(state, "state_type", "");
+        var rs = st == "treasure" ? AsDict(state, "treasure") : AsDict(state, "relic_select");
         var relics = AsList(rs, "relics");
         int n = Math.Min(relics.Count, r.Size - 1);  // last slot reserved for skip
         for (int i = 0; i < n; i++)
