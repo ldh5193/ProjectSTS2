@@ -29,6 +29,12 @@ from .dsl import CardDef
 from .encounter import EncounterPools, build_monster_for, generate_pools
 from .game_state import MapNode, RunMap, RunState, StateType
 from .map_gen import generate_act_map
+from .relics import (
+    trigger_after_combat_victory,
+    trigger_after_room_entered,
+    trigger_on_combat_start,
+    trigger_on_player_turn_start,
+)
 from .rewards import RarityRoller, generate_card_reward
 
 
@@ -199,6 +205,9 @@ def _enter_room(rs: RunState, node: MapNode) -> None:
     else:
         # Ancient / unknown fallthrough: treat as proceed.
         rs.state_type = StateType.MAP
+    # After the state_type is finalized, fire relic on-room-entered hooks
+    # (MealTicket on rest, Pantograph on boss, ...).
+    trigger_after_room_entered(rs, rs.state_type)
 
 
 def _start_combat(rs: RunState, encounter_id: str) -> None:
@@ -220,6 +229,14 @@ def _start_combat(rs: RunState, encounter_id: str) -> None:
     cs.discard_pile = []
     cs.start_player_turn()
     rs.combat = cs
+    # Fire on-combat-start relic hooks now that cs.player/cs.monster are wired up.
+    trigger_on_combat_start(rs, cs)
+    # And on-player-turn-start for turn-1 hooks (Lantern, BloodVial, …).
+    trigger_on_player_turn_start(rs, cs)
+    # Re-sync combat-side player HP with the RunState HP after any healing
+    # hooks (BloodVial, Bloodletting-style relics) so the combat sees the
+    # post-heal value rather than the snapshot taken before hook dispatch.
+    cs.player.hp = rs.hp
 
 
 def _step_combat(rs: RunState, body: dict, res: StepResult) -> StepResult:
@@ -247,9 +264,8 @@ def _step_combat(rs: RunState, body: dict, res: StepResult) -> StepResult:
     if cs.player_won():
         res.combat_won = True
         rs.hp = cs.player.hp  # carry over post-combat HP
-        # Apply Burning Blood if held.
-        if rs.has_relic("BURNING_BLOOD"):
-            rs.heal(6)
+        # Fire relic after-combat-victory hooks (Burning Blood, Black Blood, …).
+        trigger_after_combat_victory(rs)
         # Open reward.
         room_for_source = {
             StateType.MONSTER: "regular",
