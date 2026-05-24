@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "+WlbGZAHmAo=",
+  "success": true,
+  "projectFilePath": "D:\\workspace\\ProjectSTS2\\tools\\STS2MCP-bin\\mod_overlay\\STS2_MCP.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\DHLee\\.nuget\\packages\\microsoft.ml.onnxruntime\\1.20.1\\microsoft.ml.onnxruntime.1.20.1.nupkg.sha512",
+    "C:\\Users\\DHLee\\.nuget\\packages\\microsoft.ml.onnxruntime.managed\\1.20.1\\microsoft.ml.onnxruntime.managed.1.20.1.nupkg.sha512",
+    "C:\\Users\\DHLee\\.nuget\\packages\\system.memory\\4.5.5\\system.memory.4.5.5.nupkg.sha512"
+  ],
+  "logs": []
+}

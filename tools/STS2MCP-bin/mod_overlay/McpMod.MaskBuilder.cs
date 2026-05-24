@@ -104,7 +104,13 @@ public static partial class McpMod
             if (!AsBool(it, "is_stocked", true)) continue;
             yield return ToInt(it, "index", i);
         }
-        if (AsBool(sh, "can_proceed", true)) yield return 15;  // leave
+        // Always expose leave. The mod sometimes emits can_proceed=False
+        // for shops even when the merchant exit button is interactable
+        // (observed live: 14 unaffordable items + can_proceed=False →
+        // policy stuck with 0 legal actions for >30 ticks). Letting the
+        // mask yield 15 unconditionally is safe because ExecuteProceed
+        // re-validates the merchant proceed button server-side.
+        yield return 15;
     }
 
     private static IEnumerable<int> MenuSelectMask(Dictionary<string, object?> state, ActionRange r)
