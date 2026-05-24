@@ -158,12 +158,28 @@ def generate_act_map(act_key: str, rng: Rng, ascension: int = 0,
             qi += 1
 
     # Connect each non-boss floor to the next via lateral edges [-1, 0, +1].
+    # If the next floor is a single-node bottleneck (treasure or rest_row in
+    # some acts), every current-floor node funnels into that single child so
+    # no node ends up stranded.
     for f in range(1, boss_row - 1):
+        next_floor = floors[f]
+        next_width = len(next_floor)
         for n in floors[f - 1]:
+            if next_width == 1:
+                # Bottleneck: collapse to the lone successor.
+                n.children.append((f + 1, next_floor[0].x))
+                continue
+            seen: set[int] = set()
             for dx in (-1, 0, 1):
                 nx = n.x + dx
-                if 0 <= nx < len(floors[f]):
+                if 0 <= nx < next_width and nx not in seen:
                     n.children.append((f + 1, nx))
+                    seen.add(nx)
+            if not n.children:
+                # Safety net: clamp to nearest in-range column so no node
+                # is ever a dead end.
+                clamped = max(0, min(next_width - 1, n.x))
+                n.children.append((f + 1, clamped))
     # rest_row -> boss: all rest nodes connect to the lone boss.
     for n in floors[rest_row - 1]:
         n.children.append((boss_row, 3))
