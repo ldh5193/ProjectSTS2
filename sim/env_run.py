@@ -151,6 +151,15 @@ class RunEnv(gym.Env):
         self.reward_config = reward_config or RewardConfig()
         self.rs: RunState | None = None
         self._last_hp: int = 0
+        # Per-step memoization. `_state_gen` is bumped any time we mutate
+        # RunState (reset or step). Each cache stores `(gen, value)` so
+        # repeated calls within the same "frame" reuse the work. This
+        # cannot change the policy's experience because the cached values
+        # are bitwise-identical to a fresh recompute on the same state.
+        self._state_gen: int = 0
+        self._view_cache: tuple[int, dict] | None = None
+        self._map_cache: tuple[int, list] | None = None
+        self._mask_cache: tuple[int, np.ndarray] | None = None
 
     # -- Gym API -------------------------------------------------------------
 
@@ -164,12 +173,14 @@ class RunEnv(gym.Env):
         )
         start_run(self.rs)
         self._last_hp = self.rs.hp
+        self._invalidate_caches()
         return self._obs(), {"action_mask": self.action_masks()}
 
     def step(self, action: int):  # type: ignore[override]
         assert self.rs is not None, "call reset() first"
         body = self._decode(int(action))
         result = step(self.rs, body)
+        self._invalidate_caches()
         reward = self._reward(result)
         terminated = self.rs.is_terminal()
         return (
@@ -182,7 +193,17 @@ class RunEnv(gym.Env):
 
     def action_masks(self) -> np.ndarray:
         assert self.rs is not None
-        return np.asarray(self._build_mask(self.rs), dtype=bool)
+        cached = self._mask_cache
+        if cached is not None and cached[0] == self._state_gen:
+            return cached[1]
+        m = np.asarray(self._build_mask(self.rs), dtype=bool)
+        self._mask_cache = (self._state_gen, m)
+        return m
+
+    def _invalidate_caches(self) -> None:
+        self._state_gen += 1
+        # No need to clear caches explicitly; the generation check makes
+        # stale entries unreachable. The old objects get GC'd next cycle.
 
     # -- decode -------------------------------------------------------------
 
@@ -194,9 +215,26 @@ class RunEnv(gym.Env):
         body = decode(idx, mod_state)
         return body
 
+    def _reachable_map_nodes_cached(self):
+        cached = self._map_cache
+        if cached is not None and cached[0] == self._state_gen:
+            return cached[1]
+        nodes = reachable_map_nodes(self.rs)
+        self._map_cache = (self._state_gen, nodes)
+        return nodes
+
     def _mod_state_view(self) -> dict:
         """Project RunState into the partial mod-API JSON shape that
-        sim.action_space.decode + build_mask consumes."""
+        sim.action_space.decode + build_mask consumes.
+
+        Cached per state generation: decode (pre-step) and build_mask
+        (post-step) both call this, and within a single frame several
+        callers may hit it. Building the dict is non-trivial (allocations
+        for every enemy/card), so the cache pays for itself quickly.
+        """
+        cached = self._view_cache
+        if cached is not None and cached[0] == self._state_gen:
+            return cached[1]
         rs = self.rs
         assert rs is not None
         view: dict[str, Any] = {"state_type": rs.state_type.value}
@@ -229,10 +267,11 @@ class RunEnv(gym.Env):
                 ],
             }
         if rs.state_type is StateType.MAP:
-            opts = reachable_map_nodes(rs)
+            opts = self._reachable_map_nodes_cached()
             view["map"] = {"options": [{"x": n.x, "floor": n.floor} for n in opts]}
         if rs.state_type in (StateType.CARD_REWARD, StateType.CARD_SELECT):
             view["card_select"] = [{"id": c.id} for c in (rs.pending_card_reward or [])]
+        self._view_cache = (self._state_gen, view)
         return view
 
     def _build_mask(self, rs: RunState) -> list[bool]:
@@ -262,18 +301,26 @@ class RunEnv(gym.Env):
         v[cursor] = int(rs.ascension) / 10.0
         cursor += 1
 
-        # Deck composition by rarity (5: basic/common/uncommon/rare/total)
-        counts = {CardRarity.BASIC: 0, CardRarity.COMMON: 0,
-                  CardRarity.UNCOMMON: 0, CardRarity.RARE: 0,
-                  CardRarity.ANCIENT: 0}
+        # Deck composition by rarity (5: basic/common/uncommon/rare/total).
+        # Inlined fixed-index counter — faster than a dict lookup per card,
+        # and a tight `id[-1] == "+"` check beats rstrip("+"). Values are
+        # identical to the dict-based version.
+        rarity_counts = [0, 0, 0, 0, 0]  # [BASIC, COMMON, UNCOMMON, RARE, ANCIENT]
+        _rar_idx = {
+            CardRarity.BASIC: 0, CardRarity.COMMON: 1,
+            CardRarity.UNCOMMON: 2, CardRarity.RARE: 3,
+            CardRarity.ANCIENT: 4,
+        }
         for c in rs.deck:
-            rarity = RARITY_OF.get(c.id.rstrip("+"), CardRarity.BASIC)
-            counts[rarity] = counts.get(rarity, 0) + 1
-        deck_size = max(1, len(rs.deck))
-        for i, r in enumerate([CardRarity.BASIC, CardRarity.COMMON,
-                               CardRarity.UNCOMMON, CardRarity.RARE]):
-            v[cursor + i] = counts.get(r, 0) / deck_size
-        v[cursor + 4] = min(1.0, len(rs.deck) / 30)
+            cid = c.id[:-1] if c.id.endswith("+") else c.id
+            rarity_counts[_rar_idx.get(RARITY_OF.get(cid, CardRarity.BASIC), 0)] += 1
+        deck_len = len(rs.deck)
+        deck_size = max(1, deck_len)
+        v[cursor + 0] = rarity_counts[0] / deck_size
+        v[cursor + 1] = rarity_counts[1] / deck_size
+        v[cursor + 2] = rarity_counts[2] / deck_size
+        v[cursor + 3] = rarity_counts[3] / deck_size
+        v[cursor + 4] = min(1.0, deck_len / 30)
         cursor += 5
 
         # Relics owned count (1)
@@ -303,7 +350,7 @@ class RunEnv(gym.Env):
 
         # Map options count (1)
         if rs.state_type is StateType.MAP:
-            v[cursor] = len(reachable_map_nodes(rs)) / 7.0
+            v[cursor] = len(self._reachable_map_nodes_cached()) / 7.0
         cursor += 1
 
         v.clip(0.0, 1.0, out=v)

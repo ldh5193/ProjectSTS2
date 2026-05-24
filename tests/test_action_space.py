@@ -111,13 +111,15 @@ def test_decode_combat_untargeted_play():
     assert body == {"action": "play_card", "card_index": 1}
 
 
-def test_decode_combat_targeted_play_picks_enemy_combat_id():
+def test_decode_combat_targeted_play_picks_enemy_entity_id():
     body = decode(11, _combat_state())
     assert body["action"] == "play_card"
     assert body["card_index"] == 0
-    # The mod returns combat_id as an int in the live API; fall back to entity_id
-    # if missing. The test fixture has both, so combat_id wins.
-    assert body["target"] == 1
+    # The live mod's play_card target field is the enemy's *string* entity_id,
+    # not the numeric combat_id (the JSON API enforces an Element of type
+    # 'String' on this field). decode() prefers entity_id and only falls back
+    # to combat_id when entity_id is missing.
+    assert body["target"] == "NIBBIT_0"
 
 
 def test_decode_targeted_play_invalid_when_enemy_slot_empty():

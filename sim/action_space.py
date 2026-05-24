@@ -165,10 +165,19 @@ def range_named(name: str) -> ActionRange:
     return _BY_NAME[name]
 
 
+# Precomputed idx → ActionRange map. find_range() is called once per env step
+# (and many times per episode), so the linear scan over 16 ranges is replaced
+# with an O(1) lookup. The list spans the full Discrete(300) space; an entry
+# is None for the "reserved" tail so callers still see the same None result.
+_RANGE_BY_INDEX: tuple[ActionRange | None, ...] = tuple(
+    next((r for r in RANGES if r.contains(i)), None)
+    for i in range(N_ACTIONS)
+)
+
+
 def find_range(idx: int) -> ActionRange | None:
-    for r in RANGES:
-        if r.contains(idx):
-            return r
+    if 0 <= idx < N_ACTIONS:
+        return _RANGE_BY_INDEX[idx]
     return None
 
 
@@ -234,14 +243,22 @@ def _misc_mask(state: dict, r: ActionRange) -> Iterable[int]:
     an explicit can_proceed flag (rewards screen with empty items,
     event in_dialogue, etc.)."""
     st = state.get("state_type")
-    rewards = state.get("rewards")
-    if st == "rewards" and isinstance(rewards, dict) \
-            and rewards.get("can_proceed") and not (rewards.get("items") or []):
-        return [0]  # proceed
+    # Fast path: in the overwhelming majority of frames (combat/map/menu/...)
+    # neither sub-predicate fires. Short-circuit before the dict lookups so
+    # build_mask spends no time on misc unless misc could matter.
+    if st not in ("rewards", "event"):
+        return ()
+    if st == "rewards":
+        rewards = state.get("rewards")
+        if isinstance(rewards, dict) \
+                and rewards.get("can_proceed") and not (rewards.get("items") or []):
+            return (0,)  # proceed
+        return ()
+    # st == "event"
     event = state.get("event") or {}
-    if st == "event" and event.get("in_dialogue"):
-        return [1]  # advance_dialogue
-    return []
+    if event.get("in_dialogue"):
+        return (1,)  # advance_dialogue
+    return ()
 
 
 def _card_reward_mask(state: dict, r: ActionRange) -> Iterable[int]:
