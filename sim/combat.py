@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from .cards import build_starting_deck
 from .creatures import Monster, Player
-from .damage import deal_damage, gain_block
+from .damage import apply_poison_tick, deal_damage, gain_block
 from .dsl import CardDef, EffectOp, Target
 from .monsters import SludgeSpinnerWeak
 from .powers import make_power
@@ -179,6 +179,8 @@ class CombatState:
         self.hand.clear()
         # Weak's owner is player → tick at end of player turn.
         self._tick_powers(self.player, ids=("weak",))
+        # Poison ticks at end of owner's turn — player's poison hits player.
+        apply_poison_tick(self.player)
         self.monster_turn()
         if self.monster.alive:
             self.start_player_turn()
@@ -189,6 +191,8 @@ class CombatState:
         event = self.monster.take_turn(self.rng, self.player)
         # Vulnerable's owner is monster → tick at end of monster turn.
         self._tick_powers(self.monster, ids=("vulnerable",))
+        # Poison on the monster also ticks at end of monster turn.
+        apply_poison_tick(self.monster)
         return event
 
     @staticmethod

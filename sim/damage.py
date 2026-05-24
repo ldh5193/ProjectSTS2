@@ -37,11 +37,46 @@ def deal_damage(base_amount: int, dealer: Creature, target: Creature) -> tuple[i
     blocked = min(target.block, modified)
     target.block -= blocked
     unblocked = modified - blocked
+    # Plating: reduces HP loss per hit, consuming 1 stack per attack.
+    plating = target.get_power("plating") if hasattr(target, "get_power") else None
+    if plating is not None and plating.amount > 0 and unblocked > 0:
+        reduction = min(plating.amount, unblocked)
+        unblocked -= reduction
+        plating.amount -= 1
+        if plating.amount <= 0:
+            target.powers.remove(plating)
     hp_loss = target.lose_hp(unblocked)
+    # Thorns: if target has thorns AND took unblocked damage from a powered
+    # attack (we approximate "powered" as "the attack went through deal_damage"
+    # rather than self-damage). Dealer takes thorns damage, unblockable.
+    thorns = target.get_power("thorns") if hasattr(target, "get_power") else None
+    if (thorns is not None and thorns.amount > 0 and unblocked > 0
+            and dealer is not target and dealer.alive):
+        dealer.lose_hp(thorns.amount)
     return blocked, hp_loss
 
 
 def gain_block(creature: Creature, amount: int) -> None:
-    # No Frail/Dexterity modeled in MVP. Block accumulates without turn-reset
-    # (notes/05_mvp_combat_spec.md §D.4: "persists across turns until depleted").
-    creature.block += amount
+    """Add block to a creature, applying Dexterity (additive +N from owner)
+    and Frail (×0.75 multiplicative on the owner's powered block)."""
+    actual = amount
+    dex = creature.get_power("dexterity") if hasattr(creature, "get_power") else None
+    if dex is not None:
+        actual += dex.amount
+    frail = creature.get_power("frail") if hasattr(creature, "get_power") else None
+    if frail is not None:
+        actual = int(actual * 0.75)
+    creature.block += max(0, actual)
+
+
+def apply_poison_tick(creature: Creature) -> int:
+    """Apply Poison damage at end of owner turn: HP -= stacks, stacks -= 1.
+    Returns the HP loss (0 if no poison)."""
+    poison = creature.get_power("poison") if hasattr(creature, "get_power") else None
+    if poison is None or poison.amount <= 0:
+        return 0
+    loss = creature.lose_hp(poison.amount)
+    poison.amount -= 1
+    if poison.amount <= 0:
+        creature.powers.remove(poison)
+    return loss
