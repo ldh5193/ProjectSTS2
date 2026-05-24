@@ -212,13 +212,24 @@ def _enter_room(rs: RunState, node: MapNode) -> None:
         eid = rs._pools.next_boss()
         _start_combat(rs, eid)
     elif rt is StateType.REST:
-        # Stub: auto-rest (30% max HP heal) and bounce back to MAP so the
-        # agent doesn't get stuck on the rest screen. Full rest UI lands
-        # once smith/upgrade flows are real.
+        # Real choice point — see notes/18_training_gaps.md. Auto-resolving
+        # this room meant the policy never trained on the rest/smith
+        # trade-off (heal HP now vs upgrade a card forever). Expose the
+        # standard two options; smith only enabled when there is an
+        # unupgraded card in the deck. The agent picks via
+        # choose_rest_option(index); _step_rest applies the effect and
+        # returns to map.
         rs.state_type = StateType.REST
         trigger_after_room_entered(rs, rs.state_type)
-        rs.heal(int(rs.max_hp * 0.30))
-        rs.state_type = StateType.MAP
+        has_upgradable = any(
+            not (c.id.endswith("+") if isinstance(c.id, str) else False)
+            for c in rs.deck
+            if c.cost is not None and c.cost >= 0  # exclude curses
+        )
+        rs.pending_rest_options = [
+            {"id": "rest", "is_enabled": True},
+            {"id": "smith", "is_enabled": bool(has_upgradable)},
+        ]
         return
     elif rt is StateType.TREASURE:
         # Stub: auto-grant a placeholder treasure relic, return to MAP.
@@ -396,21 +407,32 @@ def _step_card_reward(rs: RunState, body: dict, res: StepResult) -> StepResult:
 def _step_rest(rs: RunState, body: dict, res: StepResult) -> StepResult:
     action = body.get("action")
     if action == "choose_rest_option":
+        # Index-based dispatch: action_space.decode emits the mod-API
+        # field name `index`. Map back to the option id using the
+        # pending list set in _enter_room (or fall back to the legacy
+        # `option=<name>` body shape for older tests/fixtures).
+        opts = rs.pending_rest_options or []
+        idx = body.get("index")
         option = body.get("option")
+        if idx is not None and 0 <= idx < len(opts):
+            option = opts[idx].get("id")
         if option == "rest":
             rs.heal(int(rs.max_hp * 0.30))
         elif option == "smith":
-            upgradables = [c for c in rs.deck if c.cost >= 0]
+            upgradables = [c for c in rs.deck
+                           if c.cost is not None and c.cost >= 0
+                           and not c.id.endswith("+")]
             if upgradables:
-                # Placeholder upgrade: mark via id suffix.
                 target = upgradables[0]
-                idx = rs.deck.index(target)
+                deck_idx = rs.deck.index(target)
                 from dataclasses import replace
-                rs.deck[idx] = replace(target, id=target.id + "+",
-                                       name=target.name + "+")
+                rs.deck[deck_idx] = replace(target, id=target.id + "+",
+                                            name=target.name + "+")
+        rs.pending_rest_options = None
         rs.state_type = StateType.MAP
         return res
     if action == "proceed":
+        rs.pending_rest_options = None
         rs.state_type = StateType.MAP
         return res
     res.invalid_action = True

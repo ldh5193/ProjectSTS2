@@ -290,6 +290,15 @@ class RunEnv(gym.Env):
             view["map"] = {"options": [{"x": n.x, "floor": n.floor} for n in opts]}
         if rs.state_type in (StateType.CARD_REWARD, StateType.CARD_SELECT):
             view["card_select"] = [{"id": c.id} for c in (rs.pending_card_reward or [])]
+        if rs.state_type is StateType.REST and rs.pending_rest_options is not None:
+            view["state_type"] = "rest_site"  # match the live mod's emitted value
+            view["rest_site"] = {
+                "options": [
+                    {"index": i, "id": o["id"], "is_enabled": o["is_enabled"]}
+                    for i, o in enumerate(rs.pending_rest_options)
+                ],
+                "can_proceed": False,  # picks must happen before proceed
+            }
         self._view_cache = (self._state_gen, view)
         return view
 

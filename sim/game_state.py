@@ -169,6 +169,10 @@ class RunState:
     pending_relic_choice: list[RelicInstance] | None = None
     pending_event: Any = None
     pending_shop: Any = None
+    # Rest-site options the policy must pick from. Each entry is a dict
+    # {id, is_enabled} mirroring the live mod's rest_site.options shape.
+    # None when not at a rest site. Drained by _step_rest.
+    pending_rest_options: list[dict] | None = None
 
     # Anti-repeat memory for the various pools.
     history_monster_encounters: list[str] = field(default_factory=list)

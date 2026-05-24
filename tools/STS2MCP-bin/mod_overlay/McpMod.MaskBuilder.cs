@@ -74,6 +74,7 @@ public static partial class McpMod
             "rewards"       => RewardsMask(state, r),
             "rest"          => RestMask(state, r),
             "potion"        => PotionMask(state, r),
+            "shop"          => ShopMask(state, r),
             "misc"          => MiscMask(state),
             "relic_select"  => RelicSelectMask(state, r),
             "bundle_select" => BundleSelectMask(state, r),
@@ -83,6 +84,28 @@ public static partial class McpMod
             "menu_select"   => MenuSelectMask(state, r),
             _               => Array.Empty<int>(),
         };
+
+    private static IEnumerable<int> ShopMask(Dictionary<string, object?> state, ActionRange r)
+    {
+        // Shop layout: 0..14 shop_purchase(item_index), 15 leave (proceed).
+        // The mod publishes each item with `can_afford` and `is_stocked`
+        // flags — only mark a slot legal when both are true. Slot 15
+        // (leave) fires whenever `can_proceed` is set, which the mod
+        // always has true for the merchant proceed button.
+        var sh = AsDict(state, "shop");
+        var items = AsList(sh, "items");
+        int n = Math.Min(items.Count, r.Size - 1);
+        for (int i = 0; i < n; i++)
+        {
+            if (items[i] is not Dictionary<string, object?> it) continue;
+            // can_afford defaults to true if the field is absent (e.g.
+            // free relic in the mod's special-card slot).
+            if (!AsBool(it, "can_afford", true)) continue;
+            if (!AsBool(it, "is_stocked", true)) continue;
+            yield return ToInt(it, "index", i);
+        }
+        if (AsBool(sh, "can_proceed", true)) yield return 15;  // leave
+    }
 
     private static IEnumerable<int> MenuSelectMask(Dictionary<string, object?> state, ActionRange r)
     {

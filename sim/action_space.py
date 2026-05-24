@@ -391,6 +391,30 @@ def _rest_mask(state: dict, r: ActionRange) -> Iterable[int]:
     return yielded
 
 
+def _shop_mask(state: dict, r: ActionRange) -> Iterable[int]:
+    """Shop range: 0..14 shop_purchase(idx), 15 leave (proceed).
+    Mod state shape: state.shop.items[i] = {index, category, price,
+    can_afford, is_stocked, ...}. Only mark a slot legal when both
+    can_afford and is_stocked are true (else the mod silently rejects
+    the purchase). Slot 15 fires on can_proceed (always available)."""
+    sh = state.get("shop")
+    if not isinstance(sh, dict):
+        return ()
+    items = sh.get("items") or []
+    out: list[int] = []
+    for i, it in enumerate(items[:15]):
+        if not isinstance(it, dict):
+            continue
+        if not it.get("can_afford", True):
+            continue
+        if not it.get("is_stocked", True):
+            continue
+        out.append(int(it.get("index", i)))
+    if sh.get("can_proceed", True):
+        out.append(15)
+    return out
+
+
 def _potion_mask(state: dict, r: ActionRange) -> Iterable[int]:
     """Potion range layout: 0..2 use_potion(slot), 3..5 discard_potion(slot).
 
@@ -473,6 +497,7 @@ _PREDICATES: dict[str, MaskPredicate] = {
     "rewards": _rewards_mask,
     "rest": _rest_mask,
     "potion": _potion_mask,
+    "shop": _shop_mask,
     "misc": _misc_mask,
     "relic_select": _relic_select_mask,
     "bundle_select": _bundle_select_mask,
