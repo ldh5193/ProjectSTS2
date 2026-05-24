@@ -66,18 +66,26 @@ while ($true) {
             try {
                 Start-Process -FilePath $gameExe -WorkingDirectory $gameDir -ErrorAction Stop | Out-Null
                 Start-Sleep -Seconds 25  # boot + mod init
-                # 3. flip AutoPlay on
-                try {
-                    Invoke-RestMethod -Uri "$mcpUrl/api/v1/autoplay" -Method Post `
-                        -ContentType 'application/json' `
-                        -Body '{"enabled":true}' -ErrorAction Stop | Out-Null
-                    Log "AutoPlay enabled via REST"
-                } catch {
-                    Log "AutoPlay enable failed (mod still booting?): $_"
-                }
             } catch {
                 Log "launch failed: $_"
             }
+        }
+
+        # 3. AutoPlay always-on: re-assert every tick. Observed live that
+        # AutoPlay sometimes lands as OFF after natural game restarts
+        # (the in-mod toggle defaults to False on boot and the post-launch
+        # POST occasionally misses the mod-ready window). Cheap to re-POST.
+        try {
+            $cur = Invoke-RestMethod -Uri "$mcpUrl/api/v1/autoplay" -Method Post `
+                -ContentType 'application/json' -Body '{}' -ErrorAction Stop
+            if (-not $cur.enabled) {
+                Invoke-RestMethod -Uri "$mcpUrl/api/v1/autoplay" -Method Post `
+                    -ContentType 'application/json' `
+                    -Body '{"enabled":true}' -ErrorAction Stop | Out-Null
+                Log "AutoPlay re-enabled (was OFF)"
+            }
+        } catch {
+            # mod not ready yet — try again next iteration
         }
     } catch {
         Log "orchestrator iteration error: $_"
