@@ -188,50 +188,52 @@ public static partial class McpMod
             if (st == "hand_select")
             {
                 var hs = AsDict(state, "hand_select");
-                var selected = AsList(hs, "selected_cards");
-                var hand = AsList(AsDict(state, "player"), "hand");
-
-                // Path A: at least one card is already in SelectedHandCardContainer
-                // (either the player picked one before flipping AutoPlay ON,
-                // or our previous select call has landed). Confirm immediately —
-                // the same code path works whether the overlay was entered with
-                // a card pre-selected or whether we picked it ourselves.
-                if (selected.Count > 0)
+                // The mod exposes can_confirm directly (NConfirmButton.IsEnabled
+                // in the game). That's the authoritative "confirm will work"
+                // signal — much more reliable than counting selected_cards
+                // entries, because the state shape doesn't even include the
+                // selected_cards key when nothing has been picked yet.
+                bool canConfirm = AsBool(hs, "can_confirm");
+                if (canConfirm)
                 {
                     ExecuteAction("combat_confirm_selection", new Dictionary<string, JsonElement>());
-                    GD.Print($"[STS2 MCP][AUTO] hand_select -> combat_confirm_selection ({selected.Count} picked)");
+                    GD.Print($"[STS2 MCP][AUTO] hand_select -> combat_confirm_selection (can_confirm=true)");
                     _handSelectTicksSinceSelect = -1;
                     _lastIdleReason = "";
                     return true;
                 }
 
-                // Path B: nothing selected yet. We send select_card(0) and
-                // wait up to HandSelectRetryTicks (~1 s) for the slide animation
-                // to deposit it in SelectedHandCardContainer. If the state
-                // still reports 0 selected after that, retry — never get
-                // stuck forever (the previous version did because we never
-                // re-fired select).
-                if (hand.Count > 0)
+                // The selectable card list is `hand_select.cards` (with its
+                // own `index` per entry) — NOT the regular player.hand list.
+                // For upgrade prompts those differ when only some hand cards
+                // are upgradable. Pick the first entry's index so we send
+                // exactly the index the mod's ActiveHolders array expects.
+                var cards = AsList(hs, "cards");
+                if (cards.Count > 0)
                 {
+                    int firstIdx = 0;
+                    if (cards[0] is Dictionary<string, object?> firstCard)
+                        firstIdx = ToInt(firstCard, "index", 0);
+
                     bool shouldFire = _handSelectTicksSinceSelect < 0
                                    || _handSelectTicksSinceSelect >= HandSelectRetryTicks;
                     if (shouldFire)
                     {
                         var payload = new Dictionary<string, JsonElement>
                         {
-                            ["card_index"] = JsonDocument.Parse("0").RootElement.Clone(),
+                            ["card_index"] = JsonDocument.Parse(firstIdx.ToString()).RootElement.Clone(),
                         };
                         ExecuteAction("combat_select_card", payload);
                         _handSelectTicksSinceSelect = 0;
-                        GD.Print($"[STS2 MCP][AUTO] hand_select -> combat_select_card(0)");
+                        GD.Print($"[STS2 MCP][AUTO] hand_select -> combat_select_card({firstIdx})");
                         _lastIdleReason = "";
                         return true;
                     }
                     _handSelectTicksSinceSelect++;
-                    _LogIdle($"hand_select: waiting for select to land ({_handSelectTicksSinceSelect}/{HandSelectRetryTicks})");
+                    _LogIdle($"hand_select: waiting for can_confirm=true ({_handSelectTicksSinceSelect}/{HandSelectRetryTicks})");
                     return false;
                 }
-                _LogIdle("hand_select: hand empty?");
+                _LogIdle("hand_select: hand_select.cards is empty");
                 return false;
             }
             // Reset the hand_select retry counter when we leave the overlay
