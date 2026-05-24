@@ -69,6 +69,7 @@ public static partial class McpMod
         => r.Name switch
         {
             "combat"        => CombatMask(state),
+            "hand_select"   => HandSelectMask(state, r),
             "card_reward"   => CardRewardMask(state, r),
             "rewards"       => RewardsMask(state, r),
             "misc"          => MiscMask(state),
@@ -78,6 +79,19 @@ public static partial class McpMod
             "menu_select"   => Sequence(Math.Min(AsList(state, "options").Count, r.Size)),
             _               => Array.Empty<int>(),
         };
+
+    private static IEnumerable<int> HandSelectMask(Dictionary<string, object?> state, ActionRange r)
+    {
+        // hand_select fires when a card/relic effect asks the player to pick
+        // N cards from the current hand (Headbutt, Burn, Discovery, etc).
+        // Each hand card is a select toggle; the confirm slot (local r.Size - 1
+        // = 10) closes the selection. Without this predicate the mask is empty
+        // and AutoPlay stalls forever on the overlay.
+        var hand = AsList(AsDict(state, "player"), "hand");
+        int n = Math.Min(hand.Count, r.Size - 1);
+        for (int i = 0; i < n; i++) yield return i;          // toggle each card
+        yield return r.Size - 1;                              // confirm
+    }
 
     private static IEnumerable<int> CombatMask(Dictionary<string, object?> state)
     {

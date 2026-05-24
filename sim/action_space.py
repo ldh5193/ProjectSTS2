@@ -279,8 +279,23 @@ def _card_reward_mask(state: dict, r: ActionRange) -> Iterable[int]:
     return picks
 
 
+def _hand_select_mask(state: dict, r: ActionRange) -> Iterable[int]:
+    """hand_select fires when a card/relic effect prompts the player to pick
+    N cards from the current hand (Headbutt, Burn, Discovery, etc). Without
+    a predicate the mask is empty and the agent stalls on the overlay
+    forever — observed in-game with `[STS2 MCP][AUTO] idle: hand_select:
+    0 legal actions in mask`. Each hand slot is a toggle; the last slot
+    (local r.size - 1 == 10) is confirm_selection.
+    """
+    hand = ((state.get("player") or {}).get("hand")) or []
+    picks = list(range(min(len(hand), r.size - 1)))
+    picks.append(r.size - 1)  # combat_confirm_selection is always available
+    return picks
+
+
 _PREDICATES: dict[str, MaskPredicate] = {
     "combat": _combat_mask,
+    "hand_select": _hand_select_mask,
     "card_reward": _card_reward_mask,
     "rewards": _rewards_mask,
     "misc": _misc_mask,
