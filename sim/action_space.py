@@ -242,24 +242,35 @@ def _rewards_mask(state: dict, r: ActionRange) -> Iterable[int]:
 def _misc_mask(state: dict, r: ActionRange) -> Iterable[int]:
     """Misc range covers proceed/advance-dialogue/etc. We activate
     `proceed` (local 0) whenever the live mod state has stalled with
-    an explicit can_proceed flag (rewards screen with empty items,
-    event in_dialogue, etc.)."""
+    an explicit can_proceed flag — happens at the end of any room
+    (rewards once items are claimed, rest_site after the player picks
+    an option, shops once browsing is done, treasure, event dialogue
+    end). `advance_dialogue` (local 1) fires while a dialogue overlay
+    is mid-text. Without this predicate, the policy hits the proceed
+    button slot and finds the mask empty, hanging the run forever."""
     st = state.get("state_type")
-    # Fast path: in the overwhelming majority of frames (combat/map/menu/...)
-    # neither sub-predicate fires. Short-circuit before the dict lookups so
-    # build_mask spends no time on misc unless misc could matter.
-    if st not in ("rewards", "event"):
-        return ()
     if st == "rewards":
         rewards = state.get("rewards")
         if isinstance(rewards, dict) \
                 and rewards.get("can_proceed") and not (rewards.get("items") or []):
-            return (0,)  # proceed
+            return (0,)
         return ()
-    # st == "event"
-    event = state.get("event") or {}
-    if event.get("in_dialogue"):
-        return (1,)  # advance_dialogue
+    if st == "rest_site":
+        rs = state.get("rest_site") or {}
+        return (0,) if rs.get("can_proceed") else ()
+    if st == "shop":
+        sh = state.get("shop") or {}
+        return (0,) if sh.get("can_proceed") else ()
+    if st == "treasure":
+        tr = state.get("treasure") or {}
+        return (0,) if tr.get("can_proceed") else ()
+    if st == "event":
+        event = state.get("event") or {}
+        if event.get("in_dialogue"):
+            return (1,)
+        if event.get("can_proceed"):
+            return (0,)
+        return ()
     return ()
 
 

@@ -170,10 +170,31 @@ public static partial class McpMod
             && AsBool(rd, "can_proceed")
             && AsList(rd, "items").Count == 0)
             yield return 0;
+        // Rest sites: after the player picks an option (and any extra picks
+        // a relic/item granted, e.g. dual-rest effects), the rest screen
+        // sets `can_proceed=true` on the proceed button. The policy needs
+        // misc/proceed legal here or it sits forever after a successful
+        // pick. Same pattern works for shops and treasure proceed too.
+        if (st == "rest_site")
+        {
+            var rs = AsDict(state, "rest_site");
+            if (AsBool(rs, "can_proceed")) yield return 0;
+        }
+        if (st == "shop")
+        {
+            var sh = AsDict(state, "shop");
+            if (AsBool(sh, "can_proceed")) yield return 0;
+        }
+        if (st == "treasure")
+        {
+            var tr = AsDict(state, "treasure");
+            if (AsBool(tr, "can_proceed")) yield return 0;
+        }
         if (st == "event")
         {
             var ev = AsDict(state, "event");
             if (AsBool(ev, "in_dialogue")) yield return 1;
+            if (AsBool(ev, "can_proceed")) yield return 0;
         }
     }
 

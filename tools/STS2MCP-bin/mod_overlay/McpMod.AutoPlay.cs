@@ -19,6 +19,10 @@ using System.Text.Json;
 using System.Threading;
 using Godot;
 using MegaCrit.Sts2.addons.mega_text;
+using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
+using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.RestSite;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
 
 namespace STS2_MCP;
 
@@ -133,20 +137,31 @@ public static partial class McpMod
 
     private static void _ThinkerLoop()
     {
+        bool prevRec = false;
         while (true)
         {
             try
             {
+                bool autoOn = AutoPlayEnabled;
+                bool recOn  = RecommendEnabled;
                 // AutoPlay wins if both toggles are on (it executes; the
                 // advisory label is hidden by UpdateOverlayButtonText).
-                if (AutoPlayEnabled && EnsurePolicyLoaded())
+                if (autoOn && EnsurePolicyLoaded())
                 {
                     _ThinkOneStep();
+                    if (prevRec) _mainThreadQueue.Enqueue(_ClearHighlights);  // drop stale tint
                 }
-                else if (RecommendEnabled && EnsurePolicyLoaded())
+                else if (recOn && EnsurePolicyLoaded())
                 {
                     _RecommendOneStep();
                 }
+                else if (prevRec)
+                {
+                    // REC just turned off — wipe any lingering highlight
+                    // from the last advisory frame.
+                    _mainThreadQueue.Enqueue(_ClearHighlights);
+                }
+                prevRec = recOn && !autoOn;
             }
             catch (Exception ex)
             {
@@ -165,6 +180,11 @@ public static partial class McpMod
     {
         var task = RunOnMainThread(() =>
         {
+            // Always reset previous tick's highlight so the cyan tint
+            // doesn't linger after the state changes (or after REC is
+            // toggled off mid-tick).
+            _ClearHighlights();
+
             Dictionary<string, object?> state;
             try { state = BuildGameState(); }
             catch { return false; }
@@ -204,6 +224,8 @@ public static partial class McpMod
             string summary = decoded is { } d
                 ? _FormatRecommendation(d.action, d.data, state)
                 : $"idx {action} (decode failed)";
+            if (decoded is { } dec)
+                _HighlightRecommendation(st, dec.action, dec.data);
             _SetRecommendMessage($"[center][color=#4ec1ff]AI recommends:[/color]  {summary}[/center]");
             return true;
         });
@@ -631,6 +653,90 @@ public static partial class McpMod
             _overlayRecMessage.Visible = RecommendEnabled && !AutoPlayEnabled;
             _overlayRecMessage.Text = bbcode;
         });
+    }
+
+    // ---- Recommend highlight: tint the live UI node the policy chose so
+    // the player visually sees the suggested move without reading text.
+    // Each entry stores (node, original_modulate) so we can restore the
+    // node's appearance when REC turns off or the suggestion changes.
+
+    private static readonly List<(Godot.Control node, Color originalModulate)> _highlightTracked = new();
+    private static readonly Color HighlightColor = new Color(0.45f, 1.4f, 1.4f, 1f);
+
+    private static void _ClearHighlights()
+    {
+        foreach (var (node, original) in _highlightTracked)
+        {
+            try
+            {
+                if (node != null && GodotObject.IsInstanceValid(node))
+                    node.Modulate = original;
+            }
+            catch { /* node may have been freed during a scene reload */ }
+        }
+        _highlightTracked.Clear();
+    }
+
+    private static void _HighlightNode(Godot.Control? node)
+    {
+        if (node == null) return;
+        try
+        {
+            _highlightTracked.Add((node, node.Modulate));
+            node.Modulate = HighlightColor;
+        }
+        catch { /* swallow — highlights are decorative, never block REC */ }
+    }
+
+    /// <summary>
+    /// Try to paint a cyan-tint highlight on the actual game UI node the
+    /// policy recommended. Best-effort: state types we don't have a node
+    /// lookup for yet (map, card_reward, shop, rewards, ...) fall through
+    /// to the text-only advisory band. Always called inside RunOnMainThread.
+    /// </summary>
+    private static void _HighlightRecommendation(string st, string action,
+                                                 Dictionary<string, JsonElement> data)
+    {
+        switch (st)
+        {
+            case "monster":
+            case "elite":
+            case "boss":
+                if (action == "play_card" && data.TryGetValue("card_index", out var ci)
+                    && ci.TryGetInt32(out int cardIdx))
+                {
+                    var holders = NPlayerHand.Instance?.ActiveHolders;
+                    if (holders != null && cardIdx >= 0 && cardIdx < holders.Count)
+                        _HighlightNode(holders[cardIdx] as Control);
+                }
+                break;
+            case "hand_select":
+                if (action == "combat_select_card" && data.TryGetValue("card_index", out var hsi)
+                    && hsi.TryGetInt32(out int hsIdx))
+                {
+                    var holders = NPlayerHand.Instance?.ActiveHolders;
+                    if (holders != null && hsIdx >= 0 && hsIdx < holders.Count)
+                        _HighlightNode(holders[hsIdx] as Control);
+                }
+                break;
+            case "rest_site":
+                if (action == "choose_rest_option" && data.TryGetValue("index", out var ri)
+                    && ri.TryGetInt32(out int restIdx))
+                {
+                    var room = NRestSiteRoom.Instance;
+                    if (room != null)
+                    {
+                        var buttons = FindAll<NRestSiteButton>(room);
+                        if (restIdx >= 0 && restIdx < buttons.Count)
+                            _HighlightNode(buttons[restIdx]);
+                    }
+                }
+                break;
+            // map / card_reward / rewards / shop / relic_select still use
+            // the text-only advisory band — node lookups for those overlays
+            // need scene-specific helpers we haven't ported from
+            // McpMod.Actions yet. Adding incrementally is straightforward.
+        }
     }
 
     private static bool IsInstanceValid(GodotObject obj)
