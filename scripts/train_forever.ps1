@@ -18,9 +18,9 @@ try { (Get-Process -Id $PID).PriorityClass = 'BelowNormal' } catch {}
 
 # How many cycles between generator refresh. Each refresh creates fresh
 # random presets so the policy keeps seeing novel reward shapes.
-$RotateEvery = 6
+$RotateEvery = 3   # was 6 — refresh twice as often for more variety
 # Number of fresh generated presets per refresh.
-$GenCount = 12
+$GenCount = 36     # was 12 — 3x reward-space coverage per refresh
 # Hand-tuned best — always in rotation regardless of generator state.
 $Handpicked = @('balanced','boss_heavy','sparse','survival_v2',
                 'shape_combo','shape_lean','shape_damage','shape_debuff','shape_tank')
