@@ -76,10 +76,15 @@ def _draw_counts(spec: ActSpec, rng: Rng, ascension: int) -> dict[StateType, int
 
 def _is_valid_for(row: int, total_rows: int, room_type: StateType,
                   parents: list[StateType]) -> bool:
-    """Subset of StandardActMap.IsValidPointType (notes/08 §5)."""
-    if room_type in (StateType.ELITE, StateType.REST) and row < 6:
+    """Subset of StandardActMap.IsValidPointType (notes/08 §5).
+
+    `row` is the 1-indexed sim floor where floor 1 = Ancient (the row 0
+    of the game's 0-indexed Grid). The game's rule "row index < 6"
+    becomes "floor <= 6" here (i.e. ancient + first 5 generated rows).
+    """
+    if room_type in (StateType.ELITE, StateType.REST) and row <= 6:
         return False
-    if room_type is StateType.REST and row >= total_rows - 2:
+    if room_type is StateType.REST and row >= total_rows - 1:
         return False
     # No same type as direct parent (Elite/Rest/Treasure/Shop only).
     if room_type in (StateType.ELITE, StateType.REST,
@@ -91,41 +96,60 @@ def _is_valid_for(row: int, total_rows: int, room_type: StateType,
 
 def generate_act_map(act_key: str, rng: Rng, ascension: int = 0,
                      replace_treasure_with_elites: bool = False) -> RunMap:
-    """Build a simplified RunMap for the given act."""
+    """Build a simplified RunMap for the given act.
+
+    Floor layout matches the decompiled game's `GetNumberOfFloors` =
+    `GetNumberOfRooms + 2` (notes/08 §2). For Underdocks/Overgrowth
+    (num_rooms=15) the structure is:
+      floor 1     = Ancient (Neow on first run, Monster otherwise — sim
+                    uses Monster since Neow's bundle picker is not yet
+                    implemented). Single column at center.
+      floor 2..16 = generated content (monster/elite/rest/event/shop/
+                    treasure). The rest row sits at floor (boss-1) and
+                    the treasure row at floor (boss-7).
+      floor 17    = Boss (single column at center).
+
+    Earlier versions skipped the Ancient row entirely, producing 16
+    floors per act and shifting boss to floor 16. The mismatch starved
+    the policy of ~1 card-draft / shop visit per run.
+    """
     spec = ACT_SPECS[act_key]
-    total_rows = spec.num_rooms + 2  # +1 for Ancient (row 0), +1 for Boss (row N)
-    boss_row = total_rows - 1
+    # +2 = Ancient (floor 1) + Boss (floor num_rooms+2). Matches the
+    # game's GetNumberOfFloors formula exactly.
+    boss_row = spec.num_rooms + 2
+    total_rows = boss_row
     treasure_row = boss_row - TREASURE_OFFSET_FROM_END
     rest_row = boss_row - REST_OFFSET_FROM_END
-    if treasure_row < 2:
-        # Defensive: very small acts could collide; clamp.
-        treasure_row = 2
+    if treasure_row < 3:
+        # Defensive: very small acts could push treasure into the
+        # ancient/start rows; clamp above ancient (floor 1).
+        treasure_row = 3
 
-    # Initialize per-floor node lists. Floors are 1-indexed for game purposes
-    # but stored 0-indexed in floors[] (so floors[0] = floor-1, etc.).
-    # For convenience we'll store ancient as floor 0 (col 3) and the boss
-    # as the last index. Type defaults to MONSTER and is overridden below.
+    # Floors are 1-indexed in MapNode.floor; floors[f-1] indexes the row.
     floors: list[list[MapNode]] = []
-    for f in range(1, boss_row):
+    # Floor 1: Ancient — single Monster placeholder at column 3 (Neow
+    # skip rule, decompile RunManager.cs:553).
+    floors.append([MapNode(floor=1, x=3, room_type=StateType.MONSTER)])
+    # Floors 2..boss_row-1: generated content, full 7-column width.
+    for f in range(2, boss_row):
         floors.append([MapNode(floor=f, x=x, room_type=StateType.MONSTER)
                        for x in range(WIDTH)])
-    # Boss as a final single-node floor.
+    # Boss: single-column terminal floor.
     floors.append([MapNode(floor=boss_row, x=3, room_type=StateType.BOSS)])
 
     # Override fixed rows.
-    # Row 1 (index 0): all Monster (default, no-op).
     # Row N-1 (rest_row): all RestSite.
-    if 1 <= rest_row <= boss_row - 1:
+    if 2 <= rest_row <= boss_row - 1:
         for n in floors[rest_row - 1]:
             n.room_type = StateType.REST
     # Treasure row: single node at col 3 (others become Monster default).
-    if 1 <= treasure_row <= boss_row - 1:
+    if 2 <= treasure_row <= boss_row - 1:
         treasure_type = StateType.ELITE if replace_treasure_with_elites else StateType.TREASURE
         # Shrink to one node at col 3 (the game forces a single column here).
         floors[treasure_row - 1] = [MapNode(floor=treasure_row, x=3,
                                             room_type=treasure_type)]
 
-    # Dynamic assignment for rows 2..rest_row-1, skipping treasure_row.
+    # Dynamic assignment for rows 3..rest_row-1, skipping treasure_row.
     counts = _draw_counts(spec, rng, ascension)
     # Queue of types to place.
     queue: list[StateType] = (
@@ -136,9 +160,12 @@ def generate_act_map(act_key: str, rng: Rng, ascension: int = 0,
     )
     rng.shuffle(queue)
 
-    # Candidate nodes: rows 2..rest_row-1, excluding treasure_row.
+    # Candidate nodes: rows 3..rest_row-1, excluding treasure_row.
+    # Floor 1 = Ancient (fixed Monster placeholder), floor 2 = "row 1 all
+    # Monster" per decompile (notes/08 §5 Fixed assignments). Dynamic
+    # placement starts from floor 3.
     candidates: list[MapNode] = []
-    for f in range(2, rest_row):
+    for f in range(3, rest_row):
         if f == treasure_row:
             continue
         for n in floors[f - 1]:
@@ -161,10 +188,20 @@ def generate_act_map(act_key: str, rng: Rng, ascension: int = 0,
     # If the next floor is a single-node bottleneck (treasure or rest_row in
     # some acts), every current-floor node funnels into that single child so
     # no node ends up stranded.
+    # Special case: floor 1 (Ancient, single col=3 node) → floor 2 connects
+    # to every available column. The decompile (notes/08 §4) generates row 1
+    # starting columns independently via NextInt(0,7); the closest equivalent
+    # here is "all columns reachable" so the policy keeps the full 7-way
+    # starting choice it had before the ancient floor was inserted.
     for f in range(1, boss_row - 1):
         next_floor = floors[f]
         next_width = len(next_floor)
         for n in floors[f - 1]:
+            if f == 1:
+                # Ancient → first generated row: full fan-out.
+                for child in next_floor:
+                    n.children.append((f + 1, child.x))
+                continue
             if next_width == 1:
                 # Bottleneck: collapse to the lone successor.
                 n.children.append((f + 1, next_floor[0].x))

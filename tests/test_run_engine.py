@@ -19,8 +19,10 @@ def test_start_run_enters_map_with_floor_1_options():
     assert rs.state_type is StateType.MAP
     assert rs.act == 1
     options = reachable_map_nodes(rs)
-    # 7 floor-1 nodes always.
-    assert len(options) == 7
+    # Floor 1 = Ancient (single-node, Neow-skip placeholder); the first
+    # 7-way choice happens at floor 2 via Ancient.children.
+    assert len(options) == 1
+    assert options[0].floor == 1
 
 
 def test_choose_map_node_advances_into_room():
