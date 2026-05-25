@@ -71,7 +71,8 @@ def make_env_factory(ascension: int, reward_cfg: RewardConfig, seed_offset: int)
 
 def evaluate_solo(model, ascension: int, reward_cfg: RewardConfig,
                   n_episodes: int, seed_base: int = 100_000,
-                  max_steps_per_episode: int = 1500) -> dict:
+                  max_steps_per_episode: int = 1500,
+                  deterministic: bool = True) -> dict:
     """Solo (non-vectorized) eval for clean per-episode aggregates.
 
     `max_steps_per_episode` is a watchdog: a deterministic policy can occa-
@@ -79,6 +80,11 @@ def evaluate_solo(model, ascension: int, reward_cfg: RewardConfig,
     multi-monster combat refactor is in progress) and the env loop would
     otherwise spin forever, stalling the entire sweep with no log output.
     The cap is generous enough that healthy episodes are never truncated.
+
+    `deterministic=True`: argmax — matches how the mod runs the policy.
+    `deterministic=False`: stochastic sampling — matches training, exposes
+    the policy's full multi-modal capability when argmax happens to pick
+    a worse mode.
     """
     env = ActionMasker(RunEnv(ascension=ascension, reward_config=reward_cfg), _mask_fn)
     wins = 0
@@ -91,7 +97,7 @@ def evaluate_solo(model, ascension: int, reward_cfg: RewardConfig,
             mask = env.action_masks()
             if not mask.any():
                 break
-            action, _ = model.predict(obs, action_masks=mask, deterministic=True)
+            action, _ = model.predict(obs, action_masks=mask, deterministic=deterministic)
             obs, reward, term, _, info = env.step(int(action))
             ep_reward += reward
             result = info.get("result")
@@ -140,8 +146,22 @@ class PeriodicEvalCallback(BaseCallback):
         if self.num_timesteps < self._next:
             return True
         self._next += self.eval_every
-        res = evaluate_solo(self.model, self.ascension, self.reward_cfg, self.eval_episodes)
+        # Rotate seed each eval so the policy can't overfit to a fixed
+        # 30-seed evaluation pool. Without this an early-trained policy
+        # could appear to plateau because the same seeds keep failing.
+        seed_base = 100_000 + (self.num_timesteps // 1000)
+        # Deterministic = how the mod plays. Stochastic = full training
+        # capability. We track both because mid-train action sampling
+        # often beats argmax when the policy is multi-modal.
+        res = evaluate_solo(self.model, self.ascension, self.reward_cfg,
+                            self.eval_episodes, seed_base=seed_base,
+                            deterministic=True)
+        res_stoch = evaluate_solo(self.model, self.ascension, self.reward_cfg,
+                                  self.eval_episodes, seed_base=seed_base,
+                                  deterministic=False)
         res["timesteps"] = self.num_timesteps
+        res["win_rate_stoch"] = res_stoch["win_rate"]
+        res["floor_stoch"] = res_stoch["mean_floor"]
         self.history.append(res)
         for k, v in res.items():
             if k in ("episodes", "timesteps"):
@@ -149,8 +169,9 @@ class PeriodicEvalCallback(BaseCallback):
             self.logger.record(f"eval/{k}", v)
         prefix = f"[{self.label}] " if self.label else ""
         print(f"{prefix}step={self.num_timesteps} "
-              f"win={res['win_rate']:.1%} death={res['death_rate']:.1%} "
-              f"act={res['mean_act']:.2f} floor={res['mean_floor']:.2f} "
+              f"win={res['win_rate']:.1%}(s={res_stoch['win_rate']:.1%}) "
+              f"death={res['death_rate']:.1%} "
+              f"act={res['mean_act']:.2f} floor={res['mean_floor']:.2f}(s={res_stoch['mean_floor']:.2f}) "
               f"bosses={res['mean_bosses']:.2f} hp={res['mean_final_hp']:.1f} "
               f"rew={res['mean_reward']:+.3f}", flush=True)
         return True
@@ -240,14 +261,26 @@ def run_one_experiment(preset: str, ascension: int, workers: int, steps: int,
     model.save(out_dir / "final.zip")
     history_path.write_text(json.dumps(callback.history, indent=2))
 
-    final = evaluate_solo(model, ascension, reward_cfg, eval_episodes)
+    # Final eval: bigger N (3× train-time eval) for tight CI, and report
+    # both deterministic (mod-style argmax) and stochastic (training
+    # capability) to spot multi-modal policies the argmax is hiding.
+    final_n = max(eval_episodes * 3, 100)
+    final = evaluate_solo(model, ascension, reward_cfg, final_n,
+                          deterministic=True, seed_base=900_000)
+    final_stoch = evaluate_solo(model, ascension, reward_cfg, final_n,
+                                deterministic=False, seed_base=900_000)
     final["preset"] = preset
     final["train_seconds"] = train_time
     final["workers"] = workers
     final["steps"] = steps
-    print(f"\n[{preset}] DONE in {train_time:.1f}s  win={final['win_rate']:.1%}  "
-          f"floor={final['mean_floor']:.2f}  bosses={final['mean_bosses']:.2f}  "
-          f"hp={final['mean_final_hp']:.1f}", flush=True)
+    final["win_rate_stoch"] = final_stoch["win_rate"]
+    final["mean_floor_stoch"] = final_stoch["mean_floor"]
+    final["mean_bosses_stoch"] = final_stoch["mean_bosses"]
+    print(f"\n[{preset}] DONE in {train_time:.1f}s  "
+          f"win={final['win_rate']:.1%}(s={final_stoch['win_rate']:.1%}) "
+          f"floor={final['mean_floor']:.2f}(s={final_stoch['mean_floor']:.2f}) "
+          f"bosses={final['mean_bosses']:.2f} hp={final['mean_final_hp']:.1f} "
+          f"n={final_n}", flush=True)
     return final
 
 
