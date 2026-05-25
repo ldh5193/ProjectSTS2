@@ -249,7 +249,12 @@ def run_one_experiment(preset: str, ascension: int, workers: int, steps: int,
     # If neither exists, fall back to fresh init.
     best_ckpt = out_dir / "best.zip"
     prev_ckpt = best_ckpt if best_ckpt.exists() else out_dir / "final.zip"
-    arch_tag = out_dir / f".arch_{net_str.replace(',','x')}"
+    # Include OBS_DIM in the arch tag — when obs layout changes, the
+    # load() call would shape-mismatch anyway, but a tag mismatch fails
+    # fast without the noisy load-attempt log. Bump OBS_DIM to invalidate
+    # all prior checkpoints (e.g. v2 128 → v3 256 added card identity).
+    from sim.env_run import OBS_DIM
+    arch_tag = out_dir / f".arch_obs{OBS_DIM}_{net_str.replace(',','x')}"
     arch_compatible = arch_tag.exists()
     if prev_ckpt.exists() and arch_compatible and os.getenv("PPO_WARM_START", "1") != "0":
         try:
@@ -266,7 +271,7 @@ def run_one_experiment(preset: str, ascension: int, workers: int, steps: int,
                                 policy_kwargs=policy_kwargs)
     else:
         if prev_ckpt.exists() and not arch_compatible:
-            print(f"[{preset}] ARCH MISMATCH (no .arch_{net_str.replace(',','x')} tag) - fresh init", flush=True)
+            print(f"[{preset}] ARCH MISMATCH (no .arch_obs{OBS_DIM}_{net_str.replace(',','x')} tag) - fresh init", flush=True)
         model = MaskablePPO("MlpPolicy", vec_env, verbose=0, seed=seed,
                             tensorboard_log=str(tb_dir) if tb_dir else None,
                             n_steps=n_steps, batch_size=batch, ent_coef=ent,

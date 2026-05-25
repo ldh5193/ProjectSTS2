@@ -32,7 +32,7 @@ from .action_space import (
     decode,
     range_named,
 )
-from .card_catalog import CARDS, CardRarity, RARITY_OF
+from .card_catalog import CARD_FEATURE_DIM, CARDS, CardRarity, RARITY_OF, card_features
 from .game_state import Ascension, Character, RunState, StateType
 from .run_engine import (
     StepResult,
@@ -42,7 +42,7 @@ from .run_engine import (
 )
 
 
-OBS_DIM = 128
+OBS_DIM = 256
 
 
 # Power ids the policy gets a stack-amount feature for. Order is part of
@@ -411,9 +411,13 @@ class RunEnv(gym.Env):
     def _obs(self) -> np.ndarray:
         """v2 layout — see notes/18_training_gaps.md for the full audit.
 
-        Total 93 used, 35 reserved padding (OBS_DIM = 128). Field order
-        is part of the obs contract; renumbering invalidates trained
-        policies.
+        v3 (2026-05-25): added per-card feature vectors to hand and
+        card_reward. Without these the policy couldn't distinguish cards
+        and degenerated to 99% skip on card rewards — see diagnose_policy
+        run for the empirical confirmation.
+
+        Field order is part of the obs contract; renumbering invalidates
+        trained policies. OBS_DIM = 256, ~220 used.
         """
         rs = self.rs
         assert rs is not None
@@ -532,32 +536,42 @@ class RunEnv(gym.Env):
         else:
             cursor += 8
 
-        # NEW v2: Hand identity (30 = 10 slots × 3 features).
-        # Per slot: normalized cost, is_attack, can_play. Lets the policy
-        # tell "play Strike (1-cost attack)" apart from "play Inflame (1-cost
-        # power)" — without this, the v1 obs collapsed every legal play to
-        # the same shape.
+        # v3: Hand identity ((CARD_FEATURE_DIM+1) × 10 slots).
+        # Per slot: 12 card features (cost/type/damage/block/debuff/buff/
+        # draw/energy/rarity/upgraded) + 1 can_play flag. The +1 flag is
+        # appended so the legal-mask state is co-located with the card it
+        # gates — the policy reads "card X is in slot S and playable" as
+        # one block rather than scattered features.
         if rs.in_combat() and rs.combat is not None:
             cs = rs.combat
             for slot in range(10):
+                base = cursor + slot * (CARD_FEATURE_DIM + 1)
                 if slot < len(cs.hand):
                     c = cs.hand[slot]
-                    cost_norm = (c.cost / 3.0) if c.cost is not None and c.cost >= 0 else 0.0
-                    v[cursor + slot * 3 + 0] = min(1.0, cost_norm)
-                    v[cursor + slot * 3 + 1] = 1.0 if getattr(c.type, "value", "") == "attack" else 0.0
+                    feats = card_features(c.id)
+                    for j in range(CARD_FEATURE_DIM):
+                        v[base + j] = feats[j]
                     try:
-                        v[cursor + slot * 3 + 2] = 1.0 if cs.can_play(slot) else 0.0
+                        v[base + CARD_FEATURE_DIM] = 1.0 if cs.can_play(slot) else 0.0
                     except Exception:
-                        v[cursor + slot * 3 + 2] = 0.0
-        cursor += 30
+                        v[base + CARD_FEATURE_DIM] = 0.0
+        cursor += 10 * (CARD_FEATURE_DIM + 1)
 
-        # Pending card-reward (3) — count, attack share, [reserved]
-        if rs.pending_card_reward is not None:
-            v[cursor] = len(rs.pending_card_reward) / 3.0
-            attack_n = sum(1 for c in rs.pending_card_reward
-                           if getattr(c.type, "value", "") == "attack")
-            v[cursor + 1] = attack_n / max(1, len(rs.pending_card_reward))
-        cursor += 3
+        # v3: Card-reward identity (5 slots × CARD_FEATURE_DIM = 60).
+        # Replaces v2's "count + attack share" (3 dims), which was the
+        # actual root cause of the 99% skip-rate plateau: without per-
+        # option features the policy couldn't tell common Strike apart
+        # from a rare Bludgeon, so "skip" generalized as the safest
+        # answer.
+        if rs.pending_card_reward:
+            for slot in range(5):
+                base = cursor + slot * CARD_FEATURE_DIM
+                if slot < len(rs.pending_card_reward):
+                    c = rs.pending_card_reward[slot]
+                    feats = card_features(c.id)
+                    for j in range(CARD_FEATURE_DIM):
+                        v[base + j] = feats[j]
+        cursor += 5 * CARD_FEATURE_DIM
 
         # Map options count (1)
         if rs.state_type is StateType.MAP:
@@ -573,9 +587,9 @@ class RunEnv(gym.Env):
                 v[cursor + i] = 1.0
         cursor += 3
 
-        # Cursor at 93. OBS_DIM = 128. Remaining 35 dims are reserved for
-        # round-2 additions (intent damage value per enemy, relic identity
-        # one-hot, room-type lookahead, etc.).
+        # Cursor at ~220 (was 93 in v2). OBS_DIM = 256. Remaining ~36
+        # dims reserved for further additions (intent damage value per
+        # enemy, relic identity, map-room-type lookahead, etc.).
 
         v.clip(0.0, 1.0, out=v)
         return v

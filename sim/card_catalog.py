@@ -224,6 +224,87 @@ def is_implemented(card_id: str) -> bool:
     return card_id in _IMPLEMENTED
 
 
+CARD_FEATURE_DIM = 12
+
+_RARITY_VALUE: dict[CardRarity, float] = {
+    CardRarity.BASIC: 0.0,
+    CardRarity.COMMON: 0.25,
+    CardRarity.UNCOMMON: 0.50,
+    CardRarity.RARE: 0.75,
+    CardRarity.ANCIENT: 1.0,
+}
+_ENEMY_DEBUFF_IDS = frozenset({"vulnerable", "weak", "frail"})
+_SELF_BUFF_IDS = frozenset({"strength", "dexterity", "intangible", "ritual",
+                             "rage", "metallicize", "plated_armor", "thorns"})
+
+
+def card_features(card_id: str) -> list[float]:
+    """Return a CARD_FEATURE_DIM-wide vector describing the card's
+    gameplay shape. Used by RunEnv obs v3 to let the policy distinguish
+    cards in hand and card_reward without exploding the obs into a
+    full one-hot over the ~90-card pool.
+
+    Layout (12):
+      0  cost (normalized cost/3; X-cost/unknown → 0)
+      1  is_attack
+      2  is_skill
+      3  is_power
+      4  damage_total (sum deal_damage × hit_count / 30, capped 1)
+      5  block_total (sum gain_block / 20, capped 1)
+      6  has_enemy_debuff (apply vuln/weak/frail to enemy)
+      7  has_self_buff (apply strength/dex/intangible/etc to self)
+      8  has_draw
+      9  has_energy_gain
+     10  rarity 0..1
+     11  upgraded (id ends with '+')
+    """
+    upgraded = card_id.endswith("+")
+    base_id = card_id[:-1] if upgraded else card_id
+    card = CARDS.get(base_id)
+    if card is None:
+        return [0.0] * CARD_FEATURE_DIM
+    rarity = RARITY_OF.get(base_id, CardRarity.BASIC)
+
+    cost = card.cost if card.cost is not None and card.cost >= 0 else 0
+    feats = [0.0] * CARD_FEATURE_DIM
+    feats[0] = min(1.0, cost / 3.0)
+    feats[1] = 1.0 if card.type is CardType.ATTACK else 0.0
+    feats[2] = 1.0 if card.type is CardType.SKILL else 0.0
+    feats[3] = 1.0 if card.type is CardType.POWER else 0.0
+
+    dmg = 0
+    blk = 0
+    has_debuff = False
+    has_buff = False
+    has_draw = False
+    has_egain = False
+    for eff in card.effects:
+        if eff.op is EffectOp.DEAL_DAMAGE:
+            dmg += eff.amount * max(1, eff.hit_count)
+        elif eff.op is EffectOp.GAIN_BLOCK:
+            blk += eff.amount
+        elif eff.op is EffectOp.APPLY_POWER and eff.power_id:
+            pid = eff.power_id.lower()
+            if eff.target is Target.SELF and pid in _SELF_BUFF_IDS:
+                has_buff = True
+            elif eff.target is not Target.SELF and pid in _ENEMY_DEBUFF_IDS:
+                has_debuff = True
+        elif eff.op is EffectOp.DRAW_CARD:
+            has_draw = True
+        elif eff.op is EffectOp.ENERGY_GAIN:
+            has_egain = True
+
+    feats[4] = min(1.0, dmg / 30.0)
+    feats[5] = min(1.0, blk / 20.0)
+    feats[6] = 1.0 if has_debuff else 0.0
+    feats[7] = 1.0 if has_buff else 0.0
+    feats[8] = 1.0 if has_draw else 0.0
+    feats[9] = 1.0 if has_egain else 0.0
+    feats[10] = _RARITY_VALUE.get(rarity, 0.0)
+    feats[11] = 1.0 if upgraded else 0.0
+    return feats
+
+
 IRONCLAD_COMMON = ids_by_rarity(CardRarity.COMMON)        # 20
 IRONCLAD_UNCOMMON = ids_by_rarity(CardRarity.UNCOMMON)    # 36
 IRONCLAD_RARE = ids_by_rarity(CardRarity.RARE)            # 25
