@@ -143,6 +143,10 @@ public static partial class McpMod
     private static string _lastStateAction = "";
     private static int _lastStateActionCount = 0;
     private static int _suppressActionIdx = -1;
+    // Ticks remaining to keep _suppressActionIdx in effect. Most loops
+    // resolve in 1 tick of suppression, but map-node travel animations
+    // need ~10 ticks (2s) before the new room state lands.
+    private static int _suppressActionTicks = 0;
     private const int LoopRepeatThreshold = 5;
 
     internal static void EnsureAutoPlayThinker()
@@ -590,12 +594,19 @@ public static partial class McpMod
 
             bool[] mask = BuildMask(state);
             // Loop suppression: if we've repeated the same (state, idx) too
-            // often the state isn't advancing — mask that slot off for one
-            // tick so argmax picks the second-best legal action.
-            if (_suppressActionIdx >= 0 && _suppressActionIdx < mask.Length)
+            // often the state isn't advancing — mask that slot off for
+            // _suppressActionTicks ticks so argmax picks something else
+            // (or sits idle while a transition animation completes).
+            if (_suppressActionIdx >= 0 && _suppressActionIdx < mask.Length && _suppressActionTicks > 0)
             {
                 mask[_suppressActionIdx] = false;
+                _suppressActionTicks--;
+                if (_suppressActionTicks <= 0) _suppressActionIdx = -1;
+            }
+            else
+            {
                 _suppressActionIdx = -1;
+                _suppressActionTicks = 0;
             }
             int legalCount = 0;
             for (int i = 0; i < mask.Length; i++) if (mask[i]) legalCount++;
@@ -636,9 +647,15 @@ public static partial class McpMod
                     if (_lastStateActionCount >= LoopRepeatThreshold)
                     {
                         _suppressActionIdx = action;
+                        // Map node travels animate for ~2s; keep the
+                        // pick suppressed for 10 ticks (~2s @ 200ms)
+                        // so the new room state has time to land
+                        // before we re-fire. Other states resolve in
+                        // 1 tick so the previous default still works.
+                        _suppressActionTicks = (st == "map") ? 10 : 1;
                         _lastStateActionCount = 0;
                         GD.PrintErr($"[STS2 MCP][AUTO] loop guard: {st} idx={action} repeated " +
-                                    $"{LoopRepeatThreshold}× with no state change — suppressing 1 tick");
+                                    $"{LoopRepeatThreshold}× with no state change — suppressing {_suppressActionTicks} tick(s)");
                     }
                 }
                 else
