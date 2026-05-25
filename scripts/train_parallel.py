@@ -132,7 +132,8 @@ def evaluate_solo(model, ascension: int, reward_cfg: RewardConfig,
 
 class PeriodicEvalCallback(BaseCallback):
     def __init__(self, ascension: int, reward_cfg: RewardConfig,
-                 eval_every: int, eval_episodes: int, label: str = ""):
+                 eval_every: int, eval_episodes: int, label: str = "",
+                 best_save_path=None):
         super().__init__()
         self.ascension = ascension
         self.reward_cfg = reward_cfg
@@ -141,6 +142,13 @@ class PeriodicEvalCallback(BaseCallback):
         self.label = label
         self.history: list[dict] = []
         self._next = eval_every
+        # Track best mid-train eval and save its model. Observed
+        # cycle 2 shape_lean peak at step 120K (boss=0.80, win=13.3%)
+        # collapse to boss=0.48 at step 300K from over-fitting. The
+        # warm-start chain should propagate the BEST policy, not the
+        # final overtrained one.
+        self.best_save_path = best_save_path
+        self.best_score = -1e9  # composite: win + 0.05*floor + 0.5*boss
 
     def _on_step(self) -> bool:
         if self.num_timesteps < self._next:
@@ -174,6 +182,21 @@ class PeriodicEvalCallback(BaseCallback):
               f"act={res['mean_act']:.2f} floor={res['mean_floor']:.2f}(s={res_stoch['mean_floor']:.2f}) "
               f"bosses={res['mean_bosses']:.2f} hp={res['mean_final_hp']:.1f} "
               f"rew={res['mean_reward']:+.3f}", flush=True)
+        # Save best checkpoint if requested. Composite score weights
+        # win rate primarily, then floor depth, then boss kills. We
+        # use the BEST of deterministic and stochastic so a strong
+        # stochastic mode isn't lost.
+        if self.best_save_path is not None:
+            score = (max(res['win_rate'], res_stoch['win_rate']) * 100
+                     + 0.05 * max(res['mean_floor'], res_stoch['mean_floor'])
+                     + 0.5 * res['mean_bosses'])
+            if score > self.best_score:
+                self.best_score = score
+                try:
+                    self.model.save(self.best_save_path)
+                    print(f"{prefix}  -> saved best (score={score:.2f})", flush=True)
+                except Exception as e:
+                    print(f"{prefix}  best-save failed: {e}", flush=True)
         return True
 
 
@@ -219,10 +242,13 @@ def run_one_experiment(preset: str, ascension: int, workers: int, steps: int,
         device = "cuda" if n_params_est > 100_000 else "cpu"
     from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
     policy_kwargs = dict(net_arch=net_arch)
-    # Warm-start from the previous sweep checkpoint if one exists.
-    # NOTE: warm-start ONLY works if net_arch matches. We tag the
-    # checkpoint with the arch in its parent dir to avoid silent mismatches.
-    prev_ckpt = out_dir / "final.zip"
+    # Warm-start: prefer best.zip (peak mid-train eval) over final.zip
+    # (potentially over-fit end of training). Cycle 2 shape_lean
+    # showed boss=0.80 at step 120K then degraded to 0.48 at 300K —
+    # warm-starting next cycle from that 0.48 final wastes the peak.
+    # If neither exists, fall back to fresh init.
+    best_ckpt = out_dir / "best.zip"
+    prev_ckpt = best_ckpt if best_ckpt.exists() else out_dir / "final.zip"
     arch_tag = out_dir / f".arch_{net_str.replace(',','x')}"
     arch_compatible = arch_tag.exists()
     if prev_ckpt.exists() and arch_compatible and os.getenv("PPO_WARM_START", "1") != "0":
@@ -253,7 +279,8 @@ def run_one_experiment(preset: str, ascension: int, workers: int, steps: int,
     arch_tag.touch(exist_ok=True)
 
     callback = PeriodicEvalCallback(ascension, reward_cfg,
-                                    eval_every, eval_episodes, label=preset)
+                                    eval_every, eval_episodes, label=preset,
+                                    best_save_path=str(out_dir / "best.zip"))
     t0 = time.time()
     model.learn(total_timesteps=steps, callback=callback)
     train_time = time.time() - t0

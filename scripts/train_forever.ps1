@@ -60,7 +60,7 @@ while ($true) {
         Write-Host "[$preset] starting → $log" -ForegroundColor DarkGreen
         & "$root\.venv\Scripts\python.exe" -u "$root\scripts\train_parallel.py" `
             --preset $preset --workers 1 `
-            --steps 300000 --eval-every 60000 --eval-episodes 30 `
+            --steps 150000 --eval-every 30000 --eval-episodes 30 `
             --seed $seed 2>&1 | Tee-Object -FilePath $log | Out-Null
         $done = Select-String -Path $log -Pattern 'DONE in ' | Select-Object -Last 1
         $dt = ([int]((Get-Date) - $t0).TotalSeconds)
