@@ -219,7 +219,7 @@ def run_one_experiment(preset: str, ascension: int, workers: int, steps: int,
                                 policy_kwargs=policy_kwargs)
     else:
         if prev_ckpt.exists() and not arch_compatible:
-            print(f"[{preset}] ARCH MISMATCH (no .arch_{net_str.replace(',','x')} tag) — fresh init", flush=True)
+            print(f"[{preset}] ARCH MISMATCH (no .arch_{net_str.replace(',','x')} tag) - fresh init", flush=True)
         model = MaskablePPO("MlpPolicy", vec_env, verbose=0, seed=seed,
                             tensorboard_log=str(tb_dir) if tb_dir else None,
                             n_steps=n_steps, batch_size=batch, ent_coef=ent,
