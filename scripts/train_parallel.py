@@ -38,6 +38,26 @@ from sim.env_run import REWARD_PRESETS, RewardConfig, RunEnv
 from sim.game_state import Character
 
 
+def load_all_presets() -> dict[str, RewardConfig]:
+    """Merge hand-tuned REWARD_PRESETS with anything in
+    models/generated_presets.json (written by scripts/generate_presets.py).
+    Generated names always take precedence on name collision."""
+    out = dict(REWARD_PRESETS)
+    gen_path = Path(__file__).resolve().parent.parent / "models" / "generated_presets.json"
+    if gen_path.exists():
+        try:
+            import json
+            gen = json.loads(gen_path.read_text())
+            for name, cfg_dict in gen.items():
+                try:
+                    out[name] = RewardConfig(**cfg_dict)
+                except Exception as e:
+                    print(f"[load_presets] skip {name}: {e}", flush=True)
+        except Exception as e:
+            print(f"[load_presets] failed to read {gen_path}: {e}", flush=True)
+    return out
+
+
 def _mask_fn(env):
     return env.action_masks()
 
@@ -140,7 +160,10 @@ def run_one_experiment(preset: str, ascension: int, workers: int, steps: int,
                        eval_every: int, eval_episodes: int, seed: int,
                        out_dir: Path, history_path: Path, tb_dir: Path | None) -> dict:
     """Train one model for one reward preset. Returns final eval dict."""
-    reward_cfg = REWARD_PRESETS[preset]
+    all_presets = load_all_presets()
+    if preset not in all_presets:
+        raise SystemExit(f"Unknown preset '{preset}'. Known: {sorted(all_presets)}")
+    reward_cfg = all_presets[preset]
     out_dir.mkdir(parents=True, exist_ok=True)
     history_path.parent.mkdir(parents=True, exist_ok=True)
     if tb_dir:
@@ -152,46 +175,61 @@ def run_one_experiment(preset: str, ascension: int, workers: int, steps: int,
     VecCls = SubprocVecEnv if workers > 1 else DummyVecEnv
     vec_env = VecCls(factories)
 
-    # n_steps 1024 + ent_coef 0.01 set after 3rd sweep; tunable via env vars
-    # for cycle-E v5 hyperparameter sweeps without rewriting the script.
+    # v3 (2026-05-25): exploration + capacity bump after 30 cycles
+    # plateaued at ~10% win across all reward presets. ent_coef tripled,
+    # n_steps doubled, and the policy net widened 64→256 (×6 params).
+    # Auto-switch to GPU when the net is large enough that math beats
+    # transfer overhead. Env vars still override.
     import os
     lr = float(os.getenv("PPO_LR", "3e-4"))
-    ent = float(os.getenv("PPO_ENT", "0.01"))
-    n_steps = int(os.getenv("PPO_N_STEPS", "1024"))
-    batch = int(os.getenv("PPO_BATCH", "128"))
-    # Default to CPU: the policy/value net is a tiny 64→64→64→300 MLP
-    # (~25 K params), so host↔device transfer per minibatch costs more than
-    # the GPU saves on the forward+backward pass. Bench: 30 K steps in
-    # 21 s CPU vs 38 s on an RTX 3060 Ti. The real bottleneck is the
-    # Python env.step() loop; that's helped by multiple env workers,
-    # not by GPU.
-    # `PPO_DEVICE=cuda` re-enables GPU for experiments with bigger nets
-    # (CNN policies, transformer, large batch) where the math truly
-    # dominates transfer overhead.
-    device = os.getenv("PPO_DEVICE", "cpu")
+    ent = float(os.getenv("PPO_ENT", "0.03"))     # was 0.01 — boost exploration
+    n_steps = int(os.getenv("PPO_N_STEPS", "2048"))  # was 1024
+    batch = int(os.getenv("PPO_BATCH", "256"))    # was 128 (matches new n_steps)
+    # net_arch via env var "PPO_NET" = comma-separated hidden sizes.
+    # Default 256,256,128 = ~170K params (was 64,64,64 = ~25K).
+    net_str = os.getenv("PPO_NET", "256,256,128")
+    net_arch = [int(x) for x in net_str.split(",") if x.strip()]
+    n_params_est = 128 * net_arch[0] + sum(net_arch[i-1]*net_arch[i] for i in range(1,len(net_arch))) + net_arch[-1]*300
+    # GPU pays off above ~100K params; below that the host↔device
+    # transfer per minibatch dominates. Override with PPO_DEVICE.
+    if os.getenv("PPO_DEVICE"):
+        device = os.environ["PPO_DEVICE"]
+    else:
+        device = "cuda" if n_params_est > 100_000 else "cpu"
+    from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
+    policy_kwargs = dict(net_arch=net_arch)
     # Warm-start from the previous sweep checkpoint if one exists.
-    # Without this every train_forever cycle starts from scratch and
-    # win rate stops improving past whatever 300K random steps can
-    # achieve (~6-10%). With it the policy actually compounds.
+    # NOTE: warm-start ONLY works if net_arch matches. We tag the
+    # checkpoint with the arch in its parent dir to avoid silent mismatches.
     prev_ckpt = out_dir / "final.zip"
-    if prev_ckpt.exists() and os.getenv("PPO_WARM_START", "1") != "0":
+    arch_tag = out_dir / f".arch_{net_str.replace(',','x')}"
+    arch_compatible = arch_tag.exists()
+    if prev_ckpt.exists() and arch_compatible and os.getenv("PPO_WARM_START", "1") != "0":
         try:
             model = MaskablePPO.load(prev_ckpt, env=vec_env, device=device,
                                      custom_objects={"learning_rate": lr,
                                                      "ent_coef": ent})
-            print(f"[{preset}] PPO device={device} warm-start from {prev_ckpt.name}", flush=True)
+            print(f"[{preset}] PPO device={device} net={net_arch} warm-start from {prev_ckpt.name}", flush=True)
         except Exception as e:
             print(f"[{preset}] warm-start failed ({e}); fresh init", flush=True)
             model = MaskablePPO("MlpPolicy", vec_env, verbose=0, seed=seed,
                                 tensorboard_log=str(tb_dir) if tb_dir else None,
                                 n_steps=n_steps, batch_size=batch, ent_coef=ent,
-                                learning_rate=lr, device=device)
+                                learning_rate=lr, device=device,
+                                policy_kwargs=policy_kwargs)
     else:
+        if prev_ckpt.exists() and not arch_compatible:
+            print(f"[{preset}] ARCH MISMATCH (no .arch_{net_str.replace(',','x')} tag) — fresh init", flush=True)
         model = MaskablePPO("MlpPolicy", vec_env, verbose=0, seed=seed,
                             tensorboard_log=str(tb_dir) if tb_dir else None,
                             n_steps=n_steps, batch_size=batch, ent_coef=ent,
-                            learning_rate=lr, device=device)
-        print(f"[{preset}] PPO device={device} fresh init", flush=True)
+                            learning_rate=lr, device=device,
+                            policy_kwargs=policy_kwargs)
+        print(f"[{preset}] PPO device={device} net={net_arch} (~{n_params_est//1000}K params) fresh init", flush=True)
+    # Drop a marker so the next cycle knows the arch — prevents loading
+    # a checkpoint trained on a different net_arch.
+    arch_tag.parent.mkdir(parents=True, exist_ok=True)
+    arch_tag.touch(exist_ok=True)
 
     callback = PeriodicEvalCallback(ascension, reward_cfg,
                                     eval_every, eval_episodes, label=preset)
@@ -255,9 +293,10 @@ def main() -> None:
         return
 
     presets = [p.strip() for p in args.presets.split(",") if p.strip()]
-    unknown = [p for p in presets if p not in REWARD_PRESETS]
+    all_presets = load_all_presets()
+    unknown = [p for p in presets if p not in all_presets]
     if unknown:
-        raise SystemExit(f"Unknown presets: {unknown}. Known: {list(REWARD_PRESETS)}")
+        raise SystemExit(f"Unknown presets: {unknown}. Known: {sorted(all_presets)}")
 
     print(f"Sweeping {len(presets)} presets in parallel processes, "
           f"each with {args.workers} env workers...")

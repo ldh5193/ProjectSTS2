@@ -90,6 +90,18 @@ class RewardConfig:
     run_victory: float = 5.0
     death: float = -1.0
     hp_delta_weight: float = 0.0   # +N per HP gained, -N per HP lost (scaled)
+    # ---- v3 per-action shaping (added 2026-05-25) ----
+    # The first 2.5 sweep generations plateaued at ~10% win because the
+    # default reward signal only fires at combat end. Each card play
+    # produced ~0 immediate reward, so PPO couldn't credit individual
+    # decisions like "apply Vulnerable BEFORE Strike" or "save Defend
+    # for the boss escalation turn". These deltas give per-action
+    # gradients without changing the terminal signal weights.
+    damage_dealt_weight: float = 0.0       # +N per HP point dealt to enemies this tick
+    block_gained_weight: float = 0.0       # +N per block point gained on player this tick
+    enemy_power_weight: float = 0.0        # +N per Vuln/Weak stack applied to enemy
+    self_power_weight: float = 0.0         # +N per Strength/Dex stack gained
+    energy_unspent_penalty: float = 0.0    # −N per energy left at end_turn
 
 
 REWARD_PRESETS: dict[str, RewardConfig] = {
@@ -151,6 +163,46 @@ REWARD_PRESETS: dict[str, RewardConfig] = {
         run_victory=8.0, floor_advance=0.015, living_cost=-0.0008, death=-1.5,
         hp_delta_weight=0.01,
     ),
+    # ---- v3 per-action shaping presets (added 2026-05-25) ----
+    # These ride on the previous best (balanced/sparse/survival_v2 chain)
+    # but add the new damage/block/power deltas. The hypothesis is that
+    # per-action gradients fix the sequencing failures observed live
+    # (Vuln applied last, Defend played last on damage-escalating bosses).
+    "shape_damage": RewardConfig(
+        combat_win=0.10, elite_kill=0.30, boss_kill=3.0, act_completion=1.0,
+        run_victory=10.0, floor_advance=0.01, living_cost=-0.001, death=-1.0,
+        damage_dealt_weight=0.005,  # tiny but constant
+    ),
+    "shape_debuff": RewardConfig(
+        combat_win=0.10, elite_kill=0.30, boss_kill=3.0, act_completion=1.0,
+        run_victory=10.0, floor_advance=0.01, living_cost=-0.001, death=-1.0,
+        enemy_power_weight=0.15,   # reward Vuln/Weak application
+    ),
+    "shape_tank": RewardConfig(
+        combat_win=0.10, elite_kill=0.30, boss_kill=3.0, act_completion=1.0,
+        run_victory=10.0, floor_advance=0.01, living_cost=-0.001, death=-2.0,
+        hp_delta_weight=0.015, block_gained_weight=0.003,
+    ),
+    "shape_combo": RewardConfig(
+        # All four signals at once — most aggressive learning signal.
+        # Likely to overfit early but should rapidly close the basic
+        # sequencing failures.
+        combat_win=0.10, elite_kill=0.30, boss_kill=4.0, act_completion=1.5,
+        run_victory=12.0, floor_advance=0.01, living_cost=-0.0005, death=-2.0,
+        damage_dealt_weight=0.003, block_gained_weight=0.002,
+        enemy_power_weight=0.10, self_power_weight=0.05,
+        energy_unspent_penalty=0.05,
+        hp_delta_weight=0.005,
+    ),
+    "shape_lean": RewardConfig(
+        # Same shaping as combo but with sparse terminal — tests whether
+        # the shaping alone carries enough signal.
+        combat_win=0.0, elite_kill=0.0, boss_kill=2.0, act_completion=0.5,
+        run_victory=8.0, floor_advance=0.0, living_cost=-0.0005, death=-1.0,
+        damage_dealt_weight=0.008, block_gained_weight=0.003,
+        enemy_power_weight=0.15, self_power_weight=0.05,
+        energy_unspent_penalty=0.1,
+    ),
 }
 
 
@@ -197,10 +249,14 @@ class RunEnv(gym.Env):
 
     def step(self, action: int):  # type: ignore[override]
         assert self.rs is not None, "call reset() first"
+        pre = self._combat_snapshot()
         body = self._decode(int(action))
         result = step(self.rs, body)
         self._invalidate_caches()
-        reward = self._reward(result)
+        post = self._combat_snapshot()
+        # Pass body so end_turn can be detected for the unspent-energy
+        # penalty (player gets a small minus for ending with energy left).
+        reward = self._reward(result, pre, post, body)
         terminated = self.rs.is_terminal()
         return (
             self._obs(),
@@ -209,6 +265,36 @@ class RunEnv(gym.Env):
             False,
             {"action_mask": self.action_masks(), "result": result},
         )
+
+    def _combat_snapshot(self) -> dict:
+        """Cheap pre/post snapshot for per-action reward shaping.
+        Returns 0s when not in combat so the shaping deltas vanish on
+        map / event / reward states."""
+        rs = self.rs
+        if rs is None or not rs.in_combat() or rs.combat is None:
+            return {"enemy_hp": 0, "player_block": 0, "enemy_vuln": 0,
+                    "enemy_weak": 0, "player_strength": 0, "player_dex": 0,
+                    "player_energy": 0}
+        cs = rs.combat
+        eh = sum(m.hp for m in cs.alive_monsters())
+        ev = 0; ew = 0
+        for m in cs.alive_monsters():
+            for p in m.powers:
+                if p.id == "vulnerable": ev += p.amount
+                elif p.id == "weak":     ew += p.amount
+        ps = 0; pd = 0
+        for p in cs.player.powers:
+            if p.id == "strength":  ps += p.amount
+            elif p.id == "dexterity": pd += p.amount
+        return {
+            "enemy_hp": eh,
+            "player_block": cs.player.block,
+            "enemy_vuln": ev,
+            "enemy_weak": ew,
+            "player_strength": ps,
+            "player_dex": pd,
+            "player_energy": cs.player.energy,
+        }
 
     def action_masks(self) -> np.ndarray:
         assert self.rs is not None
@@ -496,7 +582,8 @@ class RunEnv(gym.Env):
 
     # -- reward -------------------------------------------------------------
 
-    def _reward(self, result: StepResult) -> float:
+    def _reward(self, result: StepResult, pre: dict | None = None,
+                post: dict | None = None, body: dict | None = None) -> float:
         cfg = self.reward_config
         if result.invalid_action:
             return cfg.invalid_action
@@ -524,4 +611,29 @@ class RunEnv(gym.Env):
             hp_now = self.rs.hp
             r += cfg.hp_delta_weight * (hp_now - self._last_hp)
             self._last_hp = hp_now
+        # Per-action shaping. Only meaningful when pre and post are
+        # both in-combat (snapshots return 0 outside combat so deltas
+        # vanish for map/event/reward steps).
+        if pre is not None and post is not None and (pre["enemy_hp"] or post["enemy_hp"]):
+            if cfg.damage_dealt_weight != 0.0:
+                dmg = max(0, pre["enemy_hp"] - post["enemy_hp"])
+                r += cfg.damage_dealt_weight * dmg
+            if cfg.block_gained_weight != 0.0:
+                blk = max(0, post["player_block"] - pre["player_block"])
+                r += cfg.block_gained_weight * blk
+            if cfg.enemy_power_weight != 0.0:
+                # Sum Vuln + Weak stack increases. Encourages applying
+                # debuffs BEFORE the cards that benefit from them.
+                stk = (max(0, post["enemy_vuln"] - pre["enemy_vuln"])
+                       + max(0, post["enemy_weak"] - pre["enemy_weak"]))
+                r += cfg.enemy_power_weight * stk
+            if cfg.self_power_weight != 0.0:
+                stk = (max(0, post["player_strength"] - pre["player_strength"])
+                       + max(0, post["player_dex"] - pre["player_dex"]))
+                r += cfg.self_power_weight * stk
+            if cfg.energy_unspent_penalty != 0.0 and body is not None \
+               and body.get("action") == "end_turn":
+                # Ending the turn with leftover energy is almost always
+                # a planning failure (could have played another 1-cost).
+                r -= cfg.energy_unspent_penalty * pre["player_energy"]
         return r
