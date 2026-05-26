@@ -44,3 +44,7 @@ tools/RngOracle/obj/
 tools/STS2MCP-bin/*.dll
 tools/STS2MCP-bin/*.pdb
 tools/STS2MCP-bin/*.json
+# card_features.json is *our* derived lookup (from sim/card_catalog.py),
+# not an upstream binary — keep it tracked so the deploy bundle stays
+# reproducible from a single git checkout.
+!tools/STS2MCP-bin/card_features.json

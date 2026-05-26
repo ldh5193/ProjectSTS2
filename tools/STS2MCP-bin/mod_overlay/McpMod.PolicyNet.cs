@@ -22,9 +22,10 @@ namespace STS2_MCP;
 
 public static partial class McpMod
 {
-    // v2 obs layout (2026-05-25): see notes/18_training_gaps.md.
-    // 64 -> 128 to fit status effects / intent / hand identity / potions.
-    public const int PolicyObsDim = 128;
+    // v3 obs layout (2026-05-26): per-card identity vectors for hand and
+    // card_reward, fixing the 99% skip-rate plateau. See notes/18 and
+    // sim/env_run.py::_obs for the canonical layout. 128 -> 256.
+    public const int PolicyObsDim = 256;
     public const int PolicyActionDim = 300;
 
     private static InferenceSession? _policySession;

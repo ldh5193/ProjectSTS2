@@ -70,9 +70,12 @@ public static partial class McpMod
     }
 
     /// <summary>
-    /// Build the 128-d float observation vector matching the trained env.
-    /// v2 layout — must match sim/env_run.py::_obs exactly. See
-    /// notes/18_training_gaps.md for the full layout table.
+    /// Build the 256-d float observation vector matching the trained env.
+    /// v3 layout — must match sim/env_run.py::_obs exactly. v3 adds 12-dim
+    /// card identity vectors per hand slot (×10) and per card_reward slot
+    /// (×5), replacing v2's 30-dim "cost/type/can_play" hand block and the
+    /// 3-dim "count + attack share" reward block. See sim/card_catalog.py
+    /// ::card_features for the per-card feature layout.
     /// </summary>
     internal static float[] BuildObs(Dictionary<string, object?> state)
     {
@@ -232,25 +235,32 @@ public static partial class McpMod
             cursor += 4;
         }
 
-        // NEW v2: Hand identity (10 slots × 3 = 30)
+        // v3: Hand identity (10 slots × (CardFeatureDim + 1) = 130).
+        // Per slot: 12 card features (cost/type/damage/block/debuff/buff/
+        // draw/energy/rarity/upgraded) + 1 can_play flag. Replaces v2's
+        // 30-dim (cost/is_attack/can_play) layout that triggered the 99%
+        // skip-rate plateau (policy couldn't distinguish cards).
+        const int HandSlotStride = CardFeatureDim + 1;
         if (inCombat)
         {
             var hand = AsList(player, "hand");
             for (int slot = 0; slot < 10; slot++)
             {
+                int basei = cursor + slot * HandSlotStride;
                 if (slot < hand.Count && hand[slot] is Dictionary<string, object?> c)
                 {
-                    float cost = ToFloat(c, "cost", 0f);
-                    v[cursor + slot * 3 + 0] = cost >= 0 ? Math.Min(1f, cost / 3f) : 0f;
-                    v[cursor + slot * 3 + 1] = string.Equals(
-                        AsString(c, "type", "").ToLowerInvariant(), "attack") ? 1f : 0f;
-                    v[cursor + slot * 3 + 2] = AsBool(c, "can_play") ? 1f : 0f;
+                    var feats = LookupCardFeatures(AsString(c, "id", ""));
+                    for (int j = 0; j < CardFeatureDim; j++) v[basei + j] = feats[j];
+                    v[basei + CardFeatureDim] = AsBool(c, "can_play") ? 1f : 0f;
                 }
             }
         }
-        cursor += 30;
+        cursor += 10 * HandSlotStride;
 
-        // Pending card reward (3)
+        // v3: Card-reward identity (5 slots × CardFeatureDim = 60).
+        // Replaces v2's 3-dim (count + attack share). The policy now sees
+        // each option's full identity vector so "skip" can no longer be
+        // the safest default for unknown cards.
         if (st == "card_select" || st == "card_reward")
         {
             var choices = AsList(state, "card_select");
@@ -260,17 +270,18 @@ public static partial class McpMod
             {
                 choices = AsList(crd, "cards");
             }
-            v[cursor + 0] = choices.Count / 3f;
-            int attackN = 0;
-            foreach (var c in choices)
+            for (int slot = 0; slot < 5; slot++)
             {
-                if (c is Dictionary<string, object?> cd
-                    && AsString(cd, "type", "").ToLowerInvariant() == "attack")
-                    attackN += 1;
+                int basei = cursor + slot * CardFeatureDim;
+                if (slot < choices.Count
+                    && choices[slot] is Dictionary<string, object?> cd)
+                {
+                    var feats = LookupCardFeatures(AsString(cd, "id", ""));
+                    for (int j = 0; j < CardFeatureDim; j++) v[basei + j] = feats[j];
+                }
             }
-            v[cursor + 1] = attackN / (float)Math.Max(1, choices.Count);
         }
-        cursor += 3;
+        cursor += 5 * CardFeatureDim;
 
         // Map fanout (1)
         if (st == "map")

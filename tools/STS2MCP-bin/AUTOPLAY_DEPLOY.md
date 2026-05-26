@@ -27,6 +27,7 @@ under "강화학습 파이프라인". This file is the *deployment* recipe.
 | `onnxruntime.dll`                     | native ORT (Windows x64)         | no |
 | `onnxruntime_providers_shared.dll`    | native ORT shared providers      | no |
 | `policy.onnx`                         | trained RL policy weights        | **yes** |
+| `card_features.json`                  | per-card identity table (obs v3) | **yes** |
 | `mod_overlay/`                        | our authored .cs files + csproj  | **yes** |
 | `AUTOPLAY_DEPLOY.md`                  | this guide                       | **yes** |
 
@@ -53,7 +54,7 @@ any other transitive dependencies.
 # 1. Close the game
 Get-Process SlayTheSpire2 -ErrorAction SilentlyContinue | Stop-Process -Force
 
-# 2. Copy six files into the game's mods folder
+# 2. Copy the mod artifacts into the game's mods folder
 $mods = "D:\Games\Steam\steamapps\common\Slay the Spire 2\mods"
 $bin  = "tools\STS2MCP-bin"
 Copy-Item -Force $bin\STS2_MCP.dll                       $mods\
@@ -61,6 +62,7 @@ Copy-Item -Force $bin\Microsoft.ML.OnnxRuntime.dll       $mods\
 Copy-Item -Force $bin\onnxruntime.dll                    $mods\
 Copy-Item -Force $bin\onnxruntime_providers_shared.dll   $mods\
 Copy-Item -Force $bin\policy.onnx                        $mods\
+Copy-Item -Force $bin\card_features.json                 $mods\   # obs v3 lookup
 
 # 3. Restart STS2 from Steam
 ```
