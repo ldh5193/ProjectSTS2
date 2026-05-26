@@ -203,6 +203,58 @@ REWARD_PRESETS: dict[str, RewardConfig] = {
         enemy_power_weight=0.15, self_power_weight=0.05,
         energy_unspent_penalty=0.1,
     ),
+    # ---- v4 stats-derived presets (added 2026-05-26) ----
+    # Seeded by ststracker.app + op.gg STS2 stats: community A0 win
+    # ~22.7%, our model trails at 5-13%. Knowledge Demon (Act 2 boss)
+    # kills 21.5% of all deaths — punishes unplayed cards in hand.
+    # Act 3 bosses (Queen+Torch erode, Test Subject Intangible phases,
+    # Doormaker 489 HP reset) demand burst + precise sequencing.
+    "kd_killer": RewardConfig(
+        # Counters Knowledge Demon (#1 killer @ 21.5% of all deaths).
+        # Heavy unspent-energy penalty trains the policy to empty its
+        # hand each turn — exactly what Knowledge Demon punishes.
+        combat_win=0.10, elite_kill=0.35, boss_kill=4.0, act_completion=2.5,
+        run_victory=12.0, floor_advance=0.01, living_cost=-0.001, death=-2.0,
+        energy_unspent_penalty=0.20,
+    ),
+    "act3_burst": RewardConfig(
+        # Test Subject Intangible phases + Doormaker 489 HP need sustained
+        # damage. Per-action damage reward + heavy boss terminal.
+        combat_win=0.08, elite_kill=0.35, boss_kill=6.0, act_completion=2.0,
+        run_victory=18.0, floor_advance=0.005, living_cost=-0.001, death=-2.0,
+        damage_dealt_weight=0.012,
+    ),
+    "early_block": RewardConfig(
+        # Act 1 survival is the run gate — community data shows act 1
+        # death frequency is highest in absolute terms (most runs die
+        # before reaching act 2). Heavy block + HP shaping early.
+        combat_win=0.15, elite_kill=0.40, boss_kill=3.0, act_completion=1.5,
+        run_victory=10.0, floor_advance=0.012, living_cost=-0.0008, death=-2.0,
+        hp_delta_weight=0.020, block_gained_weight=0.005,
+    ),
+    "debuff_first": RewardConfig(
+        # Queen+Torch erodes top 3 cards, only 1 playable per turn — must
+        # pick the high-impact play. Vuln-before-Strike sequencing
+        # learned via heavy enemy_power_weight.
+        combat_win=0.10, elite_kill=0.35, boss_kill=4.0, act_completion=1.5,
+        run_victory=12.0, floor_advance=0.01, living_cost=-0.001, death=-1.5,
+        enemy_power_weight=0.22, damage_dealt_weight=0.005,
+    ),
+    "terminal_heavy": RewardConfig(
+        # Mirrors community baseline: sparse intermediate signal, strong
+        # terminals. Tests whether high run_victory alone closes the
+        # 5-13% → 22% gap.
+        combat_win=0.0, elite_kill=0.15, boss_kill=5.0, act_completion=2.5,
+        run_victory=22.0, floor_advance=0.0, living_cost=-0.0008, death=-2.0,
+    ),
+    "kd_burst_hybrid": RewardConfig(
+        # Combines kd_killer (empty hand) + act3_burst (damage). The
+        # community signal points to both being load-bearing for high
+        # ascension; test them together.
+        combat_win=0.08, elite_kill=0.35, boss_kill=5.0, act_completion=2.0,
+        run_victory=15.0, floor_advance=0.008, living_cost=-0.001, death=-2.0,
+        damage_dealt_weight=0.010, energy_unspent_penalty=0.18,
+    ),
 }
 
 

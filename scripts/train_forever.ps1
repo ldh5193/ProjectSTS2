@@ -18,12 +18,18 @@ try { (Get-Process -Id $PID).PriorityClass = 'BelowNormal' } catch {}
 
 # How many cycles between generator refresh. Each refresh creates fresh
 # random presets so the policy keeps seeing novel reward shapes.
-$RotateEvery = 3   # was 6 — refresh twice as often for more variety
+# v4 (2026-05-26): refresh every cycle while ranges are wider so the
+# stats-derived parameter regions get sampling pressure quickly.
+$RotateEvery = 1   # was 3 — refresh every cycle (wider ranges + new presets)
 # Number of fresh generated presets per refresh.
 $GenCount = 36     # was 12 — 3x reward-space coverage per refresh
 # Hand-tuned best — always in rotation regardless of generator state.
+# v4 stats-derived adds: kd_killer, act3_burst, early_block, debuff_first,
+# terminal_heavy, kd_burst_hybrid (sim/env_run.py REWARD_PRESETS).
 $Handpicked = @('balanced','boss_heavy','sparse','survival_v2',
-                'shape_combo','shape_lean','shape_damage','shape_debuff','shape_tank')
+                'shape_combo','shape_lean','shape_damage','shape_debuff','shape_tank',
+                'kd_killer','act3_burst','early_block','debuff_first',
+                'terminal_heavy','kd_burst_hybrid')
 
 Write-Host "=== train_forever v3 ($logRoot) ===" -ForegroundColor Cyan
 

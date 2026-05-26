@@ -31,21 +31,30 @@ from sim.env_run import RewardConfig  # noqa: E402
 # Parameter ranges. Each field is (min, max). Sampling is uniform per
 # field; pairs that don't make sense (e.g. both sparse and dense terminal)
 # are filtered out post-sample.
+#
+# v4 (2026-05-26) — bounds widened based on STS2 community stats
+# (ststracker.app, op.gg). Knowledge Demon kills 21.5% (highest) by
+# punishing unplayed cards → energy_unspent_penalty upper bumped
+# 0.15 → 0.30. Act 3 bosses (Doormaker 489 HP, Test Subject 3
+# phases) demand burst damage → damage_dealt_weight 0.012 → 0.018.
+# Community baseline is 22.7% A0 win vs our 5-13% → terminal
+# signals (boss_kill, run_victory) upper bumped to probe higher
+# regimes that may close the gap.
 RANGES: dict[str, tuple[float, float]] = {
     "living_cost":           (-0.002, 0.0),
     "floor_advance":         (0.0, 0.03),
     "combat_win":            (0.0, 0.25),
     "elite_kill":            (0.10, 0.60),
-    "boss_kill":             (1.0, 6.0),
-    "act_completion":        (0.0, 2.5),
-    "run_victory":           (3.0, 20.0),
+    "boss_kill":             (1.0, 8.0),
+    "act_completion":        (0.0, 3.0),
+    "run_victory":           (3.0, 25.0),
     "death":                 (-3.0, -0.5),
     "hp_delta_weight":       (0.0, 0.03),
-    "damage_dealt_weight":   (0.0, 0.012),
-    "block_gained_weight":   (0.0, 0.005),
-    "enemy_power_weight":    (0.0, 0.25),
+    "damage_dealt_weight":   (0.0, 0.018),
+    "block_gained_weight":   (0.0, 0.006),
+    "enemy_power_weight":    (0.0, 0.30),
     "self_power_weight":     (0.0, 0.10),
-    "energy_unspent_penalty":(0.0, 0.15),
+    "energy_unspent_penalty":(0.0, 0.30),
 }
 
 
