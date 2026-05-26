@@ -247,21 +247,24 @@ _MULTI_FACTORY_BY_ID = {
 }
 
 
-def build_monsters_for(encounter_id: str, rng) -> list[Monster]:
+def build_monsters_for(encounter_id: str, rng, ascension: int = 0) -> list[Monster]:
     """Return the list of monsters for a multi-enemy encounter, or
     [single_monster] for backwards compatibility. Always returns at least
-    one monster so run_engine can populate combat state."""
+    one monster so run_engine can populate combat state.
+
+    `ascension` is forwarded to per-monster spawn so A8 ToughEnemies
+    (HP) and A9 DeadlyEnemies (damage) take effect."""
     multi = _MULTI_FACTORY_BY_ID.get(encounter_id)
     if multi is not None:
-        return multi(rng)
-    return [build_monster_for(encounter_id, rng)]
+        return multi(rng, ascension=ascension)
+    return [build_monster_for(encounter_id, rng, ascension=ascension)]
 
 
 def is_multi_encounter(encounter_id: str) -> bool:
     return encounter_id in _MULTI_FACTORY_BY_ID
 
 
-def build_monster_for(encounter_id: str, rng) -> Monster:
+def build_monster_for(encounter_id: str, rng, ascension: int = 0) -> Monster:
     """Return a Monster instance for the given encounter id. Falls back to
     a punching-bag SludgeSpinner for unsupported encounters so the env can
     keep running while we extend the catalog."""
@@ -269,8 +272,8 @@ def build_monster_for(encounter_id: str, rng) -> Monster:
     if factory is None:
         # Placeholder so the run loop still terminates. Tuned to deal a
         # moderate amount of damage and die in ~3 player turns.
-        return SludgeSpinnerWeak.spawn(rng)
-    return factory(rng)
+        return SludgeSpinnerWeak.spawn(rng, ascension=ascension)
+    return factory(rng, ascension=ascension)
 
 
 def is_modeled(encounter_id: str) -> bool:

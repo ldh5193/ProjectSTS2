@@ -5,8 +5,11 @@ Currently modeled:
   - NibbitWeak — solo Nibbit, deterministic BUTT -> SLICE -> HISS cycle
     (Nibbit.cs + NibbitsWeak.cs, IsAlone=true branch).
 
-Both expose `spawn(rng) -> Self` and `take_turn(rng, player) -> dict` so
-sim/combat.py can hold a `Monster` and call them polymorphically.
+Each `spawn(rng, ascension=0)` returns a Monster instance with HP/damage
+values scaled per the decompiled `AscensionHelper.GetValueIfAscension`:
+  - A8 ToughEnemies  -> swaps to ascended HP (and block on Nibbit/Lagavulin)
+  - A9 DeadlyEnemies -> swaps to ascended damage (and some buff amounts)
+Per-monster ascended values are extracted verbatim from each *.cs file.
 """
 from __future__ import annotations
 
@@ -19,6 +22,16 @@ from .damage import deal_damage
 from .powers import StrengthPower, WeakPower, make_power
 
 
+def _a8(asc: int, base: int, ascended: int) -> int:
+    """Return ascended value if ASC>=8 (ToughEnemies), else base."""
+    return ascended if asc >= 8 else base
+
+
+def _a9(asc: int, base: int, ascended: int) -> int:
+    """Return ascended value if ASC>=9 (DeadlyEnemies), else base."""
+    return ascended if asc >= 9 else base
+
+
 class SludgeMove(str, Enum):
     OIL_SPRAY = "oil_spray"  # 8 dmg + Weak 1
     SLAM = "slam"            # 11 dmg
@@ -27,20 +40,24 @@ class SludgeMove(str, Enum):
 
 SLUDGE_MOVES = (SludgeMove.OIL_SPRAY, SludgeMove.SLAM, SludgeMove.RAGE)
 
-SLUDGE_HP_MIN = 37
-SLUDGE_HP_MAX = 39  # inclusive
+# Base / A8 ToughEnemies HP range (decompiled SludgeSpinner.cs:23-25).
+SLUDGE_HP_MIN, SLUDGE_HP_MAX = 37, 39
+SLUDGE_HP_MIN_A8, SLUDGE_HP_MAX_A8 = 41, 42
 
 
 @dataclass
 class SludgeSpinnerWeak(Monster):
     last_move: SludgeMove | None = None
     next_move: SludgeMove | None = None
+    ascension: int = 0
 
     @classmethod
-    def spawn(cls, rng: random.Random) -> "SludgeSpinnerWeak":
-        hp = rng.randint(SLUDGE_HP_MIN, SLUDGE_HP_MAX)
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "SludgeSpinnerWeak":
+        lo = _a8(ascension, SLUDGE_HP_MIN, SLUDGE_HP_MIN_A8)
+        hi = _a8(ascension, SLUDGE_HP_MAX, SLUDGE_HP_MAX_A8)
+        hp = rng.randint(lo, hi)
         # First move is fixed to OIL_SPRAY per §B.3 ("initial state").
-        m = cls(name="Sludge Spinner", hp=hp, max_hp=hp)
+        m = cls(name="Sludge Spinner", hp=hp, max_hp=hp, ascension=ascension)
         m.next_move = SludgeMove.OIL_SPRAY
         return m
 
@@ -55,15 +72,18 @@ class SludgeSpinnerWeak(Monster):
         event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
 
         if move is SludgeMove.OIL_SPRAY:
-            blocked, hp_loss = deal_damage(8, self, player)
-            event.update(damage=8, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 8, 9)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
             player.add_or_stack_power(make_power("weak", 1, player))
         elif move is SludgeMove.SLAM:
-            blocked, hp_loss = deal_damage(11, self, player)
-            event.update(damage=11, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 11, 12)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
         elif move is SludgeMove.RAGE:
-            blocked, hp_loss = deal_damage(6, self, player)
-            event.update(damage=6, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 6, 7)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
             # Grant +3 Strength to self.
             strength = StrengthPower(amount=3)
             strength._owner = self
@@ -74,16 +94,16 @@ class SludgeSpinnerWeak(Monster):
         return event
 
 
-def spawn_nibbits_normal(rng) -> list[Monster]:
+def spawn_nibbits_normal(rng, ascension: int = 0) -> list[Monster]:
     """NibbitsNormal encounter: 2 Nibbits with IsFront / IsBack starting moves.
 
     Per notes/16: front opens with SLICE, back opens with HISS. The shared
     BUTT → SLICE → HISS state machine is reused.
     """
-    front = NibbitWeak.spawn(rng)
+    front = NibbitWeak.spawn(rng, ascension=ascension)
     front.name = "Nibbit (Front)"
     front.next_move = NibbitMove.SLICE
-    back = NibbitWeak.spawn(rng)
+    back = NibbitWeak.spawn(rng, ascension=ascension)
     back.name = "Nibbit (Back)"
     back.next_move = NibbitMove.HISS
     return [front, back]
@@ -91,7 +111,7 @@ def spawn_nibbits_normal(rng) -> list[Monster]:
 
 # --- NibbitWeak (NIBBIT_0, IsAlone) -----------------------------------------
 # Cites:
-#   decompiled/MegaCrit.Sts2.Core.Models.Monsters/Nibbit.cs
+#   decompiled/MegaCrit.Sts2.Core.Models.Monsters/Nibbit.cs (lines 23-33)
 #   decompiled/MegaCrit.Sts2.Core.Models.Encounters/NibbitsWeak.cs
 
 
@@ -101,13 +121,11 @@ class NibbitMove(str, Enum):
     HISS = "hiss"    # self Strength +2
 
 
-NIBBIT_HP_MIN = 42
-NIBBIT_HP_MAX = 46  # inclusive (non-Ascension)
-
-_NIBBIT_BUTT_DAMAGE = 12
-_NIBBIT_SLICE_DAMAGE = 6
+# Base / A8 ToughEnemies HP range + slice block.
+NIBBIT_HP_MIN, NIBBIT_HP_MAX = 42, 46
+NIBBIT_HP_MIN_A8, NIBBIT_HP_MAX_A8 = 44, 48
 _NIBBIT_SLICE_BLOCK = 5
-_NIBBIT_HISS_STRENGTH = 2
+_NIBBIT_SLICE_BLOCK_A8 = 6
 
 # Solo Nibbit (IsAlone branch in NibbitsWeak.cs) opens with BUTT.
 # The state machine threads BUTT.FollowUp=SLICE, SLICE.FollowUp=HISS,
@@ -123,11 +141,14 @@ _NIBBIT_SOLO_FOLLOWUP = {
 class NibbitWeak(Monster):
     last_move: NibbitMove | None = None
     next_move: NibbitMove | None = None
+    ascension: int = 0
 
     @classmethod
-    def spawn(cls, rng: random.Random) -> "NibbitWeak":
-        hp = rng.randint(NIBBIT_HP_MIN, NIBBIT_HP_MAX)
-        m = cls(name="Nibbit", hp=hp, max_hp=hp)
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "NibbitWeak":
+        lo = _a8(ascension, NIBBIT_HP_MIN, NIBBIT_HP_MIN_A8)
+        hi = _a8(ascension, NIBBIT_HP_MAX, NIBBIT_HP_MAX_A8)
+        hp = rng.randint(lo, hi)
+        m = cls(name="Nibbit", hp=hp, max_hp=hp, ascension=ascension)
         m.next_move = NibbitMove.BUTT  # IsAlone branch
         return m
 
@@ -141,14 +162,16 @@ class NibbitWeak(Monster):
         event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
 
         if move is NibbitMove.BUTT:
-            blocked, hp_loss = deal_damage(_NIBBIT_BUTT_DAMAGE, self, player)
-            event.update(damage=_NIBBIT_BUTT_DAMAGE, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 12, 13)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
         elif move is NibbitMove.SLICE:
-            blocked, hp_loss = deal_damage(_NIBBIT_SLICE_DAMAGE, self, player)
-            event.update(damage=_NIBBIT_SLICE_DAMAGE, blocked=blocked, hp_loss=hp_loss)
-            self.block += _NIBBIT_SLICE_BLOCK
+            dmg = _a9(self.ascension, 6, 7)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
+            self.block += _a8(self.ascension, _NIBBIT_SLICE_BLOCK, _NIBBIT_SLICE_BLOCK_A8)
         elif move is NibbitMove.HISS:
-            strength = StrengthPower(amount=_NIBBIT_HISS_STRENGTH)
+            strength = StrengthPower(amount=_a9(self.ascension, 2, 3))
             strength._owner = self
             self.add_or_stack_power(strength)
 
@@ -174,8 +197,11 @@ class BeastMove(str, Enum):
     CRUSH = "crush"       # 17 dmg + Strength +3
 
 
-BEAST_HP_MIN = 252
-BEAST_HP_MAX = 252
+# CeremonialBeast.cs:52-66 — A8 HP 252→262, A9 PlowDmg 18→20, StompDmg
+# 15→17, CrushDmg 17→19, CrushStrength 3→4. PlowAmount (Plow stack
+# 150→160) is approximated as +1 Strength via STAMP in sim.
+BEAST_HP = 252
+BEAST_HP_A8 = 262
 
 _BEAST_CYCLE = (
     BeastMove.STAMP, BeastMove.PLOW, BeastMove.STUN,
@@ -188,10 +214,12 @@ class CeremonialBeast(Monster):
     last_move: BeastMove | None = None
     next_move: BeastMove | None = None
     cycle_index: int = 0
+    ascension: int = 0
 
     @classmethod
-    def spawn(cls, rng: random.Random) -> "CeremonialBeast":
-        m = cls(name="Ceremonial Beast", hp=BEAST_HP_MIN, max_hp=BEAST_HP_MAX)
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "CeremonialBeast":
+        hp = _a8(ascension, BEAST_HP, BEAST_HP_A8)
+        m = cls(name="Ceremonial Beast", hp=hp, max_hp=hp, ascension=ascension)
         m.next_move = _BEAST_CYCLE[0]
         m.cycle_index = 0
         return m
@@ -205,8 +233,9 @@ class CeremonialBeast(Monster):
         event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
 
         if move is BeastMove.PLOW:
-            blocked, hp_loss = deal_damage(18, self, player)
-            event.update(damage=18, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 18, 20)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
             strength = StrengthPower(amount=2)
             strength._owner = self
             self.add_or_stack_power(strength)
@@ -222,12 +251,14 @@ class CeremonialBeast(Monster):
             from .powers import make_power
             player.add_or_stack_power(make_power("weak", 2, player))
         elif move is BeastMove.STOMP:
-            blocked, hp_loss = deal_damage(15, self, player)
-            event.update(damage=15, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 15, 17)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
         elif move is BeastMove.CRUSH:
-            blocked, hp_loss = deal_damage(17, self, player)
-            event.update(damage=17, blocked=blocked, hp_loss=hp_loss)
-            strength = StrengthPower(amount=3)
+            dmg = _a9(self.ascension, 17, 19)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
+            strength = StrengthPower(amount=_a9(self.ascension, 3, 4))
             strength._owner = self
             self.add_or_stack_power(strength)
 
@@ -250,7 +281,10 @@ class InsatiableMove(str, Enum):
     THRASH2 = "thrash2"
 
 
+# TheInsatiable.cs:54-62 — A8 HP 321→341, A9 Thrash 8→9 per hit, Bite
+# 28→31, Salivate strength 2→3.
 INSATIABLE_HP = 321
+INSATIABLE_HP_A8 = 341
 
 _INSATIABLE_CYCLE = (
     InsatiableMove.LIQUIFY, InsatiableMove.THRASH1, InsatiableMove.LUNGING_BITE,
@@ -263,10 +297,12 @@ class TheInsatiable(Monster):
     last_move: InsatiableMove | None = None
     next_move: InsatiableMove | None = None
     cycle_index: int = 0
+    ascension: int = 0
 
     @classmethod
-    def spawn(cls, rng: random.Random) -> "TheInsatiable":
-        m = cls(name="The Insatiable", hp=INSATIABLE_HP, max_hp=INSATIABLE_HP)
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "TheInsatiable":
+        hp = _a8(ascension, INSATIABLE_HP, INSATIABLE_HP_A8)
+        m = cls(name="The Insatiable", hp=hp, max_hp=hp, ascension=ascension)
         m.next_move = _INSATIABLE_CYCLE[0]
         m.cycle_index = 0
         return m
@@ -284,16 +320,18 @@ class TheInsatiable(Monster):
             # Sim approximation of SandpitPower + 6 FranticEscape statuses.
             player.add_or_stack_power(make_power("weak", 3, player))
         elif move is InsatiableMove.THRASH1 or move is InsatiableMove.THRASH2:
+            per_hit = _a9(self.ascension, 8, 9)
             for _ in range(2):
-                blocked, hp_loss = deal_damage(8, self, player)
-                event["damage"] += 8
+                blocked, hp_loss = deal_damage(per_hit, self, player)
+                event["damage"] += per_hit
                 event["blocked"] += blocked
                 event["hp_loss"] += hp_loss
         elif move is InsatiableMove.LUNGING_BITE:
-            blocked, hp_loss = deal_damage(28, self, player)
-            event.update(damage=28, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 28, 31)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
         elif move is InsatiableMove.SALIVATE:
-            strength = StrengthPower(amount=2)
+            strength = StrengthPower(amount=_a9(self.ascension, 2, 3))
             strength._owner = self
             self.add_or_stack_power(strength)
 
@@ -315,7 +353,10 @@ class DoormakerMove(str, Enum):
     GRASP = "grasp"
 
 
+# Doormaker.cs:53-63 — A8 HP 489→512, A9 Hunger 30→35, Scrutiny 24→26,
+# Grasp 10→11 per hit, Grasp strength 3→4.
 DOORMAKER_HP = 489
+DOORMAKER_HP_A8 = 512
 
 _DOORMAKER_CYCLE = (
     DoormakerMove.HUNGER, DoormakerMove.SCRUTINY, DoormakerMove.GRASP,
@@ -328,10 +369,12 @@ class Doormaker(Monster):
     next_move: DoormakerMove | None = None
     cycle_index: int = 0
     opened: bool = False
+    ascension: int = 0
 
     @classmethod
-    def spawn(cls, rng: random.Random) -> "Doormaker":
-        m = cls(name="Doormaker", hp=DOORMAKER_HP, max_hp=DOORMAKER_HP)
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "Doormaker":
+        hp = _a8(ascension, DOORMAKER_HP, DOORMAKER_HP_A8)
+        m = cls(name="Doormaker", hp=hp, max_hp=hp, ascension=ascension)
         m.next_move = DoormakerMove.DRAMATIC_OPEN
         m.cycle_index = -1  # advances to 0 (HUNGER) after the open move
         return m
@@ -351,18 +394,21 @@ class Doormaker(Monster):
         if move is DoormakerMove.DRAMATIC_OPEN:
             pass  # no damage, just the cinematic reveal
         elif move is DoormakerMove.HUNGER:
-            blocked, hp_loss = deal_damage(30, self, player)
-            event.update(damage=30, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 30, 35)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
         elif move is DoormakerMove.SCRUTINY:
-            blocked, hp_loss = deal_damage(24, self, player)
-            event.update(damage=24, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 24, 26)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
         elif move is DoormakerMove.GRASP:
+            per_hit = _a9(self.ascension, 10, 11)
             for _ in range(2):
-                blocked, hp_loss = deal_damage(10, self, player)
-                event["damage"] += 10
+                blocked, hp_loss = deal_damage(per_hit, self, player)
+                event["damage"] += per_hit
                 event["blocked"] += blocked
                 event["hp_loss"] += hp_loss
-            strength = StrengthPower(amount=3)
+            strength = StrengthPower(amount=_a9(self.ascension, 3, 4))
             strength._owner = self
             self.add_or_stack_power(strength)
 
@@ -382,17 +428,25 @@ class WaterfallMove(str, Enum):
     GUSH = "gush"                # 8 dmg × 3
 
 
+# WaterfallGiant.cs:67-79 — A8 HP 240→250. A9 affects Pressurize block
+# 15→20 (decompiled bumps this under DeadlyEnemies despite being a block
+# gain), Stomp 15→16, Ram 10→11, PressureUp 13→14, BasePressureGun 20→23.
+# Sim uses Pressurize/Slam/Gush approximations; we apply A9 to Slam and
+# Gush damage.
 WATERFALL_HP = 240
+WATERFALL_HP_A8 = 250
 
 
 @dataclass
 class WaterfallGiant(Monster):
     next_move: WaterfallMove | None = None
     cycle_index: int = 0
+    ascension: int = 0
 
     @classmethod
-    def spawn(cls, rng: random.Random) -> "WaterfallGiant":
-        m = cls(name="Waterfall Giant", hp=WATERFALL_HP, max_hp=WATERFALL_HP)
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "WaterfallGiant":
+        hp = _a8(ascension, WATERFALL_HP, WATERFALL_HP_A8)
+        m = cls(name="Waterfall Giant", hp=hp, max_hp=hp, ascension=ascension)
         m.next_move = WaterfallMove.PRESSURIZE
         m.cycle_index = 0
         return m
@@ -406,14 +460,16 @@ class WaterfallGiant(Monster):
         move = self.next_move or self.roll_next_move(rng)
         event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
         if move is WaterfallMove.PRESSURIZE:
-            self.block += 15
+            self.block += _a9(self.ascension, 15, 20)
         elif move is WaterfallMove.SLAM:
-            blocked, hp_loss = deal_damage(18, self, player)
-            event.update(damage=18, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 18, 20)  # use Slam~PressureGun~Ram bucket
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
         elif move is WaterfallMove.GUSH:
+            per_hit = _a9(self.ascension, 8, 9)
             for _ in range(3):
-                blocked, hp_loss = deal_damage(8, self, player)
-                event["damage"] += 8
+                blocked, hp_loss = deal_damage(per_hit, self, player)
+                event["damage"] += per_hit
                 event["blocked"] += blocked
                 event["hp_loss"] += hp_loss
         self.next_move = self.roll_next_move(rng)
@@ -426,17 +482,22 @@ class SoulFyshMove(str, Enum):
     GAZE = "gaze"         # 7 dmg + Weak +1
 
 
+# SoulFysh.cs:42-50 — A8 HP 211→221, A9 DeGas 16→17, Scream 11→12,
+# Gaze 7→8.
 SOULFYSH_HP = 211
+SOULFYSH_HP_A8 = 221
 
 
 @dataclass
 class SoulFysh(Monster):
     next_move: SoulFyshMove | None = None
     cycle_index: int = 0
+    ascension: int = 0
 
     @classmethod
-    def spawn(cls, rng: random.Random) -> "SoulFysh":
-        m = cls(name="Soul Fysh", hp=SOULFYSH_HP, max_hp=SOULFYSH_HP)
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "SoulFysh":
+        hp = _a8(ascension, SOULFYSH_HP, SOULFYSH_HP_A8)
+        m = cls(name="Soul Fysh", hp=hp, max_hp=hp, ascension=ascension)
         m.next_move = SoulFyshMove.SCREAM
         m.cycle_index = 0
         return m
@@ -451,14 +512,17 @@ class SoulFysh(Monster):
         event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
         from .powers import make_power
         if move is SoulFyshMove.DE_GAS:
-            blocked, hp_loss = deal_damage(16, self, player)
-            event.update(damage=16, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 16, 17)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
         elif move is SoulFyshMove.SCREAM:
-            blocked, hp_loss = deal_damage(11, self, player)
-            event.update(damage=11, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 11, 12)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
         elif move is SoulFyshMove.GAZE:
-            blocked, hp_loss = deal_damage(7, self, player)
-            event.update(damage=7, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 7, 8)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
             player.add_or_stack_power(make_power("weak", 1, player))
         self.next_move = self.roll_next_move(rng)
         return event
@@ -469,17 +533,23 @@ class LagavulinMove(str, Enum):
     DEBILITATE = "debilitate"  # apply Frail / Weak
 
 
+# LagavulinMatriarch.cs:48-58 — A8 HP 222→233 and Slash2 block 12→14.
+# A9 Slash 19→21, Slash2 12→14 dmg, Disembowel 9→10. Sim only models
+# SLASH+DEBILITATE; we apply A9 to SLASH.
 LAGAVULIN_HP = 222
+LAGAVULIN_HP_A8 = 233
 
 
 @dataclass
 class LagavulinMatriarch(Monster):
     next_move: LagavulinMove | None = None
     cycle_index: int = 0
+    ascension: int = 0
 
     @classmethod
-    def spawn(cls, rng: random.Random) -> "LagavulinMatriarch":
-        m = cls(name="Lagavulin Matriarch", hp=LAGAVULIN_HP, max_hp=LAGAVULIN_HP)
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "LagavulinMatriarch":
+        hp = _a8(ascension, LAGAVULIN_HP, LAGAVULIN_HP_A8)
+        m = cls(name="Lagavulin Matriarch", hp=hp, max_hp=hp, ascension=ascension)
         # Asleep + Plating simplified: just start with +8 Plating so the
         # opening turns "feel" similar (player needs sustained damage).
         from .powers import make_power
@@ -498,8 +568,9 @@ class LagavulinMatriarch(Monster):
         event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
         from .powers import make_power
         if move is LagavulinMove.SLASH:
-            blocked, hp_loss = deal_damage(19, self, player)
-            event.update(damage=19, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 19, 21)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
         elif move is LagavulinMove.DEBILITATE:
             player.add_or_stack_power(make_power("frail", 2, player))
             player.add_or_stack_power(make_power("weak", 2, player))
@@ -520,7 +591,10 @@ class VantomMove(str, Enum):
     PREPARE = "prepare"        # Strength +2
 
 
+# Vantom.cs:56-64 — A8 HP 173→183, A9 InkBlot 7→8, InkyLance 6→7 per hit,
+# Dismember 27→30.
 VANTOM_HP = 173
+VANTOM_HP_A8 = 183
 
 _VANTOM_CYCLE = (
     VantomMove.INK_BLOT, VantomMove.INKY_LANCE,
@@ -533,10 +607,12 @@ class Vantom(Monster):
     last_move: VantomMove | None = None
     next_move: VantomMove | None = None
     cycle_index: int = 0
+    ascension: int = 0
 
     @classmethod
-    def spawn(cls, rng: random.Random) -> "Vantom":
-        m = cls(name="Vantom", hp=VANTOM_HP, max_hp=VANTOM_HP)
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "Vantom":
+        hp = _a8(ascension, VANTOM_HP, VANTOM_HP_A8)
+        m = cls(name="Vantom", hp=hp, max_hp=hp, ascension=ascension)
         m.next_move = _VANTOM_CYCLE[0]
         m.cycle_index = 0
         return m
@@ -550,17 +626,20 @@ class Vantom(Monster):
         event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
 
         if move is VantomMove.INK_BLOT:
-            blocked, hp_loss = deal_damage(7, self, player)
-            event.update(damage=7, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 7, 8)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
         elif move is VantomMove.INKY_LANCE:
+            per_hit = _a9(self.ascension, 6, 7)
             for _ in range(2):
-                blocked, hp_loss = deal_damage(6, self, player)
-                event["damage"] += 6
+                blocked, hp_loss = deal_damage(per_hit, self, player)
+                event["damage"] += per_hit
                 event["blocked"] += blocked
                 event["hp_loss"] += hp_loss
         elif move is VantomMove.DISMEMBER:
-            blocked, hp_loss = deal_damage(27, self, player)
-            event.update(damage=27, blocked=blocked, hp_loss=hp_loss)
+            dmg = _a9(self.ascension, 27, 30)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
             # 3 Wound -> approximate by Weak +1 (sim has no status cards yet).
             from .powers import make_power
             player.add_or_stack_power(make_power("weak", 1, player))

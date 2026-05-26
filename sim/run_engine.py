@@ -267,7 +267,7 @@ def _start_combat(rs: RunState, encounter_id: str) -> None:
     from .rng import Rng
     from .encounter import build_monsters_for
     combat_rng = Rng(rs.run_seed, f"combat_{rs.act}_{rs.floor}")
-    monsters = build_monsters_for(encounter_id, combat_rng)
+    monsters = build_monsters_for(encounter_id, combat_rng, ascension=int(rs.ascension))
     # Construct a CombatState that mirrors the player's current persistent state.
     from .combat import CombatState, HAND_SIZE as _HS
     cs = CombatState.new_combat(seed=rs.run_seed ^ (rs.floor * 17),
