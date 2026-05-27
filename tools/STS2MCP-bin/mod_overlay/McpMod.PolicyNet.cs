@@ -22,10 +22,11 @@ namespace STS2_MCP;
 
 public static partial class McpMod
 {
-    // v3 obs layout (2026-05-26): per-card identity vectors for hand and
-    // card_reward, fixing the 99% skip-rate plateau. See notes/18 and
-    // sim/env_run.py::_obs for the canonical layout. 128 -> 256.
-    public const int PolicyObsDim = 256;
+    // v4 obs layout (2026-05-27): adds boss/relic identity, intent damage
+    // absolute values, distance dims, per-option tag features, shop info,
+    // map lookahead. See notes/ARCHITECTURE_V2.md + sim/env_run.py::_obs.
+    // 256 (v3) -> 384 (v4 Phase 3).
+    public const int PolicyObsDim = 384;
     public const int PolicyActionDim = 300;
 
     private static InferenceSession? _policySession;

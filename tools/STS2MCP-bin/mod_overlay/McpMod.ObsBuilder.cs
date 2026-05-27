@@ -302,6 +302,174 @@ public static partial class McpMod
         }
         cursor += 3;
 
+        // ===== v4 (Phase 2/3) additions =====
+        // Order mirrors sim/env_run.py::_obs's v4 tail. Keep this in
+        // lockstep with the Python side; mismatched layouts cause the
+        // ONNX inference to produce nonsense actions.
+
+        // v4: Boss identity (9 dim: act-only one-hot for L1).
+        if (act >= 1 && act <= 3)
+            v[cursor + (int)(act - 1) * 3] = 1f;
+        cursor += 9;
+
+        // v4: Relic identity by category (17 dim). The mod state JSON
+        // doesn't yet expose per-relic categories — fill zero for now
+        // and let the policy work off relic count (already encoded).
+        // Phase 5 follow-up: mirror sim/relics RELIC_CATEGORIES table.
+        cursor += 17;
+
+        // v4: Intent damage absolute (3 dim, per enemy slot).
+        // The mod state's `intents` field is a free-form string; for
+        // L1 we encode "is attacking" by checking known attack tokens.
+        var enemies = AsList(battle, "enemies");
+        for (int slot = 0; slot < 3; slot++)
+        {
+            if (slot >= enemies.Count) break;
+            if (enemies[slot] is not Dictionary<string, object?> ed) continue;
+            string intent = AsString(ed, "intents", "").ToUpperInvariant();
+            if (string.IsNullOrEmpty(intent)) intent = AsString(ed, "intent", "").ToUpperInvariant();
+            float dmg = 0f;
+            bool isAttacking = false;
+            foreach (var tok in _AttackMoveTokens)
+                if (intent.Contains(tok)) { isAttacking = true; break; }
+            if (isAttacking)
+            {
+                dmg = 6f;  // L1 placeholder when intent.damage isn't exposed
+                // Parse a leading integer if present (e.g., "ATTACK 12").
+                var parts = intent.Split(' ', '\t', ':', '-');
+                foreach (var p in parts)
+                {
+                    if (int.TryParse(p, out int dmgVal) && dmgVal > 0 && dmgVal < 200)
+                    {
+                        dmg = dmgVal;
+                        break;
+                    }
+                }
+            }
+            v[cursor + slot] = Math.Min(1f, dmg / Math.Max(1f, maxHp));
+        }
+        cursor += 3;
+
+        // v4: max_hp absolute (1 dim).
+        v[cursor] = Math.Min(1f, maxHp / 200f);
+        cursor += 1;
+
+        // v4: Distance dims (2 dim) to_act_boss, to_victory.
+        float actBossFloor = act == 1 ? 17f : (act == 2 ? 34f : 51f);
+        float finalBossFloor = 51f;  // ascension not exposed in mod state yet
+        v[cursor + 0] = Math.Max(0f, Math.Min(1f, (actBossFloor - floor) / 17f));
+        v[cursor + 1] = Math.Max(0f, Math.Min(1f, (finalBossFloor - floor) / 51f));
+        cursor += 2;
+
+        // v4: Energy abs + block log + energy overflow flag (3 dim).
+        if (st == "monster" || st == "elite" || st == "boss")
+        {
+            float energyAbs = ToFloat(player, "energy", 0f);
+            v[cursor + 0] = Math.Min(1f, energyAbs / 5f);
+            float blockAbs = ToFloat(player, "block", 0f);
+            v[cursor + 1] = Math.Min(1f,
+                (float)(Math.Log(1.0 + Math.Max(0, blockAbs)) / Math.Log(1.0 + 100.0)));
+            v[cursor + 2] = energyAbs > 3f ? 1f : 0f;
+        }
+        cursor += 3;
+
+        // v4: Enemy count one-hot (3 dim).
+        if (st == "monster" || st == "elite" || st == "boss")
+        {
+            int aliveCount = 0;
+            foreach (var e in enemies)
+            {
+                if (e is Dictionary<string, object?> ed
+                    && ToFloat(ed, "hp", 0f) > 0f) aliveCount++;
+            }
+            int n = Math.Min(3, Math.Max(1, aliveCount));
+            v[cursor + (n - 1)] = 1f;
+        }
+        cursor += 3;
+
+        // v4 Phase 3: Event option tag features (8 slots × 8-d = 64 dim).
+        // OPTION_FEATURE_BITS order: HP_LOSS, MAX_HP_LOSS, CARD_ADD,
+        // CARD_REMOVE, CARD_UPGRADE, CURSE_ADD, RELIC_GAIN, GOLD_LOSS.
+        if (st == "event")
+        {
+            var ev = AsDict(state, "event");
+            var opts = AsList(ev, "options");
+            for (int slot = 0; slot < 8; slot++)
+            {
+                if (slot >= opts.Count) break;
+                if (opts[slot] is not Dictionary<string, object?> od) continue;
+                string tag = AsString(od, "tag", "").ToUpperInvariant();
+                if (string.IsNullOrEmpty(tag)) continue;
+                int basei = cursor + slot * 8;
+                if (tag.Contains("MAX_HP") && tag.Contains("LOSS")) v[basei + 1] = 1f;
+                else if (tag.Contains("HP_LOSS")) v[basei + 0] = 1f;
+                if (tag.Contains("CARD_ADD")) v[basei + 2] = 1f;
+                if (tag.Contains("CARD_REMOVE")) v[basei + 3] = 1f;
+                if (tag.Contains("UPGRADE") && !tag.Contains("DOWNGRADE")) v[basei + 4] = 1f;
+                if (tag.Contains("CURSE") && !tag.Contains("CARD_REMOVE")) v[basei + 5] = 1f;
+                if (tag.Contains("RELIC")) v[basei + 6] = 1f;
+                if (tag.Contains("GOLD_LOSS")) v[basei + 7] = 1f;
+            }
+        }
+        cursor += 8 * 8;
+
+        // v4 Phase 3: Shop info (4 dim).
+        if (st == "shop")
+        {
+            var shop = AsDict(state, "shop");
+            var items = AsList(shop, "items");
+            if (items.Count > 0)
+            {
+                v[cursor + 0] = 1f;
+                foreach (var it in items)
+                {
+                    if (it is Dictionary<string, object?> id
+                        && AsString(id, "category", "") == "card_removal")
+                    {
+                        float price = ToFloat(id, "price", 75f);
+                        float gold = ToFloat(player, "gold", 0f);
+                        v[cursor + 1] = Math.Min(1f, price / Math.Max(1f, gold + price));
+                        break;
+                    }
+                }
+            }
+            // removal_used and deck_size are not always in mod state; leave zero.
+        }
+        cursor += 4;
+
+        // v4 Phase 3: Map lookahead (6 dim).
+        // Distribution over the next floor's reachable room types.
+        if (st == "map")
+        {
+            var map = AsDict(state, "map");
+            var lookahead = AsList(map, "lookahead_next");
+            if (lookahead.Count == 0) lookahead = AsList(map, "options");
+            var counts = new Dictionary<string, int>
+            {
+                ["monster"] = 0, ["elite"] = 0, ["event"] = 0,
+                ["rest"] = 0, ["shop"] = 0, ["treasure"] = 0,
+            };
+            int total = 0;
+            foreach (var n in lookahead)
+            {
+                if (n is not Dictionary<string, object?> nd) continue;
+                string roomType = AsString(nd, "room_type", "").ToLowerInvariant();
+                if (roomType == "") roomType = AsString(nd, "type", "").ToLowerInvariant();
+                if (counts.ContainsKey(roomType))
+                {
+                    counts[roomType]++;
+                    total++;
+                }
+            }
+            if (total > 0)
+            {
+                string[] order = { "monster", "elite", "event", "rest", "shop", "treasure" };
+                for (int j = 0; j < order.Length; j++)
+                    v[cursor + j] = (float)counts[order[j]] / total;
+            }
+        }
+        cursor += 6;
+
         // Defensive clip to [0, 1] — mirrors numpy.clip in env_run.py.
         for (int i = 0; i < v.Length; i++)
         {
