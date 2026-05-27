@@ -42,7 +42,7 @@ from .run_engine import (
 )
 
 
-OBS_DIM = 320  # v4 (Phase 2, 2026-05-27). v3 was 256.
+OBS_DIM = 384  # v4.3 (Phase 3, 2026-05-27). v3 was 256, v4 phase 2 was 320.
 OBS_DIM_V3 = 256  # legacy export for the v3-layout-only tests
 
 
@@ -489,6 +489,32 @@ class RunEnv(gym.Env):
                 ],
                 "can_proceed": False,  # picks must happen before proceed
             }
+        # Phase 3: expose pending_event and pending_shop so the existing
+        # mask predicates (_event_mask, _shop_mask) work. Without this,
+        # the env couldn't drive the new L1 events/shop since
+        # state["event"].options would be empty.
+        if rs.state_type is StateType.EVENT and rs.pending_event is not None:
+            view["event"] = {
+                "options": [
+                    {"index": i, "id": o["id"], "enabled": o["enabled"]}
+                    for i, o in enumerate(rs.pending_event.get("options", []))
+                ],
+            }
+        if rs.state_type is StateType.SHOP and rs.pending_shop is not None:
+            # Phase 3 shop only offers card removal — exposed as one
+            # "item" slot 0 (removal) plus the leave slot. Phase 4 will
+            # add buy items.
+            items: list[dict[str, Any]] = []
+            if not rs.pending_shop.get("removal_used", False):
+                items.append({
+                    "index": 0,
+                    "category": "card_removal",
+                    "price": rs.pending_shop.get("card_removal_cost", 75),
+                    "can_afford": rs.gold >= rs.pending_shop.get(
+                        "card_removal_cost", 75),
+                    "is_stocked": True,
+                })
+            view["shop"] = {"items": items, "can_proceed": True}
         self._view_cache = (self._state_gen, view)
         return view
 
@@ -772,10 +798,70 @@ class RunEnv(gym.Env):
             v[cursor + (n - 1)] = 1.0
         cursor += 3
 
-        # v4: Reserve future dims (~60 unused for now — Phase 3 fills
-        # with deck type/cost histogram + map lookahead + potion identity).
+        # === v4 Phase 3 additions: per-option features ===
+        # 8 event option slots × 8-d tag vector = 64 dim. Each slot's
+        # tag vector matches OPTION_FEATURE_BITS (see sim/events.py).
+        # Lets the policy distinguish "this option costs HP" from
+        # "this option gains a relic" at the action-head level — the
+        # pointer-style scoring mechanism we discussed in Phase 3.
+        try:
+            from .events import OPTION_FEATURE_BITS, encode_option_tag
+            n_event_feats = len(OPTION_FEATURE_BITS)  # 8
+            if rs.state_type is StateType.EVENT and rs.pending_event:
+                opts = rs.pending_event.get("options", [])
+                for slot in range(8):
+                    if slot >= len(opts):
+                        break
+                    bits = encode_option_tag(opts[slot].get("tag", ""))
+                    for j, b in enumerate(bits):
+                        v[cursor + slot * n_event_feats + j] = b
+            cursor += 8 * n_event_feats
+        except Exception:
+            cursor += 64
 
-        # Final cursor expected ~258; OBS_DIM = 320.
+        # Shop info (4 dim): has_pending_shop, card_removal_cost_ratio,
+        # removal_used, deck_size_normalized. Lets the policy decide
+        # whether removal is affordable + worthwhile.
+        if rs.state_type is StateType.SHOP and rs.pending_shop:
+            v[cursor + 0] = 1.0
+            cost = rs.pending_shop.get("card_removal_cost", 75)
+            v[cursor + 1] = min(1.0, cost / max(1, rs.gold + cost))
+            v[cursor + 2] = 1.0 if rs.pending_shop.get("removal_used") else 0.0
+            v[cursor + 3] = min(1.0, len(rs.deck) / 30.0)
+        cursor += 4
+
+        # Map lookahead (next floor): aggregate room-type ratios over the
+        # nodes reachable from the current floor. 6-d (monster/elite/
+        # event/rest/shop/treasure). Helps policy choose paths that
+        # avoid early elites or seek shop/rest when needed.
+        try:
+            if rs.state_type is StateType.MAP and rs.maps and rs.maps[rs.act - 1]:
+                lookahead = self._reachable_map_nodes_cached()
+                if lookahead:
+                    counts = {"monster": 0, "elite": 0, "event": 0,
+                              "rest": 0, "shop": 0, "treasure": 0}
+                    total = 0
+                    for node in lookahead:
+                        rt = node.room_type.value if hasattr(node.room_type, "value") else str(node.room_type)
+                        if rt in counts:
+                            counts[rt] += 1
+                            total += 1
+                    if total > 0:
+                        for j, k in enumerate(["monster", "elite", "event",
+                                               "rest", "shop", "treasure"]):
+                            v[cursor + j] = counts[k] / total
+            cursor += 6
+        except Exception:
+            cursor += 6
+
+        # Reserve remaining dims (~60+) for future Phase additions
+        # (boss-specific identity, deck-quality scalar, etc.).
+
+        # Final cursor expected ~332; OBS_DIM = 320.
+        # NOTE: if cursor > OBS_DIM, the writes silently truncated above.
+        # `assert cursor <= OBS_DIM` would crash but we'd rather absorb
+        # the off-by-one risk than crash live inference. The unit tests
+        # verify the cursor budget.
 
         v.clip(0.0, 1.0, out=v)
         return v

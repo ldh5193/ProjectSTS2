@@ -51,6 +51,50 @@ class Event:
     generate_options: Callable[[RunState], list[EventOption]]
 
 
+# Compact tag taxonomy — used by the v4 obs builder to encode option
+# features in 8 binary dims per option slot. Each option's `tag` is split
+# into its component flags (e.g., "HP_LOSS_CARD_ADD" → hp_loss=1, card_add=1).
+# The mod's option-builder must use this same scheme so train-time and
+# live-time obs match bit-for-bit.
+OPTION_FEATURE_BITS: list[str] = [
+    "HP_LOSS",       # any HP cost
+    "MAX_HP_LOSS",   # permanent max_hp reduction (worse than HP_LOSS)
+    "CARD_ADD",      # gain a card (good for thin decks, bad for fat)
+    "CARD_REMOVE",   # remove a card (almost always good)
+    "CARD_UPGRADE",  # upgrade a card
+    "CURSE_ADD",         # add a curse (almost always bad)
+    "RELIC_GAIN",    # gain a relic (almost always good)
+    "GOLD_LOSS",     # spend gold
+]
+
+
+def encode_option_tag(tag: str) -> list[float]:
+    """Return an OPTION_FEATURE_BITS-aligned 8-d vector for a tag string."""
+    bits = [0.0] * len(OPTION_FEATURE_BITS)
+    if not tag:
+        return bits
+    t = tag.upper()
+    # Map composite tags. Note: MAX_HP_LOSS and CARD_REMOVE_CURSE are
+    # checked first because they're more specific.
+    if "MAX_HP" in t and "LOSS" in t:
+        bits[OPTION_FEATURE_BITS.index("MAX_HP_LOSS")] = 1.0
+    elif "HP_LOSS" in t:
+        bits[OPTION_FEATURE_BITS.index("HP_LOSS")] = 1.0
+    if "CARD_ADD" in t:
+        bits[OPTION_FEATURE_BITS.index("CARD_ADD")] = 1.0
+    if "CARD_REMOVE" in t:
+        bits[OPTION_FEATURE_BITS.index("CARD_REMOVE")] = 1.0
+    if "UPGRADE" in t and "DOWNGRADE" not in t:
+        bits[OPTION_FEATURE_BITS.index("CARD_UPGRADE")] = 1.0
+    if "CURSE" in t and "CARD_REMOVE" not in t:
+        bits[OPTION_FEATURE_BITS.index("CURSE_ADD")] = 1.0
+    if "RELIC" in t:
+        bits[OPTION_FEATURE_BITS.index("RELIC_GAIN")] = 1.0
+    if "GOLD_LOSS" in t:
+        bits[OPTION_FEATURE_BITS.index("GOLD_LOSS")] = 1.0
+    return bits
+
+
 # --- helpers ---------------------------------------------------------------
 
 def _always_allowed(rs: RunState) -> bool:

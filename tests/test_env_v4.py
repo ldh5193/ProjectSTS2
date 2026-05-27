@@ -8,9 +8,10 @@ from sim.env_run import OBS_DIM, OBS_DIM_V3, RunEnv
 from sim.game_state import Character
 
 
-def test_obs_dim_is_320():
-    """v4 bump from 256 (v3) → 320."""
-    assert OBS_DIM == 320
+def test_obs_dim_v4():
+    """v4 bumped from 256 (v3) → 384 across Phase 2/3 additions."""
+    assert OBS_DIM >= 320  # at least Phase 2 worth
+    assert OBS_DIM == 384  # current Phase 3 layout
     assert OBS_DIM_V3 == 256
 
 

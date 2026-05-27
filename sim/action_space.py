@@ -546,6 +546,21 @@ def build_mask(state: dict) -> list[bool]:
 # ---------------------------------------------------------------------------
 
 
+def _first_removable_deck_idx(state: dict) -> int:
+    """Find the first non-curse deck card index in the mod-state-view.
+
+    Used by shop_purchase_removal decoding. The sim's mod-view doesn't
+    expose the full deck under `state['deck']` today — so we default
+    to index 0, which the sim's `_step_shop` will adjust if it's a
+    curse. Phase 4 will expose a deck slice in the view for explicit
+    target picking."""
+    deck = state.get("deck") or []
+    for i, c in enumerate(deck):
+        if isinstance(c, dict) and c.get("id") != "ascenders_bane":
+            return i
+    return 0
+
+
 def decode(idx: int, state: dict) -> dict:
     """Map a Discrete(300) index to the JSON body the mod POST expects.
 
@@ -611,6 +626,21 @@ def decode(idx: int, state: dict) -> dict:
     if r.name == "shop":
         if local == 15:
             return {"action": "proceed"}
+        # Phase 3: the sim's L1 shop only stocks the card-removal slot
+        # (index 0). The mod's shop will populate items[] with buy + remove
+        # categories — decode dispatches by `category` from the live state.
+        items = (state.get("shop") or {}).get("items") or []
+        for it in items:
+            if isinstance(it, dict) and int(it.get("index", -1)) == local:
+                if it.get("category") == "card_removal":
+                    # The deck index to remove is not encoded in the
+                    # action — sim picks the first removable card for L1
+                    # (consistent with smith). Phase 4 will add a deck
+                    # picker step.
+                    return {
+                        "action": "shop_purchase_removal",
+                        "index": _first_removable_deck_idx(state),
+                    }
         return {"action": "shop_purchase", "index": local}
 
     if r.name == "potion":
