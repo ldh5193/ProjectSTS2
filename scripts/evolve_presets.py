@@ -527,8 +527,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--population", type=int, default=80,
                     help="Concurrent population size.")
-    ap.add_argument("--steps", type=int, default=20000,
-                    help="Train budget per preset per generation.")
+    ap.add_argument("--steps", type=int, default=40000,
+                    help="Train budget per preset per generation. Bumped "
+                         "20K->40K at gen 12 (2026-05-27) after 6+ gens "
+                         "of floor-10 plateau — policies need more steps "
+                         "to learn act-2 strategies.")
     ap.add_argument("--eval-episodes", type=int, default=10,
                     help="Per-eval episode count during training (det + stoch each).")
     ap.add_argument("--survive-frac", type=float, default=0.20)
