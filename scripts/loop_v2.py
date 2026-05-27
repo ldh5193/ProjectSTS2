@@ -529,6 +529,106 @@ PHASE_C_CANDIDATES: list[dict] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Phase D: huge model sweep
+#
+# milesoram (STS1 RL) reached mean floor 24.8 / 4% win with 18M-param
+# Micro DQN + 9M Macro NN (27M total). Our V2 with 165K params hits
+# floor 9 / 0% win. Phase D tests whether scaling model size 10-50×
+# breaks the act-1 ceiling, isolating model-capacity as a lever from
+# reward shape, training step count, and other variables.
+#
+# All candidates share the Phase B winner reward preset (shape_damage)
+# and the standard ascension mixture. ONLY net_arch + scaled steps
+# change between them.
+# ---------------------------------------------------------------------------
+
+PHASE_D_CANDIDATES: list[dict] = [
+    # d01: ~10x [256,256] params. Quickest big test.
+    # 384*1024 + 1024*1024 + 1024*300 ≈ 1.75M params
+    {
+        "name": "arch_d01_1024_1024",
+        "net_arch": "1024,1024",
+        "steps": 500_000,
+        "reward_preset": "shape_damage",
+        "comment": "~10x [256,256] params — first big model",
+    },
+    # d02: ~20x. 2-layer with wide first.
+    # 384*2048 + 2048*1024 + 1024*300 ≈ 3.2M
+    {
+        "name": "arch_d02_2048_1024",
+        "net_arch": "2048,1024",
+        "steps": 600_000,
+        "reward_preset": "shape_damage",
+        "comment": "~20x params — wide first layer",
+    },
+    # d03: ~45x. 3-layer, deepens after width.
+    # 384*2048 + 2048*2048 + 2048*1024 + 1024*300 ≈ 7.4M
+    {
+        "name": "arch_d03_2048_2048_1024",
+        "net_arch": "2048,2048,1024",
+        "steps": 700_000,
+        "reward_preset": "shape_damage",
+        "comment": "~45x params — closer to milesoram scale",
+    },
+    # d04: ~75x. Just below milesoram total scale.
+    # 384*4096 + 4096*2048 + 2048*1024 + 1024*300 ≈ 12.5M
+    {
+        "name": "arch_d04_4096_2048_1024",
+        "net_arch": "4096,2048,1024",
+        "steps": 800_000,
+        "reward_preset": "shape_damage",
+        "comment": "~75x params — gradient marker just below milesoram",
+    },
+    # d05: ~110x. milesoram TOTAL parity (27M).
+    # 384*4096 + 4096*4096 + 4096*2048 ≈ 26.7M
+    {
+        "name": "arch_d05_4096_4096_2048",
+        "net_arch": "4096,4096,2048",
+        "steps": 1_000_000,
+        "reward_preset": "shape_damage",
+        "comment": "~110x params — matches milesoram's 27M combined Micro+Macro",
+    },
+    # d06: ~180x. BEYOND milesoram. Tests the upper edge.
+    # 384*8192 + 8192*4096 + 4096*2048 ≈ 45M
+    {
+        "name": "arch_d06_8192_4096_2048",
+        "net_arch": "8192,4096,2048",
+        "steps": 1_200_000,
+        "reward_preset": "shape_damage",
+        "comment": "~180x params — beyond milesoram, tests upper edge of usefulness",
+    },
+]
+
+
+def run_phase_d(only: list[str] | None = None) -> None:
+    SWEEP_DIR.mkdir(parents=True, exist_ok=True)
+    log(f"=== Phase D: huge model sweep ({len(PHASE_D_CANDIDATES)} candidates) ===")
+    results: list[dict] = []
+    for cand in PHASE_D_CANDIDATES:
+        if only and cand["name"] not in only:
+            log(f"SKIP {cand['name']} (not in --only)")
+            continue
+        if already_done(cand["name"]):
+            log(f"SKIP {cand['name']} (resume)")
+            results.append(json.loads(candidate_paths(cand["name"])["summary"].read_text()))
+            continue
+        summary = train_one_phaseb(cand)  # reuses phase-B trainer
+        results.append(summary)
+        best_ckpt = candidate_paths(cand["name"])["best"]
+        if not best_ckpt.exists():
+            best_ckpt = candidate_paths(cand["name"])["final"]
+        if export_onnx_from(best_ckpt):
+            git_commit_push(cand["name"], summary)
+    if results:
+        winner = max(results,
+                     key=lambda r: r.get("peak_mean_terminal_score", 0.0))
+        log(f"=== Phase D complete ===")
+        log(f"D WINNER: {winner['name']} arch={winner.get('net_arch')} "
+            f"steps={winner.get('steps')} peak_mean={winner.get('peak_mean_terminal_score', 0):.2f} "
+            f"peak_p90={winner.get('peak_p90_terminal_score', 0):.2f}")
+
+
 def run_phase_c(only: list[str] | None = None) -> None:
     SWEEP_DIR.mkdir(parents=True, exist_ok=True)
     log(f"=== Phase C: refinement around B winner "
@@ -560,7 +660,7 @@ def run_phase_c(only: list[str] | None = None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=["A", "B", "C", "all"], default="A")
+    parser.add_argument("--phase", choices=["A", "B", "C", "D", "all"], default="A")
     parser.add_argument("--only", nargs="*", default=None,
                         help="Only run these named candidates.")
     args = parser.parse_args()
@@ -570,6 +670,8 @@ def main() -> None:
         run_phase_b(only=args.only)
     if args.phase in ("C", "all"):
         run_phase_c(only=args.only)
+    if args.phase in ("D", "all"):
+        run_phase_d(only=args.only)
 
 
 if __name__ == "__main__":
