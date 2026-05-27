@@ -104,18 +104,30 @@ def random_preset_cfg(rng: random.Random, idx: int, n_total: int) -> dict:
 
 
 def depth_seeker_preset(rng: random.Random, idx: int, n_total: int) -> dict:
-    """Random sample like `random_preset_cfg`, but lock the four depth
-    signals (floor_advance, act_completion, boss_kill, run_victory) to
-    the upper quartile of their RANGES. Used to seed fresh slots with
-    presets that explicitly reward depth, since gen 8-10 showed top
-    performers stuck at floor ~10 — random uniform sampling doesn't
-    consistently produce strong depth-favoring shapes."""
+    """Random sample like `random_preset_cfg`, but lock seven signals to
+    upper-quartile values:
+
+    Depth (reach further):
+      floor_advance, act_completion, boss_kill, run_victory
+
+    Survival (don't die in act 1 attrition):
+      hp_delta_weight, block_gained_weight, elite_kill
+
+    Rationale: A10 diagnostic on the deployed g010_m015 policy showed
+    80% of deaths in act-1 NORMAL fights against Sludge Spinner / Nibbit
+    — attrition, not boss damage. Floor-10 ceiling is a survival
+    problem, not a depth-seeking problem. Depth + survival together.
+    """
     cfg = sample_preset(rng, idx, n_total)
-    # Override with upper-quartile draws on depth-critical fields.
+    # Depth signals
     cfg["floor_advance"] = round(rng.uniform(0.015, RANGES["floor_advance"][1]), 5)
     cfg["act_completion"] = round(rng.uniform(1.5, RANGES["act_completion"][1]), 5)
     cfg["boss_kill"] = round(rng.uniform(4.0, RANGES["boss_kill"][1]), 5)
     cfg["run_victory"] = round(rng.uniform(15.0, RANGES["run_victory"][1]), 5)
+    # Survival signals (added 2026-05-27 after A10 diagnostic)
+    cfg["hp_delta_weight"] = round(rng.uniform(0.015, RANGES["hp_delta_weight"][1]), 5)
+    cfg["block_gained_weight"] = round(rng.uniform(0.003, RANGES["block_gained_weight"][1]), 5)
+    cfg["elite_kill"] = round(rng.uniform(0.40, RANGES["elite_kill"][1]), 5)
     return cfg
 
 
