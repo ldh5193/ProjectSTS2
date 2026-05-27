@@ -387,13 +387,15 @@ PHASE_B_CANDIDATES: list[dict] = [
 
 
 def train_one_phaseb(cand: dict) -> dict:
-    """Like train_one but adds --reward-preset for Phase B."""
+    """Like train_one but adds --reward-preset (+ optional --init-from
+    and per-candidate --ascension-mix) for Phase B and Phase C."""
     paths = candidate_paths(cand["name"])
     SWEEP_DIR.mkdir(parents=True, exist_ok=True)
+    mix = cand.get("ascension_mix", COMMON_KW["ascension_mix"])
     cmd = [
         str(PYTHON), str(TRAIN_SCRIPT),
         "--steps", str(cand["steps"]),
-        "--ascension-mix", COMMON_KW["ascension_mix"],
+        "--ascension-mix", mix,
         "--device", COMMON_KW["device"],
         "--net-arch", cand["net_arch"],
         "--reward-preset", cand["reward_preset"],
@@ -405,6 +407,8 @@ def train_one_phaseb(cand: dict) -> dict:
         "--best-out", str(paths["best"]),
         "--history-out", str(paths["history"]),
     ]
+    if "init_from" in cand and cand["init_from"]:
+        cmd.extend(["--init-from", cand["init_from"]])
     log(f"START {cand['name']} arch={cand['net_arch']} "
         f"reward={cand['reward_preset']} steps={cand['steps']:,}")
     t0 = time.time()
@@ -468,9 +472,95 @@ def run_phase_b(only: list[str] | None = None) -> None:
             f"peak_p90={winner.get('peak_p90_terminal_score', 0):.2f}")
 
 
+# ---------------------------------------------------------------------------
+# Phase C: refinement around B winner
+#
+# Phase B surfaced b03_boss_focus (shape_damage, peak_mean 47.5) as
+# the marginal winner but ALL variants stayed below floor ~9, boss ~0.1.
+# Reward-weight tuning alone can't break the act-1 ceiling.
+#
+# Phase C tests three hypotheses:
+#   (a) compute scaling — more steps with the B winner config
+#   (b) deploy alignment — finetune to pure A10 from B winner checkpoint
+#   (c) shaping composition — heavier damage shaping + aux signals
+# ---------------------------------------------------------------------------
+
+PHASE_C_CANDIDATES: list[dict] = [
+    # c01: longer training of B winner — Hilton scaling law test.
+    # 800K is ~2.7× Phase B step count. If score scales as compute^0.5,
+    # expect peak_mean ~47.5 × 1.6 = ~76. Reality check.
+    {
+        "name": "arch_c01_long_shape_damage",
+        "net_arch": "256,256",
+        "steps": 800_000,
+        "reward_preset": "shape_damage",
+        "comment": "Compute scaling — 2.7x Phase B, same reward",
+    },
+    # c02: A10-pure finetune from b03 best.zip. Tests whether the
+    # mixture-trained policy can specialize without forgetting.
+    {
+        "name": "arch_c02_finetune_a10",
+        "net_arch": "256,256",
+        "steps": 150_000,
+        "reward_preset": "shape_damage",
+        "init_from": "models/v2/sweep/arch_b03_boss_focus_best.zip",
+        "ascension_mix": "10:1.0",
+        "comment": "A10-pure finetune from B winner — deploy alignment",
+    },
+    # c03: kd_burst_hybrid — heavier damage_dealt_weight (0.010 vs
+    # 0.005) + energy_unspent_penalty. Tests "more aggressive shape".
+    {
+        "name": "arch_c03_kd_burst",
+        "net_arch": "256,256",
+        "steps": 400_000,
+        "reward_preset": "kd_burst_hybrid",
+        "comment": "Heavier damage + energy penalty — push aggression",
+    },
+    # c04: shape_tank — damage + HP/block awareness. Combines b03
+    # (damage) and a defensive signal (since pure tank in b04 hurt).
+    # Lighter HP delta than b04's tank.
+    {
+        "name": "arch_c04_shape_tank",
+        "net_arch": "256,256",
+        "steps": 400_000,
+        "reward_preset": "shape_tank",
+        "comment": "Damage shaping + light HP awareness — composition",
+    },
+]
+
+
+def run_phase_c(only: list[str] | None = None) -> None:
+    SWEEP_DIR.mkdir(parents=True, exist_ok=True)
+    log(f"=== Phase C: refinement around B winner "
+        f"({len(PHASE_C_CANDIDATES)} candidates) ===")
+    results: list[dict] = []
+    for cand in PHASE_C_CANDIDATES:
+        if only and cand["name"] not in only:
+            log(f"SKIP {cand['name']} (not in --only)")
+            continue
+        if already_done(cand["name"]):
+            log(f"SKIP {cand['name']} (resume)")
+            results.append(json.loads(candidate_paths(cand["name"])["summary"].read_text()))
+            continue
+        summary = train_one_phaseb(cand)  # shares phase-B trainer
+        results.append(summary)
+        best_ckpt = candidate_paths(cand["name"])["best"]
+        if not best_ckpt.exists():
+            best_ckpt = candidate_paths(cand["name"])["final"]
+        if export_onnx_from(best_ckpt):
+            git_commit_push(cand["name"], summary)
+    if results:
+        winner = max(results,
+                     key=lambda r: r.get("peak_mean_terminal_score", 0.0))
+        log(f"=== Phase C complete ===")
+        log(f"C WINNER: {winner['name']} reward={winner.get('reward_preset')} "
+            f"steps={winner.get('steps')} peak_mean={winner.get('peak_mean_terminal_score', 0):.2f} "
+            f"peak_p90={winner.get('peak_p90_terminal_score', 0):.2f}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=["A", "B", "all"], default="A")
+    parser.add_argument("--phase", choices=["A", "B", "C", "all"], default="A")
     parser.add_argument("--only", nargs="*", default=None,
                         help="Only run these named candidates.")
     args = parser.parse_args()
@@ -478,6 +568,8 @@ def main() -> None:
         run_phase_a(only=args.only)
     if args.phase in ("B", "all"):
         run_phase_b(only=args.only)
+    if args.phase in ("C", "all"):
+        run_phase_c(only=args.only)
 
 
 if __name__ == "__main__":
