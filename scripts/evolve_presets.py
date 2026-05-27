@@ -103,6 +103,22 @@ def random_preset_cfg(rng: random.Random, idx: int, n_total: int) -> dict:
     return sample_preset(rng, idx, n_total)
 
 
+def depth_seeker_preset(rng: random.Random, idx: int, n_total: int) -> dict:
+    """Random sample like `random_preset_cfg`, but lock the four depth
+    signals (floor_advance, act_completion, boss_kill, run_victory) to
+    the upper quartile of their RANGES. Used to seed fresh slots with
+    presets that explicitly reward depth, since gen 8-10 showed top
+    performers stuck at floor ~10 — random uniform sampling doesn't
+    consistently produce strong depth-favoring shapes."""
+    cfg = sample_preset(rng, idx, n_total)
+    # Override with upper-quartile draws on depth-critical fields.
+    cfg["floor_advance"] = round(rng.uniform(0.015, RANGES["floor_advance"][1]), 5)
+    cfg["act_completion"] = round(rng.uniform(1.5, RANGES["act_completion"][1]), 5)
+    cfg["boss_kill"] = round(rng.uniform(4.0, RANGES["boss_kill"][1]), 5)
+    cfg["run_victory"] = round(rng.uniform(15.0, RANGES["run_victory"][1]), 5)
+    return cfg
+
+
 def mutate(rng: random.Random, parent: dict, sigma: float) -> dict:
     """Per-field mutation with prob 0.5. Multiplicative gaussian for
     non-zero fields; additive fraction-of-range for fields near zero so
@@ -329,10 +345,16 @@ def build_next_generation(rng: random.Random, current_pop: dict[str, dict],
             if parent[2] is not None:
                 inherit_checkpoint(parent[2], gen_dir_next / child_name)
 
-    # ---- 3. Fresh random presets — no inheritance ----
-    for i in range(n_fresh):
+    # ---- 3. Fresh slot: half depth-seeker (biased toward floor/boss/act),
+    #        half uniform random for broad exploration ----
+    n_depth = n_fresh // 2
+    n_random = n_fresh - n_depth
+    for i in range(n_depth):
+        child_name = f"g{next_gen_idx:03d}_d{i:03d}"
+        new_pop[child_name] = depth_seeker_preset(rng, i, max(n_depth, 1))
+    for i in range(n_random):
         child_name = f"g{next_gen_idx:03d}_f{i:03d}"
-        new_pop[child_name] = random_preset_cfg(rng, i, max(n_fresh, 1))
+        new_pop[child_name] = random_preset_cfg(rng, i, max(n_random, 1))
 
     return new_pop
 
