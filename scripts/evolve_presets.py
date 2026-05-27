@@ -242,15 +242,16 @@ def train_one_subprocess(preset_name: str, ascension: int, steps: int,
     """Spawn train_parallel.py for one preset; tee output to log_path.
     Returns True on exit-0."""
     eval_every = max(steps // 3, 5000)
-    # workers=4 chosen 2026-05-27 to push GPU util ~30-50% while keeping
-    # the 169K policy net intact (no checkpoint break) and leaving plenty
-    # of thermal/power headroom on the 4080 Super (~150W vs 320W limit).
-    # Sim env is still the bottleneck so >4 workers gives diminishing
-    # returns; revert to 1 if CPU contention hurts other work.
+    # workers=1: tried 4 to push GPU util (commit bbf10aa) but A/B showed
+    # GPU stayed at 13% while per-preset time grew 90s -> 97s due to
+    # SubprocVecEnv spawn overhead. The 169K policy net is too small for
+    # batch-of-4 forward passes to register on the GPU, and the Python
+    # sim env is GIL-bound. Reverting; further GPU activation would need
+    # a wider policy net which breaks checkpoint compat.
     cmd = [
         str(ROOT / ".venv" / "Scripts" / "python.exe"), "-u",
         str(ROOT / "scripts" / "train_parallel.py"),
-        "--preset", preset_name, "--workers", "4",
+        "--preset", preset_name, "--workers", "1",
         "--ascension", str(ascension),
         "--steps", str(steps),
         "--eval-every", str(eval_every),
