@@ -321,11 +321,11 @@ public static partial class McpMod
         // v4: Intent damage absolute (3 dim, per enemy slot).
         // The mod state's `intents` field is a free-form string; for
         // L1 we encode "is attacking" by checking known attack tokens.
-        var enemies = AsList(battle, "enemies");
+        var v4Enemies = AsList(battle, "enemies");
         for (int slot = 0; slot < 3; slot++)
         {
-            if (slot >= enemies.Count) break;
-            if (enemies[slot] is not Dictionary<string, object?> ed) continue;
+            if (slot >= v4Enemies.Count) break;
+            if (v4Enemies[slot] is not Dictionary<string, object?> ed) continue;
             string intent = AsString(ed, "intents", "").ToUpperInvariant();
             if (string.IsNullOrEmpty(intent)) intent = AsString(ed, "intent", "").ToUpperInvariant();
             float dmg = 0f;
@@ -377,7 +377,7 @@ public static partial class McpMod
         if (st == "monster" || st == "elite" || st == "boss")
         {
             int aliveCount = 0;
-            foreach (var e in enemies)
+            foreach (var e in v4Enemies)
             {
                 if (e is Dictionary<string, object?> ed
                     && ToFloat(ed, "hp", 0f) > 0f) aliveCount++;
@@ -427,8 +427,8 @@ public static partial class McpMod
                         && AsString(id, "category", "") == "card_removal")
                     {
                         float price = ToFloat(id, "price", 75f);
-                        float gold = ToFloat(player, "gold", 0f);
-                        v[cursor + 1] = Math.Min(1f, price / Math.Max(1f, gold + price));
+                        float curGold = ToFloat(player, "gold", 0f);
+                        v[cursor + 1] = Math.Min(1f, price / Math.Max(1f, curGold + price));
                         break;
                     }
                 }
@@ -444,28 +444,28 @@ public static partial class McpMod
             var map = AsDict(state, "map");
             var lookahead = AsList(map, "lookahead_next");
             if (lookahead.Count == 0) lookahead = AsList(map, "options");
-            var counts = new Dictionary<string, int>
+            var roomCounts = new Dictionary<string, int>
             {
                 ["monster"] = 0, ["elite"] = 0, ["event"] = 0,
                 ["rest"] = 0, ["shop"] = 0, ["treasure"] = 0,
             };
-            int total = 0;
+            int totalRooms = 0;
             foreach (var n in lookahead)
             {
                 if (n is not Dictionary<string, object?> nd) continue;
                 string roomType = AsString(nd, "room_type", "").ToLowerInvariant();
                 if (roomType == "") roomType = AsString(nd, "type", "").ToLowerInvariant();
-                if (counts.ContainsKey(roomType))
+                if (roomCounts.ContainsKey(roomType))
                 {
-                    counts[roomType]++;
-                    total++;
+                    roomCounts[roomType]++;
+                    totalRooms++;
                 }
             }
-            if (total > 0)
+            if (totalRooms > 0)
             {
                 string[] order = { "monster", "elite", "event", "rest", "shop", "treasure" };
                 for (int j = 0; j < order.Length; j++)
-                    v[cursor + j] = (float)counts[order[j]] / total;
+                    v[cursor + j] = (float)roomCounts[order[j]] / totalRooms;
             }
         }
         cursor += 6;
