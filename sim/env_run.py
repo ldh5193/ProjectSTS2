@@ -42,7 +42,8 @@ from .run_engine import (
 )
 
 
-OBS_DIM = 256
+OBS_DIM = 320  # v4 (Phase 2, 2026-05-27). v3 was 256.
+OBS_DIM_V3 = 256  # legacy export for the v3-layout-only tests
 
 
 # Power ids the policy gets a stack-amount feature for. Order is part of
@@ -264,12 +265,25 @@ class RunEnv(gym.Env):
     metadata: dict = {"render_modes": []}
 
     def __init__(self, ascension: int = 0, character: Character = Character.IRONCLAD,
-                 reward_config: RewardConfig | None = None):
+                 reward_config: RewardConfig | None = None,
+                 ascension_mixture: dict[int, float] | None = None):
+        """
+        Args:
+            ascension: fixed ascension level. Ignored when ascension_mixture
+                is provided.
+            ascension_mixture: optional {level: weight} dict. Each reset()
+                samples an ascension level proportional to weights. Used
+                for curriculum (e.g., {0: 0.2, 5: 0.3, 10: 0.5}).
+            reward_config: per-step shaping config (RewardConfig).
+        """
         super().__init__()
         self.action_space = spaces.Discrete(N_ACTIONS)
         self.observation_space = spaces.Box(0.0, 1.0, shape=(OBS_DIM,),
                                             dtype=np.float32)
         self._ascension = ascension
+        self._ascension_mixture = ascension_mixture  # None or {level: weight}
+        if ascension_mixture is not None and not ascension_mixture:
+            raise ValueError("ascension_mixture cannot be empty")
         self._character = character
         self.reward_config = reward_config or RewardConfig()
         self.rs: RunState | None = None
@@ -283,19 +297,42 @@ class RunEnv(gym.Env):
         self._view_cache: tuple[int, dict] | None = None
         self._map_cache: tuple[int, list] | None = None
         self._mask_cache: tuple[int, np.ndarray] | None = None
+        # Episode-level milestone tracking — populated during step() for
+        # Layer A (Tiered terminal score). Reset at reset().
+        self._acts_completed: int = 0
+        self._boss_dmg_dealt_ratio: float = 0.0
+        self._boss_max_hp_at_act: int = 0
+        self._boss_total_dmg_dealt: int = 0
+
+    def _sample_ascension(self) -> int:
+        """Sample an ascension from the mixture (if set) or return fixed."""
+        if self._ascension_mixture is None:
+            return self._ascension
+        # Use the env's np_random for reproducibility.
+        levels = list(self._ascension_mixture.keys())
+        weights = np.array([self._ascension_mixture[k] for k in levels],
+                           dtype=np.float64)
+        weights /= weights.sum()
+        return int(self.np_random.choice(levels, p=weights))
 
     # -- Gym API -------------------------------------------------------------
 
     def reset(self, *, seed: int | None = None, options=None):
         super().reset(seed=seed)
         run_seed = seed if seed is not None else int(self.np_random.integers(0, 2**31 - 1))
+        sampled_ascension = self._sample_ascension()
         self.rs = RunState.new_run(
             character=self._character,
-            ascension=self._ascension,
+            ascension=sampled_ascension,
             seed=run_seed,
         )
         start_run(self.rs)
         self._last_hp = self.rs.hp
+        # Reset episode milestone counters for terminal score.
+        self._acts_completed = 0
+        self._boss_dmg_dealt_ratio = 0.0
+        self._boss_max_hp_at_act = 0
+        self._boss_total_dmg_dealt = 0
         self._invalidate_caches()
         return self._obs(), {"action_mask": self.action_masks()}
 
@@ -639,9 +676,106 @@ class RunEnv(gym.Env):
                 v[cursor + i] = 1.0
         cursor += 3
 
-        # Cursor at ~220 (was 93 in v2). OBS_DIM = 256. Remaining ~36
-        # dims reserved for further additions (intent damage value per
-        # enemy, relic identity, map-room-type lookahead, etc.).
+        # ===== obs v4 additions (Phase 2, 2026-05-27) =====
+        # Appended to v3 layout. OBS_DIM bumped 256 → 320. v3 cursors
+        # 0..~220 preserved for any code reading specific positions.
+
+        # v4: Boss identity (9 dim: act × boss_type one-hot 3×3).
+        # L1 placeholder — full boss roster comes once sim/boss_registry
+        # lands. For now we encode act-only one-hot in slots [0..2] of
+        # the 9-block and leave per-boss-type slots zero. The training
+        # signal is still sharper than no-encoding-at-all.
+        if rs.act >= 1 and rs.act <= 3:
+            v[cursor + (rs.act - 1) * 3] = 1.0
+        cursor += 9
+
+        # v4: Relic identity by category (17 dim: count per RELIC_CATEGORIES bucket).
+        # Each owned relic increments its category bucket, normalized by
+        # the L1 max (~5 — typical mid-act relic count). Lets the policy
+        # learn "I have a thorns relic" without enumerating every relic id.
+        try:
+            from .relics import RELIC_CATEGORIES, relic_category_index
+            cat_counts = np.zeros(len(RELIC_CATEGORIES), dtype=np.float32)
+            for r in rs.relics:
+                idx = relic_category_index(r.id)
+                cat_counts[idx] += 1.0
+            cat_counts /= 5.0  # normalize: 5 relics in any one bucket = saturation
+            for i, c in enumerate(cat_counts):
+                v[cursor + i] = min(1.0, c)
+            cursor += len(RELIC_CATEGORIES)
+        except Exception:
+            cursor += 17  # skip on import error
+
+        # v4: Intent damage absolute value (per enemy slot, 3 dim).
+        # Replaces v2's `0.5 placeholder` with the real expected damage,
+        # normalized by current max_hp so it's comparable to defensive
+        # capacity. Critical for "this hit kills me" awareness.
+        if rs.in_combat() and rs.combat is not None:
+            alive = rs.combat.alive_monsters()
+            for slot in range(3):
+                if slot < len(alive):
+                    m = alive[slot]
+                    intent_dmg = 0
+                    if hasattr(m, "intent_damage"):
+                        try:
+                            intent_dmg = int(m.intent_damage())
+                        except Exception:
+                            intent_dmg = 0
+                    elif hasattr(m, "next_move") and m.next_move is not None:
+                        mv = str(m.next_move).upper()
+                        if any(tok in mv for tok in _ATTACK_MOVE_TOKENS):
+                            # Fallback rough estimate when intent_damage helper
+                            # isn't on the monster: assume ~6 base damage.
+                            intent_dmg = 6
+                    v[cursor + slot] = min(1.0, intent_dmg / max(1, rs.max_hp))
+        cursor += 3
+
+        # v4: Max-hp absolute value (compressed). max_hp varies a lot
+        # across the run with relic pickups + max_hp-loss events; the
+        # v3 layout only had hp/max_hp ratio. Tag the absolute now.
+        v[cursor] = min(1.0, rs.max_hp / 200.0)
+        cursor += 1
+
+        # v4: Distance dims. distance_to_act_boss and distance_to_victory.
+        # Both use act-relative scaling so adding/removing floors per
+        # special map nodes doesn't break the normalization.
+        # Act 1 boss is at floor 17 in the current generator (sim/map_gen
+        # Ancient row fix); acts 2/3 follow at +17 each.
+        if rs.act == 1:
+            act_boss_floor = 17
+            final_boss_floor = 51 + (1 if int(rs.ascension) >= 10 else 0)
+        elif rs.act == 2:
+            act_boss_floor = 34
+            final_boss_floor = 51 + (1 if int(rs.ascension) >= 10 else 0)
+        else:
+            act_boss_floor = 51 + (1 if int(rs.ascension) >= 10 else 0)
+            final_boss_floor = act_boss_floor
+        v[cursor + 0] = max(0.0, min(1.0, (act_boss_floor - rs.floor) / 17.0))
+        v[cursor + 1] = max(0.0, min(1.0,
+                                     (final_boss_floor - rs.floor) / 51.0))
+        cursor += 2
+
+        # v4: Energy absolute + block log compression.
+        if rs.in_combat() and rs.combat is not None:
+            cs = rs.combat
+            v[cursor + 0] = min(1.0, cs.player.energy / 5.0)
+            import math as _math
+            v[cursor + 1] = min(1.0, _math.log(1.0 + max(0, cs.player.block)) /
+                                _math.log(1.0 + 100.0))
+            v[cursor + 2] = 1.0 if cs.player.energy > 3 else 0.0  # overflow flag
+        cursor += 3
+
+        # v4: Enemy count one-hot (1/2/3).
+        if rs.in_combat() and rs.combat is not None:
+            alive = rs.combat.alive_monsters()
+            n = min(3, max(1, len(alive)))
+            v[cursor + (n - 1)] = 1.0
+        cursor += 3
+
+        # v4: Reserve future dims (~60 unused for now — Phase 3 fills
+        # with deck type/cost histogram + map lookahead + potion identity).
+
+        # Final cursor expected ~258; OBS_DIM = 320.
 
         v.clip(0.0, 1.0, out=v)
         return v
@@ -702,4 +836,76 @@ class RunEnv(gym.Env):
                 # Ending the turn with leftover energy is almost always
                 # a planning failure (could have played another 1-cost).
                 r -= cfg.energy_unspent_penalty * pre["player_energy"]
+
+        # Track milestone state for Tiered terminal score (Layer A).
+        # These run independently of cfg so they fire even when shaping
+        # weights are 0. Read by compute_terminal_score() at episode end.
+        if self.rs is not None:
+            if result.act_completed:
+                self._acts_completed += 1
+            # Damage accumulator for the in-progress act-boss fight.
+            if self.rs.in_combat() and self.rs.state_type.value == "boss":
+                cs = self.rs.combat
+                if cs is not None and pre is not None and post is not None:
+                    dmg = max(0, pre["enemy_hp"] - post["enemy_hp"])
+                    self._boss_total_dmg_dealt += dmg
+                    if self._boss_max_hp_at_act == 0 and cs.monsters:
+                        self._boss_max_hp_at_act = sum(
+                            m.max_hp for m in cs.monsters)
+                    if self._boss_max_hp_at_act > 0:
+                        self._boss_dmg_dealt_ratio = min(
+                            1.0,
+                            self._boss_total_dmg_dealt / self._boss_max_hp_at_act,
+                        )
+
         return r
+
+    # -- Tiered terminal score (Layer A) ------------------------------------
+
+    def compute_terminal_score(self) -> float:
+        """Tiered terminal reward — fires once at episode end.
+
+        S = 100 * acts_completed
+          + 50  * within_act_progress
+          + 30  * within_act_boss_dmg_ratio   (boss fight in current act)
+          + 300 * victory
+
+        Always returns a non-negative value. Designed so:
+          - Floor 5 die early act 1: ~15
+          - Floor 16 die just before act 1 boss: ~47
+          - Beat act 1, die mid act 2: ~124
+          - Beat act 2, die mid act 3: ~232
+          - Beat act 3 boss: 600
+
+        Used by the new training pipeline (Phase 4) and the evolver
+        composite_score (Phase 4). Independent of RewardConfig weights —
+        this is the run's "true" objective.
+        """
+        if self.rs is None:
+            return 0.0
+
+        S = 100.0 * self._acts_completed
+
+        # Within-act progress: where in the current act we are. Each act
+        # spans 17 floors in the current generator (Ancient row fix).
+        act_lengths = {1: 17, 2: 17, 3: 17}
+        cur_act = self.rs.act if self.rs.act in act_lengths else 3
+        if cur_act == 1:
+            within = self.rs.floor / 17.0
+        elif cur_act == 2:
+            within = max(0.0, (self.rs.floor - 17) / 17.0)
+        else:
+            within = max(0.0, (self.rs.floor - 34) / 17.0)
+        within = max(0.0, min(1.0, within))
+        S += 50.0 * within
+
+        # Boss damage ratio — only meaningful when the run died in a boss
+        # fight. The accumulator was tracked across the run; if the death
+        # happened outside a boss it'll be 0.
+        S += 30.0 * self._boss_dmg_dealt_ratio
+
+        # Victory bonus dominates.
+        if self.rs.is_victorious:
+            S += 300.0
+
+        return float(S)
