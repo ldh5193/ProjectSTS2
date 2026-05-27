@@ -616,6 +616,74 @@ PHASE_D_CANDIDATES: list[dict] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Phase E: long-training the Phase D winner
+#
+# Phase D found d01 [1024,1024] as the marginal best (peak_mean 49.3,
+# only +2.2 over baseline). But d02-d06 all degraded as size grew —
+# the strong signal there was *undersampling* (d05 at 27M params with
+# only 1M steps collapsed to 30.2 mean).
+#
+# Phase E directly tests undersampling: take d01 (1.75M params, the
+# size that didn't collapse) and give it 6-10× the step budget of
+# Phase D. If the ceiling is compute-bound, peak_mean should jump.
+# If it stays at ~49, then model size IS the real ceiling and we
+# need different obs/sim/architecture.
+# ---------------------------------------------------------------------------
+
+PHASE_E_CANDIDATES: list[dict] = [
+    # e01: 3M steps (6× d01's 500K). Direct undersample test.
+    # ETA: d01 took 24min for 500K → e01 ~145min (~2.5h).
+    {
+        "name": "arch_e01_d01_long_3M",
+        "net_arch": "1024,1024",
+        "steps": 3_000_000,
+        "reward_preset": "shape_damage",
+        "comment": "Long-train d01 winner — 6x steps to test undersample hypothesis",
+    },
+    # e02: continue from e01_best.zip for another 2M steps (5M total).
+    # If e01 still hasn't saturated, e02 confirms more compute keeps
+    # helping; if e02 plateaus from e01, we found the convergence point.
+    {
+        "name": "arch_e02_d01_continue_5M_total",
+        "net_arch": "1024,1024",
+        "steps": 2_000_000,
+        "reward_preset": "shape_damage",
+        "init_from": "models/v2/sweep/arch_e01_d01_long_3M_best.zip",
+        "comment": "Continue from e01 best — total 5M steps (10x Phase D budget)",
+    },
+]
+
+
+def run_phase_e(only: list[str] | None = None) -> None:
+    SWEEP_DIR.mkdir(parents=True, exist_ok=True)
+    log(f"=== Phase E: long-training Phase D winner "
+        f"({len(PHASE_E_CANDIDATES)} candidates) ===")
+    results: list[dict] = []
+    for cand in PHASE_E_CANDIDATES:
+        if only and cand["name"] not in only:
+            log(f"SKIP {cand['name']} (not in --only)")
+            continue
+        if already_done(cand["name"]):
+            log(f"SKIP {cand['name']} (resume)")
+            results.append(json.loads(candidate_paths(cand["name"])["summary"].read_text()))
+            continue
+        summary = train_one_phaseb(cand)
+        results.append(summary)
+        best_ckpt = candidate_paths(cand["name"])["best"]
+        if not best_ckpt.exists():
+            best_ckpt = candidate_paths(cand["name"])["final"]
+        if export_onnx_from(best_ckpt):
+            git_commit_push(cand["name"], summary)
+    if results:
+        winner = max(results,
+                     key=lambda r: r.get("peak_mean_terminal_score", 0.0))
+        log(f"=== Phase E complete ===")
+        log(f"E WINNER: {winner['name']} steps={winner.get('steps')} "
+            f"peak_mean={winner.get('peak_mean_terminal_score', 0):.2f} "
+            f"peak_p90={winner.get('peak_p90_terminal_score', 0):.2f}")
+
+
 def run_phase_d(only: list[str] | None = None) -> None:
     SWEEP_DIR.mkdir(parents=True, exist_ok=True)
     log(f"=== Phase D: huge model sweep ({len(PHASE_D_CANDIDATES)} candidates) ===")
@@ -675,7 +743,8 @@ def run_phase_c(only: list[str] | None = None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=["A", "B", "C", "D", "all"], default="A")
+    parser.add_argument("--phase", choices=["A", "B", "C", "D", "E", "all"],
+                        default="A")
     parser.add_argument("--only", nargs="*", default=None,
                         help="Only run these named candidates.")
     args = parser.parse_args()
@@ -687,6 +756,8 @@ def main() -> None:
         run_phase_c(only=args.only)
     if args.phase in ("D", "all"):
         run_phase_d(only=args.only)
+    if args.phase in ("E", "all"):
+        run_phase_e(only=args.only)
 
 
 if __name__ == "__main__":
