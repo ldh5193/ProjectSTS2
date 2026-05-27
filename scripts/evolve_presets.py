@@ -52,6 +52,7 @@ HOF_INJECT_COUNT = 3  # how many HoF entries to force into next gen as survivors
 # push when fitness strictly improves.
 LAST_DEPLOY_FILE = EVOLVE_ROOT / "last_deploy.json"
 DEPLOYED_ONNX = ROOT / "tools" / "STS2MCP-bin" / "policy.onnx"
+CARD_FEATURES_JSON = ROOT / "tools" / "STS2MCP-bin" / "card_features.json"
 EXPORT_SCRIPT = ROOT / "scripts" / "export_onnx.py"
 GAME_MODS_DIR = Path("D:/Games/Steam/steamapps/common/Slay the Spire 2/mods")
 
@@ -470,13 +471,22 @@ def auto_deploy(name: str, cfg: dict, fitness: float, gen: int,
     log(f"  auto-deploy: exported {best_zip.name} -> policy.onnx ({onnx_size} bytes)")
 
     # 2. Copy to game mods folder (best-effort; game install may not exist
-    #    on every machine the evolver runs on).
+    #    on every machine the evolver runs on). Both policy.onnx AND
+    #    card_features.json must land next to STS2_MCP.dll — without the
+    #    JSON the v3 obs gets all-zero card identity vectors and plays
+    #    blind (see McpMod.CardFeatures.cs).
     if GAME_MODS_DIR.exists():
         try:
             shutil.copy2(DEPLOYED_ONNX, GAME_MODS_DIR / "policy.onnx")
-            log(f"  auto-deploy: copied to {GAME_MODS_DIR}")
+            log(f"  auto-deploy: copied policy.onnx to {GAME_MODS_DIR}")
         except Exception as e:
-            log(f"  auto-deploy: copy to mods folder failed: {e!r}")
+            log(f"  auto-deploy: copy policy.onnx failed: {e!r}")
+        if CARD_FEATURES_JSON.exists():
+            try:
+                shutil.copy2(CARD_FEATURES_JSON, GAME_MODS_DIR / "card_features.json")
+                log(f"  auto-deploy: copied card_features.json to {GAME_MODS_DIR}")
+            except Exception as e:
+                log(f"  auto-deploy: copy card_features.json failed: {e!r}")
 
     # 3. git add + commit + push. `git diff --cached --quiet` returns 1
     #    when there's something staged; we only commit if so.
