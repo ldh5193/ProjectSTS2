@@ -240,19 +240,40 @@ def _enter_room(rs: RunState, node: MapNode) -> None:
         rs.state_type = StateType.MAP
         return
     elif rt is StateType.SHOP:
-        # Stub: skip shop until shop content + pricing is real.
+        # L1 shop: only card removal is offered. Real card/relic/potion
+        # buying is Phase 2 (needs full shop pool sampling). Card removal
+        # cost mirrors STS1's 75g base; STS2 may inflate it later.
         rs.state_type = StateType.SHOP
         trigger_after_room_entered(rs, rs.state_type)
-        rs.state_type = StateType.MAP
+        # Filter to removable cards (no curses).
+        removable_idxs = [
+            i for i, c in enumerate(rs.deck)
+            if c.id != "ascenders_bane"
+        ]
+        rs.pending_shop = {
+            "card_removal_cost": 75,
+            "removable_card_indices": removable_idxs,
+            "removal_used": False,
+        }
         return
     elif rt is StateType.EVENT:
-        # Stub: events have no real options yet; auto-skip with small heal
-        # so the agent has a non-zero reason to choose ?-rooms (gold/HP
-        # tradeoffs land once events are real).
+        # L1 events: dispatch through sim/events.py registry.
         rs.state_type = StateType.EVENT
         trigger_after_room_entered(rs, rs.state_type)
-        rs.heal(2)
-        rs.state_type = StateType.MAP
+        from .events import pick_event
+        evt = pick_event(rs)
+        if evt is None:
+            # No eligible event — small heal as a courtesy and return.
+            rs.heal(2)
+            rs.state_type = StateType.MAP
+            return
+        rs.pending_event = {
+            "event_id": evt.id,
+            "options": [
+                {"id": o.id, "label": o.label, "enabled": o.enabled, "tag": o.tag}
+                for o in evt.generate_options(rs)
+            ],
+        }
         return
     else:
         # Ancient / unknown fallthrough: treat as proceed.
@@ -456,11 +477,40 @@ def _step_treasure(rs: RunState, body: dict, res: StepResult) -> StepResult:
 
 
 def _step_event(rs: RunState, body: dict, res: StepResult) -> StepResult:
-    """Stub event handler: any `choose_event_option` advances back to map.
-    A real event registry lands in sim/events.py later.
+    """Dispatch event option through sim.events.EVENT_REGISTRY.
+
+    Body shapes accepted:
+      - {"action": "choose_event_option", "index": N} — apply option N
+      - {"action": "advance_dialogue"} — multi-page placeholder, just proceed
+      - {"action": "proceed"} — leave event, return to map
     """
     action = body.get("action")
-    if action in ("choose_event_option", "advance_dialogue", "proceed"):
+    if action == "proceed" or action == "advance_dialogue":
+        rs.pending_event = None
+        rs.state_type = StateType.MAP
+        return res
+    if action == "choose_event_option":
+        from .events import apply_option
+        if rs.pending_event is None:
+            res.invalid_action = True
+            res.reason = "no pending event"
+            return res
+        event_id = rs.pending_event.get("event_id")
+        idx = body.get("index")
+        if idx is None or not isinstance(idx, int):
+            res.invalid_action = True
+            res.reason = "choose_event_option missing index"
+            return res
+        ok = apply_option(rs, event_id, idx)
+        if not ok:
+            res.invalid_action = True
+            res.reason = f"event option {idx} invalid or disabled"
+            return res
+        rs.pending_event = None
+        # Death by event (e.g., TabletOfTruth decipher → max_hp=0) means
+        # we've already transitioned to GAME_OVER inside apply_option.
+        if rs.is_dead:
+            return res
         rs.state_type = StateType.MAP
         return res
     res.invalid_action = True
@@ -469,9 +519,58 @@ def _step_event(rs: RunState, body: dict, res: StepResult) -> StepResult:
 
 
 def _step_shop(rs: RunState, body: dict, res: StepResult) -> StepResult:
+    """L1 shop: card removal at fixed cost. Real card/relic buying is Phase 2.
+
+    Body shapes:
+      - {"action": "shop_purchase_removal", "index": deck_idx} — pay
+        cost, remove the card. Disabled if removal already used this
+        visit (one per shop).
+      - {"action": "proceed"} — leave the shop.
+    """
     action = body.get("action")
-    if action in ("shop_purchase", "proceed"):
-        # No purchase logic yet — just leave the shop.
+    if action == "proceed":
+        rs.pending_shop = None
+        rs.state_type = StateType.MAP
+        return res
+    if action == "shop_purchase_removal":
+        if rs.pending_shop is None:
+            res.invalid_action = True
+            res.reason = "no pending shop"
+            return res
+        if rs.pending_shop.get("removal_used"):
+            res.invalid_action = True
+            res.reason = "card removal already used at this shop"
+            return res
+        cost = int(rs.pending_shop.get("card_removal_cost", 75))
+        if rs.gold < cost:
+            res.invalid_action = True
+            res.reason = "not enough gold for card removal"
+            return res
+        idx = body.get("index")
+        if idx is None or not isinstance(idx, int):
+            res.invalid_action = True
+            res.reason = "shop_purchase_removal missing index"
+            return res
+        if idx < 0 or idx >= len(rs.deck):
+            res.invalid_action = True
+            res.reason = f"deck index {idx} out of range"
+            return res
+        if rs.deck[idx].id == "ascenders_bane":
+            res.invalid_action = True
+            res.reason = "ascenders_bane cannot be removed via shop"
+            return res
+        rs.gain_gold(-cost)
+        del rs.deck[idx]
+        rs.pending_shop["removal_used"] = True
+        # Refresh removable indices since deck mutated.
+        rs.pending_shop["removable_card_indices"] = [
+            i for i, c in enumerate(rs.deck)
+            if c.id != "ascenders_bane"
+        ]
+        return res
+    # Backward compat: old generic "shop_purchase" still proceeds.
+    if action == "shop_purchase":
+        rs.pending_shop = None
         rs.state_type = StateType.MAP
         return res
     res.invalid_action = True

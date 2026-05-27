@@ -257,11 +257,68 @@ class RunState:
         self.hp = min(self.max_hp, self.hp + max(amount, 0))
         return self.hp - before
 
+    def lose_max_hp(self, amount: int) -> int:
+        """Permanent max_hp reduction (events like TabletOfTruth). Caps
+        current hp to new max. If max_hp would drop to 0, the run ends —
+        matches decompiled CreatureCmd.LoseMaxHp guard (Kill if max_hp <= 0).
+        """
+        actual = max(0, amount)
+        if actual >= self.max_hp:
+            self.max_hp = 0
+            self.hp = 0
+            self.is_dead = True
+            self.state_type = StateType.GAME_OVER
+            return actual
+        self.max_hp -= actual
+        if self.hp > self.max_hp:
+            self.hp = self.max_hp
+        return actual
+
+    def gain_max_hp(self, amount: int) -> int:
+        """Permanent max_hp increase. Also heals by the same amount —
+        matches decompiled CreatureCmd.GainMaxHp behavior."""
+        gained = max(0, amount)
+        self.max_hp += gained
+        self.hp = min(self.max_hp, self.hp + gained)
+        return gained
+
     def gain_gold(self, amount: int) -> None:
         self.gold = max(0, self.gold + amount)
 
     def has_relic(self, relic_id: str) -> bool:
         return any(r.id == relic_id for r in self.relics)
+
+    def add_relic(self, relic_id: str) -> None:
+        """Append a relic. Idempotent (most relics are unique).
+
+        Pickup-time effects (Strawberry +7 max HP, Pomander double-pots,
+        etc.) fire here since on-pickup hooks don't fit the lifecycle
+        hook system. L1 set: Strawberry only — extend as needed.
+        """
+        if self.has_relic(relic_id):
+            return
+        self.relics.append(RelicInstance(id=relic_id))
+        # Pickup-time max_hp effects (decompiled MaxHpVar at pickup).
+        if relic_id == "STRAWBERRY":
+            self.gain_max_hp(7)
+        elif relic_id == "PEAR":
+            self.gain_max_hp(10)
+        elif relic_id == "MANGO":
+            self.gain_max_hp(14)
+
+    def add_potion(self, potion_id: str) -> bool:
+        """Place a potion in the first empty slot. Returns False if all
+        slots are full (mirrors the game's auto-discard behavior — the
+        policy decides whether to use one to make room)."""
+        for i in range(min(self.max_potion_slots, len(self.potions))):
+            if self.potions[i] is None:
+                self.potions[i] = PotionInstance(id=potion_id)
+                return True
+        # Try to extend the list if it's shorter than max_potion_slots.
+        if len(self.potions) < self.max_potion_slots:
+            self.potions.append(PotionInstance(id=potion_id))
+            return True
+        return False
 
 
 def _apply_ascension_effects(rs: RunState) -> None:
