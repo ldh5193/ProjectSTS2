@@ -169,15 +169,25 @@ def evaluate(model, n_episodes: int, ascension: int,
 
 
 class PeriodicEvalCallback(BaseCallback):
-    """Eval at a fixed ascension (deploy target) every N steps."""
+    """Eval at a fixed ascension (deploy target) every N steps. Saves
+    the model whenever the eval metric improves over the running best —
+    PPO can oscillate badly, and without this the 300K final-checkpoint
+    is often worse than a 100K intermediate peak (50K run hit p90=65
+    at 30K and regressed to p90=41 at 50K)."""
 
-    def __init__(self, eval_ascension: int, eval_every: int, eval_episodes: int):
+    def __init__(self, eval_ascension: int, eval_every: int, eval_episodes: int,
+                 best_metric: str = "mean_terminal_score",
+                 best_out: Path | None = None):
         super().__init__()
         self.eval_ascension = eval_ascension
         self.eval_every = eval_every
         self.eval_episodes = eval_episodes
         self.history: list[dict] = []
         self._next = eval_every
+        self.best_metric = best_metric
+        self.best_out = best_out
+        self.best_value: float = float("-inf")
+        self.best_step: int = 0
 
     def _on_step(self) -> bool:
         if self.num_timesteps < self._next:
@@ -189,6 +199,15 @@ class PeriodicEvalCallback(BaseCallback):
         for k, v in res.items():
             if isinstance(v, (int, float)) and k not in ("episodes", "timesteps", "ascension"):
                 self.logger.record(f"eval/{k}", v)
+        # Save-best-eval: track the highest `best_metric` and persist.
+        val = float(res.get(self.best_metric, float("-inf")))
+        if self.best_out is not None and val > self.best_value:
+            self.best_value = val
+            self.best_step = self.num_timesteps
+            self.model.save(self.best_out)
+            print(f"  [save_best] new peak {self.best_metric}={val:.2f} "
+                  f"at step {self.num_timesteps:,} -> {self.best_out.name}",
+                  flush=True)
         return True
 
 
@@ -211,35 +230,70 @@ def main() -> None:
     parser.add_argument("--n-steps", type=int, default=512,
                         help="PPO rollout buffer size per env.")
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--net-arch", type=str, default="64,64",
+                        help="MlpPolicy hidden layer sizes, comma-separated. "
+                             "Default '64,64' (sb3 default). For deeper nets: "
+                             "'256,256,128' (~250K params). The same arch is "
+                             "used for both pi and value heads.")
+    parser.add_argument("--init-from", type=Path, default=None,
+                        help="Optional path to a checkpoint to warm-start from. "
+                             "Used for finetuning passes (iter 3 pattern).")
     parser.add_argument("--out", type=Path, default=Path("models/v2/run.zip"))
+    parser.add_argument("--best-out", type=Path, default=None,
+                        help="If set, save the best-eval checkpoint here. "
+                             "Defaults to <out>_best.zip when --out is given.")
+    parser.add_argument("--best-metric", type=str, default="mean_terminal_score",
+                        choices=["mean_terminal_score", "median_terminal_score",
+                                 "p90_terminal_score", "mean_floor", "win_rate"],
+                        help="Eval metric to maximize for best checkpoint.")
     parser.add_argument("--tensorboard", type=Path, default=None)
     parser.add_argument("--history-out", type=Path, default=None)
     args = parser.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)
+    if args.best_out is None:
+        args.best_out = args.out.with_name(args.out.stem + "_best.zip")
+
+    # Parse --net-arch into a list of ints.
+    try:
+        net_arch = [int(x.strip()) for x in args.net_arch.split(",")
+                    if x.strip()]
+    except ValueError as e:
+        raise SystemExit(f"--net-arch parse error: {e!r}")
+    if not net_arch:
+        raise SystemExit("--net-arch must have at least one layer")
 
     mix = parse_ascension_mix(args.ascension_mix)
     device = resolve_device(args.device)
     env = make_env(ascension=args.ascension, ascension_mix=mix)
 
     tb = str(args.tensorboard) if args.tensorboard else None
-    model = MaskablePPO(
-        "MlpPolicy", env, verbose=0, seed=args.seed,
-        tensorboard_log=tb, n_steps=args.n_steps,
-        batch_size=args.batch_size, device=device,
-    )
+    if args.init_from is not None:
+        model = MaskablePPO.load(args.init_from, env=env, device=device)
+        model.tensorboard_log = tb
+        print(f"warm-started from {args.init_from}", flush=True)
+    else:
+        model = MaskablePPO(
+            "MlpPolicy", env, verbose=0, seed=args.seed,
+            tensorboard_log=tb, n_steps=args.n_steps,
+            batch_size=args.batch_size, device=device,
+            policy_kwargs={"net_arch": net_arch},
+        )
 
     print(f"=== V2 training ===", flush=True)
     print(f"device: {device}", flush=True)
+    print(f"net_arch: {net_arch}", flush=True)
     print(f"ascension mix: {mix or f'fixed A{args.ascension}'}", flush=True)
     print(f"steps: {args.steps:,}", flush=True)
     print(f"eval: A{args.eval_ascension}, every {args.eval_every:,} steps, "
           f"{args.eval_episodes} eps", flush=True)
-    print(f"output: {args.out}", flush=True)
+    print(f"output: {args.out}  (best -> {args.best_out})", flush=True)
 
     callback = PeriodicEvalCallback(
         eval_ascension=args.eval_ascension,
         eval_every=args.eval_every,
         eval_episodes=args.eval_episodes,
+        best_metric=args.best_metric,
+        best_out=args.best_out,
     )
     model.learn(total_timesteps=args.steps, callback=callback)
     model.save(args.out)
@@ -261,6 +315,9 @@ def main() -> None:
     print(f"  Mean bosses:    {final['mean_bosses']:.2f}")
     print(f"  Mean act:       {final['mean_act']:.2f}")
     print(f"  Mean final HP:  {final['mean_final_hp']:.2f}")
+    print(f"\nBest checkpoint ({args.best_metric}={callback.best_value:.2f} "
+          f"@ step {callback.best_step:,}):")
+    print(f"  -> {args.best_out}")
 
 
 if __name__ == "__main__":
