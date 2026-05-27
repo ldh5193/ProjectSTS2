@@ -66,12 +66,25 @@ def log(msg: str) -> None:
 
 
 def composite_score(eval_row: dict) -> float:
-    """Same metric as scripts/train_parallel.py PeriodicEvalCallback uses
-    for save-best — keeps fitness ranking aligned with mid-train peak."""
+    """Selection metric.
+
+    v2 (2026-05-27): rebalanced for floor depth, since the gen 0-7 sweep
+    showed `win × 100` dominating selection. With the old weights, a 10%
+    win rate scored 10 but a floor-34 (act-2 boss reached) run scored
+    only 1.7 — so the evolver couldn't tell deep dies from shallow ones,
+    and "lucky early wins" beat "consistently boss-killing" presets.
+
+    New weights tier the signal:
+      0%win floor-14 0.3boss  -> 34   (act 1 mid)
+      10%win floor-15 0.3boss -> 46   (lucky early win)
+      0%win floor-34 1boss    -> 68   (act 2 boss kill)
+      0%win floor-51 2boss    -> 142  (act 3 boss approach)
+      10%win floor-52 3boss   -> 174  (full victory)
+    """
     win = max(eval_row.get("win_rate", 0.0), eval_row.get("win_rate_stoch", 0.0))
     floor = max(eval_row.get("mean_floor", 0.0), eval_row.get("floor_stoch", 0.0))
     boss = eval_row.get("mean_bosses", 0.0)
-    return win * 100.0 + 0.05 * floor + 0.5 * boss
+    return win * 100.0 + 2.0 * floor + 20.0 * boss
 
 
 def fitness_from_history(history_path: Path) -> float:
