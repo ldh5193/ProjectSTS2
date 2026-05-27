@@ -207,8 +207,14 @@ def train_one(cand: dict) -> dict:
     return summary
 
 
+ONNX_GITHUB_LIMIT = 95 * 1024 * 1024  # 95MB safety margin (GitHub hard limit 100MB)
+
+
 def export_onnx_from(checkpoint: Path) -> bool:
-    """Export checkpoint to tools/STS2MCP-bin/policy.onnx. Returns True on success."""
+    """Export checkpoint to tools/STS2MCP-bin/policy.onnx. Returns True
+    only if export succeeded AND the file is small enough to push to
+    GitHub without LFS. Huge-model d05 (27M params) hit 109MB and got
+    pre-receive-rejected; this gate prevents that for d06 onward."""
     if not checkpoint.exists():
         log(f"  EXPORT skip — checkpoint missing: {checkpoint}")
         return False
@@ -224,6 +230,15 @@ def export_onnx_from(checkpoint: Path) -> bool:
         log(f"  stderr: {proc.stderr[-300:]}")
         return False
     size = ONNX_OUT.stat().st_size if ONNX_OUT.exists() else 0
+    if size > ONNX_GITHUB_LIMIT:
+        log(f"  EXPORT ok but TOO BIG for GitHub: {size} bytes "
+            f"(> {ONNX_GITHUB_LIMIT}). Skipping git commit. "
+            f"Local checkpoint preserved at {checkpoint}.")
+        # Revert policy.onnx to the last committed version so the local
+        # working tree doesn't carry an un-pushable artifact.
+        subprocess.run(["git", "checkout", "HEAD", "--", str(ONNX_OUT)],
+                       cwd=str(ROOT), capture_output=True)
+        return False
     log(f"  EXPORT ok: {ONNX_OUT.name} ({size} bytes)")
     return True
 
