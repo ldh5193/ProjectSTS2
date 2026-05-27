@@ -41,7 +41,7 @@ from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.callbacks import BaseCallback
 
-from sim.env_run import RunEnv
+from sim.env_run import REWARD_PRESETS, RewardConfig, RunEnv
 
 
 def _mask_fn(env):
@@ -94,10 +94,12 @@ def resolve_device(name: str) -> str:
 
 
 def make_env(ascension: int = 10,
-             ascension_mix: dict[int, float] | None = None) -> ActionMasker:
+             ascension_mix: dict[int, float] | None = None,
+             reward_config: RewardConfig | None = None) -> ActionMasker:
     """RunEnv wrapped in ActionMasker. When ascension_mix is set, the
     fixed `ascension` argument is ignored."""
-    env = RunEnv(ascension=ascension, ascension_mixture=ascension_mix)
+    env = RunEnv(ascension=ascension, ascension_mixture=ascension_mix,
+                 reward_config=reward_config)
     return ActionMasker(env, _mask_fn)
 
 
@@ -238,6 +240,9 @@ def main() -> None:
     parser.add_argument("--init-from", type=Path, default=None,
                         help="Optional path to a checkpoint to warm-start from. "
                              "Used for finetuning passes (iter 3 pattern).")
+    parser.add_argument("--reward-preset", type=str, default="default",
+                        help=f"RewardConfig preset name from REWARD_PRESETS. "
+                             f"Available: {sorted(REWARD_PRESETS.keys())[:8]}...")
     parser.add_argument("--out", type=Path, default=Path("models/v2/run.zip"))
     parser.add_argument("--best-out", type=Path, default=None,
                         help="If set, save the best-eval checkpoint here. "
@@ -264,7 +269,12 @@ def main() -> None:
 
     mix = parse_ascension_mix(args.ascension_mix)
     device = resolve_device(args.device)
-    env = make_env(ascension=args.ascension, ascension_mix=mix)
+    if args.reward_preset not in REWARD_PRESETS:
+        raise SystemExit(f"unknown --reward-preset {args.reward_preset!r}. "
+                         f"Available: {sorted(REWARD_PRESETS.keys())}")
+    reward_cfg = REWARD_PRESETS[args.reward_preset]
+    env = make_env(ascension=args.ascension, ascension_mix=mix,
+                   reward_config=reward_cfg)
 
     tb = str(args.tensorboard) if args.tensorboard else None
     if args.init_from is not None:
@@ -282,6 +292,7 @@ def main() -> None:
     print(f"=== V2 training ===", flush=True)
     print(f"device: {device}", flush=True)
     print(f"net_arch: {net_arch}", flush=True)
+    print(f"reward_preset: {args.reward_preset}", flush=True)
     print(f"ascension mix: {mix or f'fixed A{args.ascension}'}", flush=True)
     print(f"steps: {args.steps:,}", flush=True)
     print(f"eval: A{args.eval_ascension}, every {args.eval_every:,} steps, "

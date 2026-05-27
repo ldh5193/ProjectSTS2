@@ -229,15 +229,18 @@ def export_onnx_from(checkpoint: Path) -> bool:
 
 
 def git_commit_push(name: str, summary: dict) -> bool:
-    """Commit the new policy.onnx + summary JSON, push to origin/main.
-    No-op if nothing changed (e.g., export skipped)."""
-    add = subprocess.run(["git", "add", str(ONNX_OUT),
-                          str(candidate_paths(name)["summary"])],
+    """Commit the new policy.onnx, push to origin/main.
+
+    Summary JSONs live under models/ (gitignored) — their content goes
+    into the commit message instead so the historical record stays in
+    git log without polluting the working tree with thousands of result
+    files."""
+    add = subprocess.run(["git", "add", str(ONNX_OUT)],
                          capture_output=True, text=True, cwd=str(ROOT))
     if add.returncode != 0:
         log(f"  GIT add failed: {add.stderr[-200:]}")
         return False
-    # Skip commit if no diff staged for the onnx (others were already added).
+    # Skip commit if no diff staged for the onnx.
     diff = subprocess.run(["git", "diff", "--cached", "--quiet"],
                           capture_output=True, text=True, cwd=str(ROOT))
     if diff.returncode == 0:
@@ -330,17 +333,151 @@ def run_phase_a(only: list[str] | None = None) -> None:
             f"peak_p90={winner.get('peak_p90_terminal_score', 0):.2f}")
 
 
+# ---------------------------------------------------------------------------
+# Phase B: weight tuning with winner arch locked
+#
+# After Phase A surfaced [256,256] (peak_mean 47.1), Phase B varies the
+# RewardConfig per-step weights to push the policy toward observed gaps:
+#   - mean_floor stuck at ~9 (act 1 mid)        → push floor_advance
+#   - mean_bosses 0.1 across all archs          → reward boss damage
+#   - 0% win rate even at p90 67                → richer per-step shaping
+#
+# Each variant runs with the SAME winner arch + same ascension mix +
+# longer step budget (300K) to converge well. Reward config is passed
+# via a CLI argument we add to train_v2 in the next commit.
+# ---------------------------------------------------------------------------
+
+PHASE_B_CANDIDATES: list[dict] = [
+    {
+        "name": "arch_b01_baseline",
+        "net_arch": "256,256",
+        "steps": 300_000,
+        "reward_preset": "default",
+        "comment": "Re-run winner arch longer — baseline for B sweep",
+    },
+    {
+        "name": "arch_b02_floor_push",
+        "net_arch": "256,256",
+        "steps": 300_000,
+        "reward_preset": "dense_floor",  # floor_advance=0.05 (vs 0.01)
+        "comment": "Push floor advance per-step — emphasize depth",
+    },
+    {
+        "name": "arch_b03_boss_focus",
+        "net_arch": "256,256",
+        "steps": 300_000,
+        "reward_preset": "shape_damage",  # damage_dealt_weight=0.005
+        "comment": "Reward damage dealt per-tick — boss engagement",
+    },
+    {
+        "name": "arch_b04_hp_aware",
+        "net_arch": "256,256",
+        "steps": 300_000,
+        "reward_preset": "tank",  # hp_delta_weight=0.02 + heavier boss
+        "comment": "Defensive play: HP-loss penalty + heavier boss kill",
+    },
+    {
+        "name": "arch_b05_terminal_heavy",
+        "net_arch": "256,256",
+        "steps": 300_000,
+        "reward_preset": "terminal_heavy",  # boss_kill=5, victory=22
+        "comment": "Sparse + strong terminal — let policy chase the big wins",
+    },
+]
+
+
+def train_one_phaseb(cand: dict) -> dict:
+    """Like train_one but adds --reward-preset for Phase B."""
+    paths = candidate_paths(cand["name"])
+    SWEEP_DIR.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        str(PYTHON), str(TRAIN_SCRIPT),
+        "--steps", str(cand["steps"]),
+        "--ascension-mix", COMMON_KW["ascension_mix"],
+        "--device", COMMON_KW["device"],
+        "--net-arch", cand["net_arch"],
+        "--reward-preset", cand["reward_preset"],
+        "--eval-every", str(COMMON_KW["eval_every"]),
+        "--eval-episodes", str(COMMON_KW["eval_episodes"]),
+        "--seed", str(COMMON_KW["seed"]),
+        "--best-metric", COMMON_KW["best_metric"],
+        "--out", str(paths["final"]),
+        "--best-out", str(paths["best"]),
+        "--history-out", str(paths["history"]),
+    ]
+    log(f"START {cand['name']} arch={cand['net_arch']} "
+        f"reward={cand['reward_preset']} steps={cand['steps']:,}")
+    t0 = time.time()
+    with paths["stdout"].open("w", encoding="utf-8") as stdout_f:
+        proc = subprocess.run(cmd, stdout=stdout_f, stderr=subprocess.STDOUT,
+                              cwd=str(ROOT), env=os.environ.copy())
+    wall = time.time() - t0
+    summary = {"name": cand["name"], "wall_s": wall,
+               "returncode": proc.returncode, "steps": cand["steps"],
+               "net_arch": cand["net_arch"], "comment": cand.get("comment", ""),
+               "reward_preset": cand.get("reward_preset")}
+    if paths["history"].exists():
+        try:
+            hist = json.loads(paths["history"].read_text())
+            if hist:
+                last = hist[-1]
+                summary["final_mean_terminal_score"] = last.get("mean_terminal_score", 0.0)
+                summary["final_median_terminal_score"] = last.get("median_terminal_score", 0.0)
+                summary["final_p90_terminal_score"] = last.get("p90_terminal_score", 0.0)
+                summary["final_mean_floor"] = last.get("mean_floor", 0.0)
+                summary["final_mean_bosses"] = last.get("mean_bosses", 0.0)
+                summary["peak_mean_terminal_score"] = max(
+                    h.get("mean_terminal_score", 0.0) for h in hist)
+                summary["peak_p90_terminal_score"] = max(
+                    h.get("p90_terminal_score", 0.0) for h in hist)
+                summary["n_evals"] = len(hist)
+        except Exception as e:
+            log(f"  history parse failed: {e!r}")
+    paths["summary"].write_text(json.dumps(summary, indent=2))
+    log(f"FINISH {cand['name']} in {wall:.0f}s  "
+        f"peak_mean={summary.get('peak_mean_terminal_score', 0):.1f}  "
+        f"final_mean={summary.get('final_mean_terminal_score', 0):.1f}")
+    return summary
+
+
+def run_phase_b(only: list[str] | None = None) -> None:
+    SWEEP_DIR.mkdir(parents=True, exist_ok=True)
+    log(f"=== Phase B: weight tuning ({len(PHASE_B_CANDIDATES)} candidates) ===")
+    results: list[dict] = []
+    for cand in PHASE_B_CANDIDATES:
+        if only and cand["name"] not in only:
+            log(f"SKIP {cand['name']} (not in --only)")
+            continue
+        if already_done(cand["name"]):
+            log(f"SKIP {cand['name']} (resume)")
+            results.append(json.loads(candidate_paths(cand["name"])["summary"].read_text()))
+            continue
+        summary = train_one_phaseb(cand)
+        results.append(summary)
+        best_ckpt = candidate_paths(cand["name"])["best"]
+        if not best_ckpt.exists():
+            best_ckpt = candidate_paths(cand["name"])["final"]
+        if export_onnx_from(best_ckpt):
+            git_commit_push(cand["name"], summary)
+    if results:
+        winner = max(results,
+                     key=lambda r: r.get("peak_mean_terminal_score", 0.0))
+        log(f"=== Phase B complete ===")
+        log(f"B WINNER: {winner['name']} reward={winner.get('reward_preset')} "
+            f"peak_mean={winner.get('peak_mean_terminal_score', 0):.2f} "
+            f"peak_p90={winner.get('peak_p90_terminal_score', 0):.2f}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--phase", choices=["A", "B", "all"], default="A")
     parser.add_argument("--only", nargs="*", default=None,
-                        help="Only run these named candidates (Phase A).")
+                        help="Only run these named candidates.")
     args = parser.parse_args()
     if args.phase in ("A", "all"):
         run_phase_a(only=args.only)
-    if args.phase == "B":
-        log("Phase B (weight tuning) not implemented yet — implementation "
-            "lands after Phase A produces a winner architecture.")
+    if args.phase in ("B", "all"):
+        run_phase_b(only=args.only)
 
 
 if __name__ == "__main__":
