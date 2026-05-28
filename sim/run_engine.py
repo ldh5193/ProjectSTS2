@@ -337,6 +337,40 @@ def _step_combat(rs: RunState, body: dict, res: StepResult) -> StepResult:
             if 0 <= tgt < len(alive):
                 cs.target_index = tgt
         cs.play_card(idx)
+    elif action == "use_potion":
+        # L1 potion effects — applied in-combat. Per-floor diagnostic
+        # showed 0 potion usage across 30 episodes because the action
+        # had no handler. Sim now drops potions from combat (40-100%)
+        # so the policy has something to use.
+        slot = body.get("slot", -1)
+        if not (0 <= slot < len(rs.potions)) or rs.potions[slot] is None:
+            res.invalid_action = True
+            res.reason = f"no potion in slot {slot}"
+            return res
+        pid = rs.potions[slot].id
+        if pid == "FIRE_POTION":
+            # 20 damage to selected enemy (or first alive).
+            alive = cs.alive_monsters()
+            if alive:
+                tgt = body.get("target")
+                t_idx = tgt if isinstance(tgt, int) and 0 <= tgt < len(alive) else 0
+                alive[t_idx].take_damage(20, source="potion")
+        elif pid == "BLOCK_POTION":
+            cs.player.block = getattr(cs.player, "block", 0) + 12
+        elif pid == "ENERGY_POTION":
+            cs.player.energy = getattr(cs.player, "energy", 0) + 2
+        else:
+            # Unknown potion id — consume harmlessly. (Defensive: future
+            # potion pool expansion lands here.)
+            pass
+        rs.potions[slot] = None
+    elif action == "discard_potion":
+        slot = body.get("slot", -1)
+        if not (0 <= slot < len(rs.potions)) or rs.potions[slot] is None:
+            res.invalid_action = True
+            res.reason = f"no potion in slot {slot}"
+            return res
+        rs.potions[slot] = None
     else:
         res.invalid_action = True
         res.reason = f"unsupported combat action {action!r}"
@@ -348,6 +382,25 @@ def _step_combat(rs: RunState, body: dict, res: StepResult) -> StepResult:
         rs.hp = cs.player.hp  # carry over post-combat HP
         # Fire relic after-combat-victory hooks (Burning Blood, Black Blood, …).
         trigger_after_combat_victory(rs)
+        # STS2 potion drop: 40% on regular monsters, 100% on elite/boss
+        # (decompiled MegaCrit.Sts2.Core.Models.PotionPools — base rate
+        # is RNG-driven, dropping from the active pool). L1 simplifies
+        # to fixed rates per room_type with a placeholder potion id.
+        # Per-floor diagnostic on e01_best showed 0 potions across 30
+        # episodes — sim had no drop source besides Wellspring event.
+        _pdrop_rate = {
+            StateType.MONSTER: 0.40,
+            StateType.ELITE: 1.00,
+            StateType.BOSS: 1.00,
+        }.get(rs.state_type, 0.0)
+        if _pdrop_rate > 0:
+            _rng = _encounter_rng(rs)
+            roll = _rng.next_double()
+            if roll < _pdrop_rate:
+                # L1 potion pool — three common potions. Index by RNG.
+                _potion_pool = ["FIRE_POTION", "BLOCK_POTION", "ENERGY_POTION"]
+                pidx = _rng.next_int(0, len(_potion_pool))
+                rs.add_potion(_potion_pool[pidx])
         # Open reward.
         room_for_source = {
             StateType.MONSTER: "regular",
