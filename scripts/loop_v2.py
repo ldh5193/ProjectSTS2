@@ -402,11 +402,12 @@ PHASE_B_CANDIDATES: list[dict] = [
 
 
 def train_one_phaseb(cand: dict) -> dict:
-    """Like train_one but adds --reward-preset (+ optional --init-from
-    and per-candidate --ascension-mix) for Phase B and Phase C."""
+    """Like train_one but adds --reward-preset (+ optional --init-from,
+    per-candidate --ascension-mix, --seed override) for Phase B onward."""
     paths = candidate_paths(cand["name"])
     SWEEP_DIR.mkdir(parents=True, exist_ok=True)
     mix = cand.get("ascension_mix", COMMON_KW["ascension_mix"])
+    seed = cand.get("seed_override", COMMON_KW["seed"])
     cmd = [
         str(PYTHON), str(TRAIN_SCRIPT),
         "--steps", str(cand["steps"]),
@@ -416,7 +417,7 @@ def train_one_phaseb(cand: dict) -> dict:
         "--reward-preset", cand["reward_preset"],
         "--eval-every", str(COMMON_KW["eval_every"]),
         "--eval-episodes", str(COMMON_KW["eval_episodes"]),
-        "--seed", str(COMMON_KW["seed"]),
+        "--seed", str(seed),
         "--best-metric", COMMON_KW["best_metric"],
         "--out", str(paths["final"]),
         "--best-out", str(paths["best"]),
@@ -425,11 +426,23 @@ def train_one_phaseb(cand: dict) -> dict:
     if "init_from" in cand and cand["init_from"]:
         cmd.extend(["--init-from", cand["init_from"]])
     log(f"START {cand['name']} arch={cand['net_arch']} "
-        f"reward={cand['reward_preset']} steps={cand['steps']:,}")
+        f"reward={cand['reward_preset']} steps={cand['steps']:,} "
+        f"seed={seed}")
     t0 = time.time()
+    # Launch train subprocess at BelowNormal priority so the user can
+    # keep using the desktop while training runs in the background.
+    # The training is GPU-bound; the few CPU cycles needed for env
+    # stepping yield to interactive tasks at this priority.
+    creation_flags = 0
+    try:
+        import subprocess as _sp
+        creation_flags = _sp.BELOW_NORMAL_PRIORITY_CLASS
+    except AttributeError:
+        pass  # non-Windows or older Python — fall back to default priority
     with paths["stdout"].open("w", encoding="utf-8") as stdout_f:
         proc = subprocess.run(cmd, stdout=stdout_f, stderr=subprocess.STDOUT,
-                              cwd=str(ROOT), env=os.environ.copy())
+                              cwd=str(ROOT), env=os.environ.copy(),
+                              creationflags=creation_flags)
     wall = time.time() - t0
     summary = {"name": cand["name"], "wall_s": wall,
                "returncode": proc.returncode, "steps": cand["steps"],
@@ -631,6 +644,38 @@ PHASE_D_CANDIDATES: list[dict] = [
 # need different obs/sim/architecture.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Phase F: validate e01 breakthrough + scale to bigger model
+#
+# e01 hit peak_mean 61.66 at 2.175M steps with [1024,1024]. e02 finetune
+# couldn't reproduce — finetune disturbs converged weights. Open questions:
+#
+#   1. Is 61.66 reproducible from scratch with a different seed?
+#   2. Does a bigger model (d04-style [4096,2048,1024]) given the same
+#      3M step budget beat 61.66?
+#
+# Phase F directly answers both with two from-scratch runs.
+# ---------------------------------------------------------------------------
+
+PHASE_F_CANDIDATES: list[dict] = [
+    {
+        "name": "arch_f01_1024_1024_seed200",
+        "net_arch": "1024,1024",
+        "steps": 3_000_000,
+        "reward_preset": "shape_damage",
+        "seed_override": 200,
+        "comment": "Reproduce e01 with different seed — is 61.66 noise or real?",
+    },
+    {
+        "name": "arch_f02_4096_2048_1024_long",
+        "net_arch": "4096,2048,1024",
+        "steps": 3_000_000,
+        "reward_preset": "shape_damage",
+        "comment": "Phase D's d04 with 3.75x Phase D's step budget — bigger + longer",
+    },
+]
+
+
 PHASE_E_CANDIDATES: list[dict] = [
     # e01: 3M steps (6× d01's 500K). Direct undersample test.
     # ETA: d01 took 24min for 500K → e01 ~145min (~2.5h).
@@ -653,6 +698,35 @@ PHASE_E_CANDIDATES: list[dict] = [
         "comment": "Continue from e01 best — total 5M steps (10x Phase D budget)",
     },
 ]
+
+
+def run_phase_f(only: list[str] | None = None) -> None:
+    SWEEP_DIR.mkdir(parents=True, exist_ok=True)
+    log(f"=== Phase F: e01 reproducibility + bigger-model long-train "
+        f"({len(PHASE_F_CANDIDATES)} candidates) ===")
+    results: list[dict] = []
+    for cand in PHASE_F_CANDIDATES:
+        if only and cand["name"] not in only:
+            log(f"SKIP {cand['name']} (not in --only)")
+            continue
+        if already_done(cand["name"]):
+            log(f"SKIP {cand['name']} (resume)")
+            results.append(json.loads(candidate_paths(cand["name"])["summary"].read_text()))
+            continue
+        summary = train_one_phaseb(cand)
+        results.append(summary)
+        best_ckpt = candidate_paths(cand["name"])["best"]
+        if not best_ckpt.exists():
+            best_ckpt = candidate_paths(cand["name"])["final"]
+        if export_onnx_from(best_ckpt):
+            git_commit_push(cand["name"], summary)
+    if results:
+        winner = max(results,
+                     key=lambda r: r.get("peak_mean_terminal_score", 0.0))
+        log(f"=== Phase F complete ===")
+        log(f"F WINNER: {winner['name']} arch={winner.get('net_arch')} "
+            f"peak_mean={winner.get('peak_mean_terminal_score', 0):.2f} "
+            f"peak_p90={winner.get('peak_p90_terminal_score', 0):.2f}")
 
 
 def run_phase_e(only: list[str] | None = None) -> None:
@@ -743,7 +817,8 @@ def run_phase_c(only: list[str] | None = None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=["A", "B", "C", "D", "E", "all"],
+    parser.add_argument("--phase",
+                        choices=["A", "B", "C", "D", "E", "F", "all"],
                         default="A")
     parser.add_argument("--only", nargs="*", default=None,
                         help="Only run these named candidates.")
@@ -758,6 +833,8 @@ def main() -> None:
         run_phase_d(only=args.only)
     if args.phase in ("E", "all"):
         run_phase_e(only=args.only)
+    if args.phase in ("F", "all"):
+        run_phase_f(only=args.only)
 
 
 if __name__ == "__main__":
