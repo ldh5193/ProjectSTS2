@@ -256,6 +256,23 @@ REWARD_PRESETS: dict[str, RewardConfig] = {
         run_victory=15.0, floor_advance=0.008, living_cost=-0.001, death=-2.0,
         damage_dealt_weight=0.010, energy_unspent_penalty=0.18,
     ),
+    # ---- v5 diagnosed bottleneck preset (added 2026-05-28) ----
+    # 5 long runs (e01/d01/f01/f02 + d04) all froze mean_floor at 9.0–9.85
+    # regardless of arch (64→14M params) or steps (500K→3M). p90 swings
+    # carried "peak" scores; the underlying floor distribution never moved.
+    # Per-floor diagnostic showed boss-entry HP ~65/80 — the policy trades
+    # HP for damage. shape_damage actively rewarded that behavior.
+    #
+    # a10_survive directly attacks both: heavy floor_advance to push the
+    # distribution rightward (5× shape_damage), heavy hp_delta to penalize
+    # HP-for-damage trades, and a big elite_kill bonus since the elite at
+    # floor 7-9 is where the death distribution clusters at A10.
+    "a10_survive": RewardConfig(
+        combat_win=0.20, elite_kill=0.80, boss_kill=4.0, act_completion=2.0,
+        run_victory=12.0, floor_advance=0.05, living_cost=-0.0003, death=-3.0,
+        hp_delta_weight=0.025, block_gained_weight=0.005,
+        damage_dealt_weight=0.002,
+    ),
 }
 
 
