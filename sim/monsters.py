@@ -66,6 +66,18 @@ class SludgeSpinnerWeak(Monster):
         candidates = [m for m in SLUDGE_MOVES if m != self.last_move]
         return rng.choice(candidates)
 
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        if self.next_move is SludgeMove.OIL_SPRAY:
+            return _a9(self.ascension, 8, 9) + str_amt
+        if self.next_move is SludgeMove.SLAM:
+            return _a9(self.ascension, 11, 12) + str_amt
+        if self.next_move is SludgeMove.RAGE:
+            return _a9(self.ascension, 6, 7) + str_amt
+        return 0
+
     def take_turn(self, rng: random.Random, player: Creature) -> dict:
         """Execute self.next_move against player. Returns event dict for logs/tests."""
         move = self.next_move or self.roll_next_move(rng)
@@ -157,6 +169,17 @@ class NibbitWeak(Monster):
             return NibbitMove.BUTT
         return _NIBBIT_SOLO_FOLLOWUP[self.last_move]
 
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        if self.next_move is NibbitMove.BUTT:
+            return _a9(self.ascension, 12, 13) + str_amt
+        if self.next_move is NibbitMove.SLICE:
+            return _a9(self.ascension, 6, 7) + str_amt
+        # HISS is a pure self-buff (Strength gain), no damage.
+        return 0
+
     def take_turn(self, rng: random.Random, player: Creature) -> dict:
         move = self.next_move or self.roll_next_move(rng)
         event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
@@ -227,6 +250,19 @@ class CeremonialBeast(Monster):
     def roll_next_move(self, rng: random.Random) -> BeastMove:
         self.cycle_index = (self.cycle_index + 1) % len(_BEAST_CYCLE)
         return _BEAST_CYCLE[self.cycle_index]
+
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        if self.next_move is BeastMove.PLOW:
+            return _a9(self.ascension, 18, 20) + str_amt
+        if self.next_move is BeastMove.STOMP:
+            return _a9(self.ascension, 15, 17) + str_amt
+        if self.next_move is BeastMove.CRUSH:
+            return _a9(self.ascension, 17, 19) + str_amt
+        # STAMP (buff), STUN (no-op), BEAST_CRY (debuff) deal no damage.
+        return 0
 
     def take_turn(self, rng: random.Random, player: Creature) -> dict:
         move = self.next_move or self.roll_next_move(rng)
@@ -311,6 +347,18 @@ class TheInsatiable(Monster):
         self.cycle_index = (self.cycle_index + 1) % len(_INSATIABLE_CYCLE)
         return _INSATIABLE_CYCLE[self.cycle_index]
 
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        if self.next_move is InsatiableMove.THRASH1 or self.next_move is InsatiableMove.THRASH2:
+            # 2 hits; Strength applies per hit.
+            return (_a9(self.ascension, 8, 9) + str_amt) * 2
+        if self.next_move is InsatiableMove.LUNGING_BITE:
+            return _a9(self.ascension, 28, 31) + str_amt
+        # LIQUIFY (debuff) and SALIVATE (self-buff) deal no damage.
+        return 0
+
     def take_turn(self, rng: random.Random, player: Creature) -> dict:
         move = self.next_move or self.roll_next_move(rng)
         event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
@@ -387,6 +435,20 @@ class Doormaker(Monster):
         self.cycle_index = (self.cycle_index + 1) % len(_DOORMAKER_CYCLE)
         return _DOORMAKER_CYCLE[self.cycle_index]
 
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        if self.next_move is DoormakerMove.HUNGER:
+            return _a9(self.ascension, 30, 35) + str_amt
+        if self.next_move is DoormakerMove.SCRUTINY:
+            return _a9(self.ascension, 24, 26) + str_amt
+        if self.next_move is DoormakerMove.GRASP:
+            # 2 hits; Strength applies per hit.
+            return (_a9(self.ascension, 10, 11) + str_amt) * 2
+        # DRAMATIC_OPEN is a no-damage cinematic reveal.
+        return 0
+
     def take_turn(self, rng: random.Random, player: Creature) -> dict:
         move = self.next_move or self.roll_next_move(rng)
         event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
@@ -456,6 +518,18 @@ class WaterfallGiant(Monster):
         self.cycle_index = (self.cycle_index + 1) % len(cycle)
         return cycle[self.cycle_index]
 
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        if self.next_move is WaterfallMove.SLAM:
+            return _a9(self.ascension, 18, 20) + str_amt
+        if self.next_move is WaterfallMove.GUSH:
+            # 3 hits; Strength applies per hit.
+            return (_a9(self.ascension, 8, 9) + str_amt) * 3
+        # PRESSURIZE is a block gain, no damage.
+        return 0
+
     def take_turn(self, rng: random.Random, player: Creature) -> dict:
         move = self.next_move or self.roll_next_move(rng)
         event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
@@ -506,6 +580,18 @@ class SoulFysh(Monster):
         cycle = (SoulFyshMove.SCREAM, SoulFyshMove.DE_GAS, SoulFyshMove.GAZE)
         self.cycle_index = (self.cycle_index + 1) % len(cycle)
         return cycle[self.cycle_index]
+
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        if self.next_move is SoulFyshMove.DE_GAS:
+            return _a9(self.ascension, 16, 17) + str_amt
+        if self.next_move is SoulFyshMove.SCREAM:
+            return _a9(self.ascension, 11, 12) + str_amt
+        if self.next_move is SoulFyshMove.GAZE:
+            return _a9(self.ascension, 7, 8) + str_amt
+        return 0
 
     def take_turn(self, rng: random.Random, player: Creature) -> dict:
         move = self.next_move or self.roll_next_move(rng)
@@ -562,6 +648,15 @@ class LagavulinMatriarch(Monster):
         cycle = (LagavulinMove.DEBILITATE, LagavulinMove.SLASH, LagavulinMove.SLASH)
         self.cycle_index = (self.cycle_index + 1) % len(cycle)
         return cycle[self.cycle_index]
+
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        if self.next_move is LagavulinMove.SLASH:
+            return _a9(self.ascension, 19, 21) + str_amt
+        # DEBILITATE applies Frail/Weak, no damage.
+        return 0
 
     def take_turn(self, rng: random.Random, player: Creature) -> dict:
         move = self.next_move or self.roll_next_move(rng)
@@ -620,6 +715,20 @@ class Vantom(Monster):
     def roll_next_move(self, rng: random.Random) -> VantomMove:
         self.cycle_index = (self.cycle_index + 1) % len(_VANTOM_CYCLE)
         return _VANTOM_CYCLE[self.cycle_index]
+
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        if self.next_move is VantomMove.INK_BLOT:
+            return _a9(self.ascension, 7, 8) + str_amt
+        if self.next_move is VantomMove.INKY_LANCE:
+            # 2 hits; Strength applies per hit.
+            return (_a9(self.ascension, 6, 7) + str_amt) * 2
+        if self.next_move is VantomMove.DISMEMBER:
+            return _a9(self.ascension, 27, 30) + str_amt
+        # PREPARE is a self-buff (Strength gain), no damage.
+        return 0
 
     def take_turn(self, rng: random.Random, player: Creature) -> dict:
         move = self.next_move or self.roll_next_move(rng)

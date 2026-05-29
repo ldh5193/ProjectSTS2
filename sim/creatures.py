@@ -48,4 +48,10 @@ class Player(Creature):
 
 @dataclass
 class Monster(Creature):
-    pass
+    def intent_damage(self) -> int:
+        """Raw outgoing damage the current intent would deal this turn.
+
+        Default 0; attacking monsters override this. The RL env uses it to
+        populate the agent's "incoming damage next turn" observation.
+        """
+        return 0
