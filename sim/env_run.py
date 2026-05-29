@@ -45,6 +45,15 @@ from .run_engine import (
 OBS_DIM = 384  # v4.3 (Phase 3, 2026-05-27). v3 was 256, v4 phase 2 was 320.
 OBS_DIM_V3 = 256  # legacy export for the v3-layout-only tests
 
+# Per-act boss floor. rs.floor is PER-ACT (game's ActFloor semantics,
+# resets each act), so the boss of each act sits at a different floor:
+# act1=17, act2=16, act3=15 — from ActModel.GetNumberOfFloors =
+# GetNumberOfRooms + 2 with rooms 15/14/13 (Overgrowth/Hive/Glory.cs).
+# A10 DoubleBoss adds one extra floor in the final act (StandardActMap
+# SecondBossMapPoint at GetRowCount()+1).
+_ACT_BOSS_FLOOR = {1: 17, 2: 16, 3: 15}
+_RUN_TOTAL_FLOORS = 17 + 16 + 15  # 48 at A0-A9; +1 at A10 (DoubleBoss)
+
 
 # Power ids the policy gets a stack-amount feature for. Order is part of
 # the obs contract — re-shuffling breaks any trained policy.
@@ -780,22 +789,22 @@ class RunEnv(gym.Env):
         cursor += 1
 
         # v4: Distance dims. distance_to_act_boss and distance_to_victory.
-        # Both use act-relative scaling so adding/removing floors per
-        # special map nodes doesn't break the normalization.
-        # Act 1 boss is at floor 17 in the current generator (sim/map_gen
-        # Ancient row fix); acts 2/3 follow at +17 each.
-        if rs.act == 1:
-            act_boss_floor = 17
-            final_boss_floor = 51 + (1 if int(rs.ascension) >= 10 else 0)
-        elif rs.act == 2:
-            act_boss_floor = 34
-            final_boss_floor = 51 + (1 if int(rs.ascension) >= 10 else 0)
-        else:
-            act_boss_floor = 51 + (1 if int(rs.ascension) >= 10 else 0)
-            final_boss_floor = act_boss_floor
-        v[cursor + 0] = max(0.0, min(1.0, (act_boss_floor - rs.floor) / 17.0))
-        v[cursor + 1] = max(0.0, min(1.0,
-                                     (final_boss_floor - rs.floor) / 51.0))
+        # rs.floor is PER-ACT (game ActFloor), so distance to THIS act's
+        # boss is (boss_floor_this_act - floor). Distance to victory is
+        # floors left this act + the full lengths of the remaining acts.
+        # The old code treated floor as global cumulative (boss at
+        # 17/34/51) which, against a per-act floor, made both dims garbage
+        # for acts 2 and 3.
+        cur_act = rs.act if rs.act in _ACT_BOSS_FLOOR else 3
+        a10 = int(rs.ascension) >= 10
+        boss_fl = _ACT_BOSS_FLOOR[cur_act] + (1 if (cur_act == 3 and a10) else 0)
+        # floors remaining until victory: this act's boss + later acts
+        remaining = max(0, boss_fl - rs.floor)
+        for a in range(cur_act + 1, 4):
+            remaining += _ACT_BOSS_FLOOR[a] + (1 if (a == 3 and a10) else 0)
+        total_floors = _RUN_TOTAL_FLOORS + (1 if a10 else 0)
+        v[cursor + 0] = max(0.0, min(1.0, (boss_fl - rs.floor) / boss_fl))
+        v[cursor + 1] = max(0.0, min(1.0, remaining / total_floors))
         cursor += 2
 
         # v4: Energy absolute + block log compression.
@@ -989,17 +998,17 @@ class RunEnv(gym.Env):
 
         S = 100.0 * self._acts_completed
 
-        # Within-act progress: where in the current act we are. Each act
-        # spans 17 floors in the current generator (Ancient row fix).
-        act_lengths = {1: 17, 2: 17, 3: 17}
-        cur_act = self.rs.act if self.rs.act in act_lengths else 3
-        if cur_act == 1:
-            within = self.rs.floor / 17.0
-        elif cur_act == 2:
-            within = max(0.0, (self.rs.floor - 17) / 17.0)
-        else:
-            within = max(0.0, (self.rs.floor - 34) / 17.0)
-        within = max(0.0, min(1.0, within))
+        # Within-act progress: where in the current act we are.
+        # rs.floor is PER-ACT (resets to 0 each act transition, see
+        # run_engine `_step_proceed` rs.floor=0), matching the game's
+        # IRunState.ActFloor — NOT the global TotalFloor. Each act's boss
+        # sits at a DIFFERENT floor: act1=17, act2=16, act3=15
+        # (rooms 15/14/13 + 2, per ActModel.GetNumberOfFloors). The old
+        # code subtracted 17/34 from a per-act floor, so acts 2&3 always
+        # clamped to 0 — the within-act gradient was dead exactly at the
+        # frontier we want to push.
+        boss_fl = _ACT_BOSS_FLOOR.get(self.rs.act, 15)
+        within = max(0.0, min(1.0, self.rs.floor / boss_fl))
         S += 50.0 * within
 
         # Boss damage ratio — only meaningful when the run died in a boss

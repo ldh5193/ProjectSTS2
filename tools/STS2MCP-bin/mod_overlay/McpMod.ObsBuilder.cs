@@ -355,10 +355,21 @@ public static partial class McpMod
         cursor += 1;
 
         // v4: Distance dims (2 dim) to_act_boss, to_victory.
-        float actBossFloor = act == 1 ? 17f : (act == 2 ? 34f : 51f);
-        float finalBossFloor = 51f;  // ascension not exposed in mod state yet
-        v[cursor + 0] = Math.Max(0f, Math.Min(1f, (actBossFloor - floor) / 17f));
-        v[cursor + 1] = Math.Max(0f, Math.Min(1f, (finalBossFloor - floor) / 51f));
+        // MUST mirror sim/env_run.py exactly or train/deploy obs diverge.
+        // `floor` here is assumed to be the game's PER-ACT ActFloor (resets
+        // each act) — the same semantics the sim trains on (rs.floor). The
+        // game also exposes a global TotalFloor; if BuildGameState ever
+        // emits TotalFloor into "floor", this block AND line 101 break and
+        // must convert global->per-act first. Per-act boss floors:
+        // act1=17, act2=16, act3=15 (rooms 15/14/13 + 2).
+        float bossFl = act == 1 ? 17f : (act == 2 ? 16f : 15f);
+        // distance to victory = floors left this act + later acts' lengths.
+        float remaining = Math.Max(0f, bossFl - floor);
+        if (act == 1) remaining += 16f + 15f;
+        else if (act == 2) remaining += 15f;
+        const float totalFloors = 17f + 16f + 15f;  // 48 (A0-A9; A10 +1 not exposed)
+        v[cursor + 0] = Math.Max(0f, Math.Min(1f, (bossFl - floor) / bossFl));
+        v[cursor + 1] = Math.Max(0f, Math.Min(1f, remaining / totalFloors));
         cursor += 2;
 
         // v4: Energy abs + block log + energy overflow flag (3 dim).
