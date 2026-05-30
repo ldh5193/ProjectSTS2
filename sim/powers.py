@@ -315,7 +315,17 @@ class CorruptionPower(Power):
         return None
 
 
+@dataclass
+class NoDrawPower(Power):
+    """NoDrawPower.cs: the owner cannot draw cards for the rest of the turn.
+    Applied by Battle Trance after its draw. Ticked off at the owner's turn
+    end (1-stack duration). While present, CombatState.draw() is a no-op."""
+    id: str = field(default="no_draw", init=False)
+    _owner: object = None
+
+
 POWER_REGISTRY: dict[str, type[Power]] = {
+    "no_draw": NoDrawPower,
     "strength": StrengthPower,
     "vulnerable": VulnerablePower,
     "weak": WeakPower,

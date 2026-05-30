@@ -39,6 +39,21 @@ class Creature:
             self.alive = False
         return actual
 
+    def heal(self, amount: int) -> int:
+        """Restore up to `amount` HP, capped at max_hp. Returns HP gained."""
+        if amount <= 0 or not self.alive:
+            return 0
+        before = self.hp
+        self.hp = min(self.max_hp, self.hp + amount)
+        return self.hp - before
+
+    def gain_max_hp(self, amount: int) -> None:
+        """Permanently raise max HP and heal by the same amount (Feed)."""
+        if amount <= 0:
+            return
+        self.max_hp += amount
+        self.hp += amount
+
 
 @dataclass
 class Player(Creature):

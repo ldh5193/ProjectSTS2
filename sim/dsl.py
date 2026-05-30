@@ -31,6 +31,19 @@ class EffectOp(str, Enum):
     COPY_TO_DISCARD = "copy_to_discard"    # Anger
     UPGRADE_ALL_IN_HAND = "upgrade_all_in_hand"  # Armaments upgraded
     AUTO_PLAY_FROM_DRAW = "auto_play_from_draw"  # Havoc
+    # Phase 7C additions (notes/15_card_pool.md):
+    HEAL = "heal"                          # NotYet: restore HP
+    GAIN_MAX_HP_ON_KILL = "gain_max_hp_on_kill"  # Feed: +maxHP if this attack kills
+    LIFESTEAL_AOE = "lifesteal_aoe"        # Reaper: AoE then heal by unblocked
+    DOUBLE_STRENGTH = "double_strength"    # Limit Break: double current Strength
+    EXHAUST_HAND_SCALED = "exhaust_hand_scaled"  # FiendFire: exhaust hand, dmg/card
+    EXHAUST_NONATTACKS_BLOCK = "exhaust_nonattacks_block"  # SecondWind: block/card
+    EXHAUST_HAND_GENERATE = "exhaust_hand_generate"  # Stoke: exhaust hand, add cards
+    ADD_CARD = "add_card"                  # generate a card (status/shiv/attack)
+    ADD_RANDOM_ATTACK = "add_random_attack"  # InfernalBlade: free random attack
+    MOVE_DISCARD_TO_DRAW_TOP = "move_discard_to_draw_top"  # Headbutt
+    DRAW_UNTIL_NONATTACK = "draw_until_nonattack"  # Pillage: draw while attacks
+    NO_DRAW = "no_draw"                    # BattleTrance: NoDraw debuff (no more draws)
 
 
 class ScalingKind(str, Enum):
@@ -39,12 +52,19 @@ class ScalingKind(str, Enum):
     WEAK_MULTIPLICATIVE = "weak_multiplicative"
     BLOCK_AMOUNT = "block_amount"          # BodySlam: damage = current block
     STRIKE_TAG_COUNT = "strike_tag_count"  # PerfectedStrike: +N per Strike in deck
+    # Phase 7C additions:
+    STRENGTH_MULTIPLIER = "strength_multiplier"  # HeavyBlade: +mult×Strength
+    EXHAUST_PILE_COUNT = "exhaust_pile_count"    # AshenStrike: +N per exhausted card
+    TARGET_VULNERABLE_COUNT = "target_vulnerable_count"  # Bully: ×target Vulnerable
+    ATTACKS_PLAYED_COUNT = "attacks_played_count"  # Conflagration: ×attacks this turn
+    HP_LOST_HITS = "hp_lost_hits"          # TearAsunder: +1 hit if HP lost this turn
 
 
 @dataclass(frozen=True)
 class Scaling:
     kind: ScalingKind
     owner: str  # "dealer" or "target"
+    amount: int = 1  # per-unit multiplier (HeavyBlade ×3 Strength, etc.)
 
 
 @dataclass(frozen=True)
@@ -56,6 +76,14 @@ class Effect:
     duration: int = 0
     scaling: tuple[Scaling, ...] = ()
     hit_count: int = 1   # SwordBoomerang (3), TwinStrike (2)
+    # ADD_CARD payload: which card id to generate, and into which pile.
+    card_id: str | None = None
+    pile: str = "hand"   # "hand" | "discard" | "draw"
+
+
+# Sentinel cost meaning "X" — an X-cost card spends ALL remaining energy and
+# repeats its X-marked effect once per energy spent (Whirlwind, Cascade).
+X_COST = -1
 
 
 @dataclass(frozen=True)
@@ -66,3 +94,6 @@ class CardDef:
     type: CardType
     effects: tuple[Effect, ...]
     count: int = 1  # copies in starting deck
+    # Card keyword flags ported from the decompile's CanonicalKeywords.
+    exhaust: bool = False  # card goes to exhaust pile after play (Exhaust keyword)
+    is_status: bool = False  # generated status/curse card (Burn, Wound, Shiv, ...)

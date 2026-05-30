@@ -88,6 +88,9 @@ class CombatState:
     # ---- pile management ----
 
     def draw(self, n: int) -> None:
+        # NoDraw (Battle Trance): the player cannot draw for the rest of the turn.
+        if self.player.get_power("no_draw") is not None:
+            return
         for _ in range(n):
             if not self.draw_pile:
                 if not self.discard_pile:
@@ -111,6 +114,8 @@ class CombatState:
     def start_player_turn(self) -> None:
         self.turn_number += 1
         self.is_player_turn = True
+        self._attacks_played_this_turn = 0
+        self._hp_lost_this_turn = False
         self.player.energy = self.player.max_energy
         # Block resets at turn start unless a power (Barricade) blocks the reset.
         if not any(p.blocks_block_reset() for p in self.player.powers):
@@ -125,7 +130,13 @@ class CombatState:
 
     def effective_cost(self, card: CardDef) -> int:
         """Card's energy cost after player power overrides (Corruption: skills
-        cost 0). Takes the minimum override across powers, floored at 0."""
+        cost 0). Takes the minimum override across powers, floored at 0.
+
+        X-cost cards (cost == X_COST) consume ALL remaining energy, so their
+        effective cost is the player's current energy."""
+        from .dsl import X_COST
+        if card.cost == X_COST:
+            return self.player.energy
         cost = card.cost
         for p in self.player.powers:
             override = p.modify_card_cost(card)
@@ -146,29 +157,83 @@ class CombatState:
         card = self.hand[card_index]
         return self.player.energy >= self.effective_cost(card)
 
+    # Energy spent on the X-cost card currently resolving (Whirlwind hit count,
+    # Cascade auto-plays). 0 when no X-cost card is mid-resolution.
+    _x_value: int = field(default=0, init=False)
+    # Per-turn counters for damage scaling (reset at start_player_turn):
+    #   _attacks_played_this_turn -> Conflagration scaling.
+    #   _hp_lost_this_turn -> Spite/TearAsunder "if HP lost this turn" triggers.
+    _attacks_played_this_turn: int = field(default=0, init=False)
+    _hp_lost_this_turn: bool = field(default=False, init=False)
+
     def play_card(self, card_index: int, target_is_monster: bool = True) -> None:
         if not self.can_play(card_index):
             raise ValueError(f"cannot play card at index {card_index}")
+        from .dsl import CardType, X_COST
         card = self.hand.pop(card_index)
-        self.player.energy -= self.effective_cost(card)
+        spent = self.effective_cost(card)
+        self.player.energy -= spent
+        # X-cost cards repeat their effect once per energy spent.
+        self._x_value = spent if card.cost == X_COST else 0
         self._resolve_effects(card)
+        self._x_value = 0
         # Per-attack relic hooks (Kunai/Shuriken/Pen Nib) fire after an
         # ATTACK card resolves. Only when a RunState is attached (real runs;
         # standalone combat tests leave run_state=None).
-        from .dsl import CardType
         if card.type is CardType.ATTACK and self.run_state is not None:
             from .relics import trigger_on_attack_played
             trigger_on_attack_played(self.run_state, self, card)
-        # Corruption: skills are exhausted on play instead of discarded.
-        if (card.type is CardType.SKILL
+        # Exhaust keyword: card leaves play to the exhaust pile. Also Corruption:
+        # skills are exhausted on play instead of discarded.
+        if card.exhaust or (
+                card.type is CardType.SKILL
                 and any(p.id == "corruption" for p in self.player.powers)):
             self._exhaust_card(card)
         else:
             self.discard_pile.append(card)
+        if card.type is CardType.ATTACK:
+            self._attacks_played_this_turn += 1
 
     def _resolve_effects(self, card: CardDef) -> None:
         for eff in card.effects:
             self._resolve_single_effect(card, eff)
+
+    def _resolve_damage_scaling(self, eff, targets) -> tuple[int, int]:
+        """Compute (base_damage, hit_count) for a DEAL_DAMAGE-shaped effect,
+        applying any ScalingKind overrides and the X-cost hit multiplier."""
+        base_amount = eff.amount
+        hit_count = eff.hit_count
+        # X-cost attacks (Whirlwind) multi-hit == energy spent.
+        if self._x_value:
+            hit_count = self._x_value
+        target0 = targets[0] if targets else None
+        for sc in eff.scaling:
+            k = sc.kind.value
+            if k == "block_amount":
+                base_amount = self.player.block
+            elif k == "strike_tag_count":
+                strikes = sum(
+                    1 for c in self.draw_pile + self.discard_pile + self.hand
+                    if "strike" in c.id)
+                base_amount += sc.amount * strikes
+            elif k == "strength_multiplier":
+                st = self.player.get_power("strength")
+                if st is not None:
+                    # +mult × Strength extra (the additive Strength applies once
+                    # via the normal pipeline; here we add the EXTRA copies).
+                    base_amount += st.amount * sc.amount
+            elif k == "exhaust_pile_count":
+                base_amount += sc.amount * len(self.exhaust_pile)
+            elif k == "target_vulnerable_count":
+                if target0 is not None:
+                    v = target0.get_power("vulnerable")
+                    base_amount += sc.amount * (v.amount if v else 0)
+            elif k == "attacks_played_count":
+                base_amount += sc.amount * self._attacks_played_this_turn
+            elif k == "hp_lost_hits":
+                if self._hp_lost_this_turn:
+                    hit_count += 1
+        return base_amount, max(0, hit_count)
 
     def _resolve_single_effect(self, card: CardDef, eff) -> None:  # noqa: PLR0912
         # Multi-monster targeting: SELECTED_ENEMY uses target_index (clamped
@@ -191,17 +256,8 @@ class CombatState:
             targets = []
 
         if eff.op is EffectOp.DEAL_DAMAGE:
-            # Damage scaling: block-amount or strike-tag-count override base amount.
-            base_amount = eff.amount
-            for sc in eff.scaling:
-                if sc.kind.value == "block_amount":
-                    base_amount = self.player.block
-                    break
-                if sc.kind.value == "strike_tag_count":
-                    base_amount += sum(1 for c in self.draw_pile + self.discard_pile + self.hand
-                                       if "strike" in c.id)
-                    break
-            for _ in range(max(1, eff.hit_count)):
+            base_amount, hit_count = self._resolve_damage_scaling(eff, targets)
+            for _ in range(max(0, hit_count)):
                 for t in targets:
                     if t.alive:
                         deal_damage(base_amount, self.player, t)
@@ -219,7 +275,15 @@ class CombatState:
         if eff.op is EffectOp.APPLY_POWER:
             assert eff.power_id is not None
             for t in targets:
-                t.add_or_stack_power(make_power(eff.power_id, eff.amount, t))
+                amt = eff.amount
+                # MoltenFist: add Vulnerable equal to the target's CURRENT stacks
+                # (doubling it). Scaling reads the target's existing power.
+                for sc in eff.scaling:
+                    if sc.kind.value == "target_vulnerable_count":
+                        v = t.get_power("vulnerable")
+                        amt += sc.amount * (v.amount if v else 0)
+                if amt != 0:
+                    t.add_or_stack_power(make_power(eff.power_id, amt, t))
             return
         if eff.op is EffectOp.DRAW_CARD:
             self.draw(eff.amount)
@@ -256,12 +320,128 @@ class CombatState:
                     self.hand[i] = upgrade_card(c)
             return
         if eff.op is EffectOp.AUTO_PLAY_FROM_DRAW:
-            # Havoc: play the top of draw pile, then exhaust it.
-            if self.draw_pile:
+            # Havoc/Cascade: play the top of draw pile, then exhaust it. Cascade
+            # is X-cost, so it repeats once per energy spent (self._x_value).
+            repeat = self._x_value if self._x_value else 1
+            for _ in range(max(1, repeat)):
+                if not self.draw_pile:
+                    break
                 c = self.draw_pile.pop()
-                # Resolve its effects against the current target context.
                 self._resolve_effects(c)
                 self._exhaust_card(c)
+            return
+        if eff.op is EffectOp.HEAL:
+            self.player.heal(eff.amount)
+            return
+        if eff.op is EffectOp.GAIN_MAX_HP_ON_KILL:
+            # Feed: deal damage to the selected enemy; if it kills, gain max HP.
+            base_amount, _ = self._resolve_damage_scaling(eff, targets)
+            for t in targets:
+                if t.alive:
+                    was_alive = t.alive
+                    deal_damage(base_amount, self.player, t)
+                    if was_alive and not t.alive:
+                        self.player.gain_max_hp(eff.amount)
+            return
+        if eff.op is EffectOp.LIFESTEAL_AOE:
+            # Reaper: AoE attack; heal the player by total UNBLOCKED damage dealt.
+            base_amount, _ = self._resolve_damage_scaling(eff, targets)
+            total_unblocked = 0
+            for t in list(self.alive_monsters()):
+                if t.alive:
+                    _, hp_loss = deal_damage(base_amount, self.player, t)
+                    total_unblocked += hp_loss
+            self.player.heal(total_unblocked)
+            return
+        if eff.op is EffectOp.DOUBLE_STRENGTH:
+            # Limit Break: double the player's current Strength.
+            st = self.player.get_power("strength")
+            if st is not None and st.amount != 0:
+                self.player.add_or_stack_power(
+                    make_power("strength", st.amount, self.player))
+            return
+        if eff.op is EffectOp.EXHAUST_HAND_SCALED:
+            # Fiend Fire: exhaust the whole hand, then deal `amount` damage to
+            # the selected enemy once per card exhausted.
+            cards = list(self.hand)
+            self.hand.clear()
+            n = len(cards)
+            for c in cards:
+                self._exhaust_card(c)
+            for t in targets:
+                for _ in range(n):
+                    if t.alive:
+                        deal_damage(eff.amount, self.player, t)
+            return
+        if eff.op is EffectOp.EXHAUST_NONATTACKS_BLOCK:
+            # Second Wind: exhaust all non-attack cards in hand; gain `amount`
+            # block per card exhausted.
+            from .dsl import CardType
+            non_attacks = [c for c in self.hand if c.type is not CardType.ATTACK]
+            for c in non_attacks:
+                self.hand.remove(c)
+                self._exhaust_card(c)
+                gain_block(self.player, eff.amount)
+            return
+        if eff.op is EffectOp.EXHAUST_HAND_GENERATE:
+            # Stoke: exhaust the whole hand, add `card_id` (per exhausted) to hand.
+            cards = list(self.hand)
+            self.hand.clear()
+            n = len(cards)
+            for c in cards:
+                self._exhaust_card(c)
+            from .card_catalog import CARDS
+            gen = CARDS.get(eff.card_id) if eff.card_id else None
+            for _ in range(n):
+                if gen is not None:
+                    self.hand.append(gen)
+            return
+        if eff.op is EffectOp.ADD_CARD:
+            from .card_catalog import CARDS
+            gen = CARDS.get(eff.card_id) if eff.card_id else None
+            if gen is not None:
+                pile = (self.hand if eff.pile == "hand"
+                        else self.discard_pile if eff.pile == "discard"
+                        else self.draw_pile)
+                for _ in range(max(1, eff.amount)):
+                    pile.append(gen)
+            return
+        if eff.op is EffectOp.ADD_RANDOM_ATTACK:
+            # Infernal Blade: add a random Attack card (free this turn) to hand.
+            from .card_catalog import CARDS, RARITY_OF, CardRarity
+            from .dsl import CardType
+            from dataclasses import replace as _replace
+            attack_ids = [cid for cid, r in RARITY_OF.items()
+                          if CARDS[cid].type is CardType.ATTACK
+                          and r is not CardRarity.ANCIENT]
+            if attack_ids:
+                cid = self.rng.choice(attack_ids)
+                # Free this turn -> cost 0 copy.
+                self.hand.append(_replace(CARDS[cid], cost=0))
+            return
+        if eff.op is EffectOp.MOVE_DISCARD_TO_DRAW_TOP:
+            # Headbutt: move a card from discard to the top of the draw pile.
+            # Heuristic (no UI selection in sim): pick the highest-cost card.
+            if self.discard_pile:
+                idx = max(range(len(self.discard_pile)),
+                          key=lambda i: self.discard_pile[i].cost
+                          if self.discard_pile[i].cost is not None
+                          and self.discard_pile[i].cost >= 0 else 0)
+                self.draw_pile.append(self.discard_pile.pop(idx))
+            return
+        if eff.op is EffectOp.DRAW_UNTIL_NONATTACK:
+            # Pillage: draw cards while the drawn card is an Attack (cap 10 hand).
+            from .dsl import CardType
+            while len(self.hand) < 10:
+                before = len(self.hand)
+                self.draw(1)
+                if len(self.hand) == before:
+                    break  # no card drawn (empty piles or NoDraw)
+                if self.hand[-1].type is not CardType.ATTACK:
+                    break
+            return
+        if eff.op is EffectOp.NO_DRAW:
+            self.player.add_or_stack_power(make_power("no_draw", 1, self.player))
             return
 
     # Duration debuffs that decay by 1 at the END of the bearer's OWN turn.
@@ -271,7 +451,7 @@ class CombatState:
     # creature's duration debuffs at the end of that creature's own turn:
     #   - Player's Weak/Frail decay at end of the player's turn.
     #   - Monster's Weak/Vulnerable decay at end of that monster's turn.
-    _DURATION_DEBUFFS: tuple[str, ...] = ("weak", "vulnerable", "frail")
+    _DURATION_DEBUFFS: tuple[str, ...] = ("weak", "vulnerable", "frail", "no_draw")
 
     def end_player_turn(self) -> None:
         self.is_player_turn = False
@@ -300,7 +480,10 @@ class CombatState:
             # Turn-start triggers for the monster (so monster engine powers,
             # if ever used, fire consistently with the player).
             self._fire_power_hook(m, "on_turn_start", self, m)
+            hp_before = self.player.hp
             events.append(m.take_turn(self.rng, self.player))
+            if self.player.hp < hp_before:
+                self._hp_lost_this_turn = True
             # Turn-end triggers for the monster (Metallicize-likes).
             self._fire_power_hook(m, "on_turn_end", self, m)
             # End-of-owner-turn effects for the monster: Plating block-gain,
