@@ -13,11 +13,20 @@ from dataclasses import dataclass, field
 from .monsters import (
     CeremonialBeast,
     Doormaker,
+    Entomancer,
+    FrogKnight,
+    GlobeHead,
+    InfestedPrism,
     LagavulinMatriarch,
+    MechaKnight,
     Monster,
     NibbitWeak,
+    Queen,
     SludgeSpinnerWeak,
     SoulFysh,
+    SoulNexus,
+    SpinyToad,
+    TestSubject,
     TheInsatiable,
     Vantom,
     WaterfallGiant,
@@ -235,8 +244,24 @@ _FACTORY_BY_ID = {
     "LagavulinMatriarchBoss": LagavulinMatriarch.spawn,
     # Act 2 boss (solo).
     "TheInsatiableBoss": TheInsatiable.spawn,
-    # Act 3 boss (solo).
+    # Act 3 bosses (solo). All three Glory bosses are now real so the A10
+    # second-boss (Doormaker + one of Queen/TestSubject) is never a fallback.
     "DoormakerBoss": Doormaker.spawn,
+    "TestSubjectBoss": TestSubject.spawn,
+    "QueenBoss": Queen.spawn,
+    # Act 2 (Hive) elites (solo). DecimillipedeElite is multi-segment and
+    # still falls back; Entomancer + InfestedPrisms are the modeled ones.
+    "EntomancerElite": Entomancer.spawn,
+    "InfestedPrismsElite": InfestedPrism.spawn,
+    # Act 3 (Glory) elites (solo). KnightsElite is a 3-knight squad and still
+    # falls back; MechaKnight + SoulNexus are the modeled ones.
+    "MechaKnightElite": MechaKnight.spawn,
+    "SoulNexusElite": SoulNexus.spawn,
+    # Act 2 (Hive) common normals (solo).
+    "SpinyToadNormal": SpinyToad.spawn,
+    # Act 3 (Glory) common normals (solo).
+    "GlobeHeadNormal": GlobeHead.spawn,
+    "FrogKnightNormal": FrogKnight.spawn,
 }
 
 # Multi-monster encounters return a list[Monster]. Used by Cycle F's

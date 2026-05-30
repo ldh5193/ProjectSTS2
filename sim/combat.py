@@ -155,6 +155,12 @@ class CombatState:
         if not (0 <= card_index < len(self.hand)):
             return False
         card = self.hand[card_index]
+        # Unplayable cards: status cards (Wound/Burn/FranticEscape, cost < 0
+        # and not an X-cost card) can never be played. X_COST == -1 is the only
+        # legal negative cost.
+        from .dsl import X_COST
+        if card.cost < 0 and card.cost != X_COST:
+            return False
         return self.player.energy >= self.effective_cost(card)
 
     # Energy spent on the X-cost card currently resolving (Whirlwind hit count,
@@ -484,6 +490,10 @@ class CombatState:
             events.append(m.take_turn(self.rng, self.player))
             if self.player.hp < hp_before:
                 self._hp_lost_this_turn = True
+            # Drain any status cards the monster queued this turn (Insatiable
+            # FranticEscape, Vantom/MechaKnight/TestSubject Burn/Wound, ...)
+            # into the player's piles. See monsters._queue_status.
+            self._drain_status_cards(m)
             # Turn-end triggers for the monster (Metallicize-likes).
             self._fire_power_hook(m, "on_turn_end", self, m)
             # End-of-owner-turn effects for the monster: Plating block-gain,
@@ -496,6 +506,28 @@ class CombatState:
         if alive and self.target_index >= len(alive):
             self.target_index = 0
         return events
+
+    def _drain_status_cards(self, monster) -> None:
+        """Insert status cards a monster queued during its turn into the
+        player's piles. The monster accumulates (CardDef, pile) tuples on its
+        `pending_status_cards` attribute (monsters._queue_status). Piles:
+        "draw" / "discard" / "hand". Cards are inserted at random positions in
+        draw to mirror the real shuffle-in behavior."""
+        pending = getattr(monster, "pending_status_cards", None)
+        if not pending:
+            return
+        for card, pile in pending:
+            if pile == "hand":
+                self.hand.append(card)
+            elif pile == "discard":
+                self.discard_pile.append(card)
+            else:  # "draw" — shuffle into a random position
+                if self.draw_pile:
+                    idx = self.rng.randint(0, len(self.draw_pile))
+                    self.draw_pile.insert(idx, card)
+                else:
+                    self.draw_pile.append(card)
+        pending.clear()
 
     @classmethod
     def _end_of_turn_effects(cls, creature) -> None:
