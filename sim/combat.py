@@ -37,6 +37,10 @@ class CombatState:
     is_player_turn: bool = True
     monsters: list[Monster] = field(default_factory=list)
     target_index: int = 0  # which monster Target.SELECTED_ENEMY hits
+    # Back-reference to the owning RunState — set by run_engine._start_combat
+    # so per-attack relic hooks (Kunai/Shuriken/Pen Nib) can read rs.relics.
+    # None in standalone combat tests (hooks are then skipped harmlessly).
+    run_state: object = None
 
     def _sync_monsters(self) -> None:
         """Ensure `self.monsters` includes `self.monster` for legacy code."""
@@ -148,8 +152,14 @@ class CombatState:
         card = self.hand.pop(card_index)
         self.player.energy -= self.effective_cost(card)
         self._resolve_effects(card)
-        # Corruption: skills are exhausted on play instead of discarded.
+        # Per-attack relic hooks (Kunai/Shuriken/Pen Nib) fire after an
+        # ATTACK card resolves. Only when a RunState is attached (real runs;
+        # standalone combat tests leave run_state=None).
         from .dsl import CardType
+        if card.type is CardType.ATTACK and self.run_state is not None:
+            from .relics import trigger_on_attack_played
+            trigger_on_attack_played(self.run_state, self, card)
+        # Corruption: skills are exhausted on play instead of discarded.
         if (card.type is CardType.SKILL
                 and any(p.id == "corruption" for p in self.player.powers)):
             self._exhaust_card(card)

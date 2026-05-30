@@ -15,6 +15,7 @@ from sim.events import (
     EVENT_REGISTRY, apply_option, pick_event,
 )
 from sim.game_state import Ascension, Character, RunState, StateType
+from sim.relics import RELIC_REGISTRY
 
 
 def _new_rs(act: int = 1, floor: int = 1, gold: int = 200, hp: int = 60,
@@ -84,9 +85,13 @@ def test_grave_confront_adds_curse_and_upgrades():
 
 def test_grave_accept_grants_relic():
     rs = _new_rs()
+    pre = len(rs.relics)
     ok = apply_option(rs, "grave_of_the_forgotten", 1)  # accept
     assert ok
-    assert rs.has_relic("FORGOTTEN_SOUL")
+    # Phase 7D: inert FORGOTTEN_SOUL placeholder replaced with a real
+    # pooled relic. Verify a registry-backed relic was actually granted.
+    assert len(rs.relics) == pre + 1
+    assert all(r.id in RELIC_REGISTRY for r in rs.relics)
 
 
 def test_trash_heap_dive_in_loses_hp_grants_relic():
@@ -182,10 +187,13 @@ def test_wongos_act_2_only():
 
 def test_wongos_bargain_costs_gold():
     rs = _new_rs(act=2, gold=200)
+    pre = len(rs.relics)
     ok = apply_option(rs, "welcome_to_wongos", 0)  # bargain_bin
     assert ok
     assert rs.gold == 100
-    assert rs.has_relic("WONGO_COMMON_RELIC")
+    # Phase 7D: inert WONGO_COMMON_RELIC replaced with a real pooled relic.
+    assert len(rs.relics) == pre + 1
+    assert all(r.id in RELIC_REGISTRY for r in rs.relics)
 
 
 def test_wongos_locked_options_disabled():
@@ -199,10 +207,13 @@ def test_wongos_locked_options_disabled():
 
 def test_punch_off_fight_loses_hp():
     rs = _new_rs(hp=50)
+    pre = len(rs.relics)
     ok = apply_option(rs, "punch_off", 0)  # fight
     assert ok
     assert rs.hp == 35  # -15
-    assert rs.has_relic("PUNCH_OFF_RELIC")
+    # Phase 7D: inert PUNCH_OFF_RELIC replaced with a real pooled relic.
+    assert len(rs.relics) == pre + 1
+    assert all(r.id in RELIC_REGISTRY for r in rs.relics)
 
 
 def test_punch_off_skip_no_op():

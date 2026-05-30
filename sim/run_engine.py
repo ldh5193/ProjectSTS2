@@ -97,6 +97,14 @@ def _encounter_rng(rs: RunState):
     return Rng(rs.run_seed, f"act_{rs.act or 1}_encounters")
 
 
+def _relic_rng(rs: RunState):
+    """Per-(act,floor) isolated Rng for relic reward sampling. Keyed on
+    floor so successive grants (treasure then a later elite) don't collide,
+    while staying deterministic on the run seed."""
+    from .rng import Rng
+    return Rng(rs.run_seed, f"relic_{rs.act}_{rs.floor}")
+
+
 def _act_index(act_key: str) -> int:
     return _ACT_ORDER.index(act_key) + 1
 
@@ -233,11 +241,13 @@ def _enter_room(rs: RunState, node: MapNode) -> None:
         ]
         return
     elif rt is StateType.TREASURE:
-        # Stub: auto-grant a placeholder treasure relic, return to MAP.
-        from .game_state import RelicInstance
+        # Treasure auto-grants one real relic from the reward pool (replaces
+        # the old inert "UNKNOWN_TREASURE_RELIC" placeholder). Deterministic
+        # via the run RNG, de-duped against owned relics.
         rs.state_type = StateType.TREASURE
         trigger_after_room_entered(rs, rs.state_type)
-        rs.relics.append(RelicInstance(id="UNKNOWN_TREASURE_RELIC"))
+        from .relics import grant_relic_reward
+        grant_relic_reward(rs, _relic_rng(rs), boss=False)
         rs.state_type = StateType.MAP
         return
     elif rt is StateType.SHOP:
@@ -305,6 +315,12 @@ def _start_combat(rs: RunState, encounter_id: str) -> None:
     _r.Random(rs.run_seed).shuffle(cs.draw_pile)
     cs.hand = []
     cs.discard_pile = []
+    cs.run_state = rs  # enable per-attack relic hooks (Kunai/Shuriken/Pen Nib)
+    # Reset per-attack scaling-relic counters at the start of each combat
+    # (decompiled Kunai/Shuriken reset on combat end; equivalent here).
+    for r in rs.relics:
+        if r.id in ("KUNAI", "SHURIKEN", "PEN_NIB"):
+            r.counter = 0
     cs.start_player_turn()
     rs.combat = cs
     # Fire on-combat-start relic hooks now that cs.player/cs.monster are wired up.
@@ -422,6 +438,16 @@ def _step_combat(rs: RunState, body: dict, res: StepResult) -> StepResult:
             if int(rs.ascension) >= 3:  # Poverty
                 _gold = int(_gold * 0.75)
             rs.gain_gold(_gold)
+        # Relic rewards (auto-added to rs.relics — no selection UI). Real
+        # STS: elites ALWAYS drop a relic; bosses drop a boss-pool relic.
+        # Grants apply from the NEXT combat (on_combat_start fires then).
+        # Deterministic via the per-floor relic RNG; de-duped in
+        # grant_relic_reward.
+        from .relics import grant_relic_reward
+        if rs.state_type is StateType.ELITE:
+            grant_relic_reward(rs, _relic_rng(rs), boss=False)
+        elif rs.state_type is StateType.BOSS:
+            grant_relic_reward(rs, _relic_rng(rs), boss=True)
         # Open reward.
         room_for_source = {
             StateType.MONSTER: "regular",
@@ -539,8 +565,8 @@ def _step_treasure(rs: RunState, body: dict, res: StepResult) -> StepResult:
     action = body.get("action")
     if action in ("select_relic", "skip_relic_selection", "proceed"):
         if action == "select_relic":
-            from .game_state import RelicInstance
-            rs.relics.append(RelicInstance(id="UNKNOWN_TREASURE_RELIC"))
+            from .relics import grant_relic_reward
+            grant_relic_reward(rs, _relic_rng(rs), boss=False)
         rs.state_type = StateType.MAP
         return res
     res.invalid_action = True

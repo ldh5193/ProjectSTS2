@@ -166,6 +166,21 @@ def _add_curse(rs: RunState, curse_id: str) -> None:
     ))
 
 
+def _grant_event_relic(rs: RunState, *, boss: bool = False) -> None:
+    """Grant one REAL (registry) relic from the reward pool for an event
+    outcome. Replaces the old inert placeholder ids (WONGO_*/PUNCH_OFF_/
+    FORGOTTEN_SOUL) so "gain a relic" is never a no-op. Deterministic on
+    the run seed + current relic count (so successive event grants differ).
+    """
+    from .relics import sample_relic_from_pool
+    from .rng import Rng
+    rng = Rng(rs.run_seed, f"event_relic_{rs.act}_{rs.floor}_{len(rs.relics)}")
+    owned = {r.id for r in rs.relics}
+    rid = sample_relic_from_pool(rng, owned, boss=boss)
+    if rid is not None:
+        rs.add_relic(rid)
+
+
 def _add_colorless_reward(rs: RunState, count: int = 1) -> None:
     """Brain Leech's `Rip` gives a colorless card reward.
 
@@ -225,7 +240,10 @@ def _grave_options(rs: RunState) -> list[EventOption]:
         # roughly EV-aligned for L1.
         _upgrade_first_card(rs)
     def accept(rs: RunState) -> None:
-        rs.add_relic("FORGOTTEN_SOUL")
+        # decompiled GraveOfTheForgotten.Accept grants a relic. The sim's
+        # ForgottenSoul model isn't registry-backed, so resolve to a real
+        # pooled relic instead of an inert placeholder.
+        _grant_event_relic(rs)
     return [
         EventOption("confront", "Confront", confront, tag="CURSE_UPGRADE"),
         EventOption("accept", "Accept", accept, tag="RELIC_GAIN"),
@@ -312,13 +330,13 @@ def _wood_carvings_options(rs: RunState) -> list[EventOption]:
 def _wongos_options(rs: RunState) -> list[EventOption]:
     def buy_bargain(rs: RunState) -> None:
         rs.gain_gold(-100)
-        rs.add_relic("WONGO_COMMON_RELIC")
+        _grant_event_relic(rs)  # was inert WONGO_COMMON_RELIC
     def buy_featured(rs: RunState) -> None:
         rs.gain_gold(-200)
-        rs.add_relic("WONGO_RARE_RELIC")
+        _grant_event_relic(rs)  # was inert WONGO_RARE_RELIC
     def buy_mystery(rs: RunState) -> None:
         rs.gain_gold(-300)
-        rs.add_relic("WONGOS_MYSTERY_TICKET")
+        _grant_event_relic(rs, boss=True)  # was inert WONGOS_MYSTERY_TICKET
     def leave(rs: RunState) -> None:
         # Downgrade 1 upgraded card if any (decompiled WelcomeToWongos.Leave).
         from dataclasses import replace
@@ -371,7 +389,7 @@ def _neow_options(rs: RunState) -> list[EventOption]:
 def _punch_off_options(rs: RunState) -> list[EventOption]:
     def fight(rs: RunState) -> None:
         rs.lose_hp(15)  # L1 placeholder for the combat HP cost
-        rs.add_relic("PUNCH_OFF_RELIC")
+        _grant_event_relic(rs)  # was inert PUNCH_OFF_RELIC
     def skip(rs: RunState) -> None:
         pass
     return [
