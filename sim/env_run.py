@@ -116,6 +116,15 @@ class RewardConfig:
 
 REWARD_PRESETS: dict[str, RewardConfig] = {
     "default": RewardConfig(),
+    # Win-focused (2026-05-30): optimize the actual goal — full-run victory —
+    # rather than partial score/floor. Victory + per-boss + per-act milestones
+    # dominate; only light survival/damage shaping for learnability. Pair with
+    # --best-metric win_rate so the saved champion is the highest-win policy.
+    "victory": RewardConfig(
+        combat_win=0.25, elite_kill=1.0, boss_kill=8.0, act_completion=4.0,
+        run_victory=30.0, floor_advance=0.005, living_cost=-0.0005, death=-2.0,
+        hp_delta_weight=0.01, damage_dealt_weight=0.003,
+    ),
     "aggressive": RewardConfig(
         combat_win=0.20, elite_kill=0.50, boss_kill=2.5, run_victory=10.0,
         floor_advance=0.02, living_cost=-0.002, death=-2.0,
