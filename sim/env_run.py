@@ -42,7 +42,7 @@ from .run_engine import (
 )
 
 
-OBS_DIM = 384  # v4.3 (Phase 3, 2026-05-27). v3 was 256, v4 phase 2 was 320.
+OBS_DIM = 504  # v4.4 (Phase 7F+G, 2026-05). +118 per-item shop block (rounded to 504); was 384.
 OBS_DIM_V3 = 256  # legacy export for the v3-layout-only tests
 
 # Per-act boss floor. rs.floor is PER-ACT (game's ActFloor semantics,
@@ -958,6 +958,94 @@ class RunEnv(gym.Env):
             except Exception:
                 pass
         cursor += 5
+
+        # ===== Phase 7F+G: per-item shop block (118 dims) =====
+        # The 5-dim summary above only tells the policy HOW MANY affordable
+        # items exist, not WHAT they are — so a learned shop bought near
+        # blindly and didn't lift win rate. This block exposes per-item
+        # detail so the agent can decide WHICH item to buy.
+        #
+        # Items in rs.pending_shop["items"] are emitted by _stock_shop in a
+        # fixed order: 7 cards (5 colored + 2 colorless), 3 relics, 2
+        # potions, 1 card_removal. We bucket by each item's `category` and
+        # fill that category's slot list in encounter order, so slot S of a
+        # block always holds the S-th item of that category. The card_removal
+        # slot is already covered by the 4-dim "Shop info" block above and is
+        # ignored here.
+        #
+        # Layout (cursor starts at 384):
+        #   Shop CARD slots:   6 × 15 dims = 90   -> [384, 474)
+        #       per slot: card_features(card_id) [12] + price/200 [1]
+        #                 + can_afford [1] + is_stocked [1]
+        #   Shop RELIC slots:  4 × 6 dims  = 24   -> [474, 498)
+        #       per slot: is_energy_category [1], is_scaling-ish [1],
+        #                 rarity 0..1 [1], price/300 [1], can_afford [1],
+        #                 is_stocked [1]
+        #   Shop POTION slots: 2 × 2 dims  = 4    -> [498, 502)
+        #       per slot: present [1], can_afford [1]
+        #   Pad:               2 dims      = 2    -> [502, 504)  (round to 504)
+        # Zero on every non-shop state so it never perturbs combat/map obs.
+        _SHOP_CARD_SLOTS = 6
+        _SHOP_RELIC_SLOTS = 4
+        _SHOP_POTION_SLOTS = 2
+        _SHOP_CARD_DIM = CARD_FEATURE_DIM + 3  # 15
+        _SHOP_RELIC_DIM = 6
+        _SHOP_POTION_DIM = 2
+        # Relic categories treated as "scaling-ish" persistent power.
+        _SCALING_RELIC_CATS = {"strength", "thorns", "block_start", "dexterity"}
+        _RELIC_RARITY_RANK = {
+            "starter": 0.0, "common": 0.2, "uncommon": 0.4,
+            "rare": 0.6, "event": 0.7, "shop": 0.8, "boss": 1.0,
+        }
+        card_base = cursor
+        relic_base = card_base + _SHOP_CARD_SLOTS * _SHOP_CARD_DIM
+        potion_base = relic_base + _SHOP_RELIC_SLOTS * _SHOP_RELIC_DIM
+        if rs.state_type is StateType.SHOP and rs.pending_shop:
+            try:
+                from .relics import RELIC_REGISTRY
+                items = rs.pending_shop.get("items", [])
+                card_slot = 0
+                relic_slot = 0
+                potion_slot = 0
+                for it in items:
+                    cat = it.get("category")
+                    if cat == "card" and card_slot < _SHOP_CARD_SLOTS:
+                        base = card_base + card_slot * _SHOP_CARD_DIM
+                        feats = card_features(it.get("card_id"))
+                        for j in range(CARD_FEATURE_DIM):
+                            v[base + j] = feats[j]
+                        v[base + CARD_FEATURE_DIM + 0] = min(1.0, it.get("price", 0) / 200.0)
+                        v[base + CARD_FEATURE_DIM + 1] = 1.0 if it.get("can_afford") else 0.0
+                        v[base + CARD_FEATURE_DIM + 2] = 1.0 if it.get("is_stocked") else 0.0
+                        card_slot += 1
+                    elif cat == "relic" and relic_slot < _SHOP_RELIC_SLOTS:
+                        base = relic_base + relic_slot * _SHOP_RELIC_DIM
+                        rd = RELIC_REGISTRY.get(it.get("relic_id"))
+                        rcat = rd.category if rd is not None else "misc"
+                        rrar = rd.rarity if rd is not None else "common"
+                        v[base + 0] = 1.0 if rcat == "energy" else 0.0
+                        v[base + 1] = 1.0 if rcat in _SCALING_RELIC_CATS else 0.0
+                        v[base + 2] = _RELIC_RARITY_RANK.get(rrar, 0.2)
+                        v[base + 3] = min(1.0, it.get("price", 0) / 300.0)
+                        v[base + 4] = 1.0 if it.get("can_afford") else 0.0
+                        v[base + 5] = 1.0 if it.get("is_stocked") else 0.0
+                        relic_slot += 1
+                    elif cat == "potion" and potion_slot < _SHOP_POTION_SLOTS:
+                        base = potion_base + potion_slot * _SHOP_POTION_DIM
+                        v[base + 0] = 1.0 if it.get("is_stocked") else 0.0
+                        v[base + 1] = 1.0 if it.get("can_afford") else 0.0
+                        potion_slot += 1
+            except Exception:
+                pass
+        cursor += (_SHOP_CARD_SLOTS * _SHOP_CARD_DIM
+                   + _SHOP_RELIC_SLOTS * _SHOP_RELIC_DIM
+                   + _SHOP_POTION_SLOTS * _SHOP_POTION_DIM)
+        # The pre-block cursor was 381 (the 5-dim summary ended at 381;
+        # OBS_DIM=384 carried 3 unused slack dims). 381 + 118 = 499, so pad
+        # 5 dims to round to a clean OBS_DIM = 504.
+        cursor += 5  # pad to a clean OBS_DIM (504)
+
+        assert cursor == OBS_DIM, f"obs cursor {cursor} != OBS_DIM {OBS_DIM}"
 
         v.clip(0.0, 1.0, out=v)
         return v

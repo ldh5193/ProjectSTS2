@@ -246,7 +246,7 @@ def test_potion_purchase_fails_when_belt_full():
 
 def test_obs_dim_unchanged():
     from sim.env_run import OBS_DIM, RunEnv
-    assert OBS_DIM == 384
+    assert OBS_DIM == 504
     env = RunEnv(ascension=0)
     obs, _ = env.reset(seed=3)
-    assert obs.shape == (384,)
+    assert obs.shape == (504,)
