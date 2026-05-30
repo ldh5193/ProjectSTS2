@@ -889,6 +889,25 @@ class RunEnv(gym.Env):
         # the off-by-one risk than crash live inference. The unit tests
         # verify the cursor budget.
 
+        # Deck functional profile (14): aggregate card_features over rs.deck.
+        # Gives the policy a functional summary of what the whole deck DOES
+        # (block vs damage vs draw etc.), not just rarity counts. Occupies
+        # previously-zero reserved tail, so old 384-input models still load.
+        #   - 12 dims: element-wise MEAN of the 12-d card_features over deck.
+        #   - 2 dims: normalized deck TOTALS for damage and block (abs power).
+        deck_n = len(rs.deck)
+        if deck_n > 0:
+            feat_sum = np.zeros(CARD_FEATURE_DIM, dtype=np.float32)
+            for c in rs.deck:
+                feat_sum += np.asarray(card_features(c.id), dtype=np.float32)
+            feat_mean = feat_sum / deck_n
+            for k in range(CARD_FEATURE_DIM):
+                v[cursor + k] = feat_mean[k]
+            # feature index 4 = damage_total, 5 = block_total (see card_catalog)
+            v[cursor + CARD_FEATURE_DIM + 0] = min(1.0, feat_sum[4] / 200.0)
+            v[cursor + CARD_FEATURE_DIM + 1] = min(1.0, feat_sum[5] / 150.0)
+        cursor += CARD_FEATURE_DIM + 2
+
         v.clip(0.0, 1.0, out=v)
         return v
 
