@@ -239,11 +239,11 @@ class CombatState:
             self.discard_pile.append(card)
             return
         if eff.op is EffectOp.UPGRADE_ALL_IN_HAND:
-            # Placeholder: tag id with '+' (Cycle B leaves real per-card upgrades for later).
-            from dataclasses import replace
+            # Armaments: REAL upgrade of every (not-yet-upgraded) card in hand.
+            from .cards import upgrade_card
             for i, c in enumerate(self.hand):
                 if not c.id.endswith("+"):
-                    self.hand[i] = replace(c, id=c.id + "+", name=c.name + "+")
+                    self.hand[i] = upgrade_card(c)
             return
         if eff.op is EffectOp.AUTO_PLAY_FROM_DRAW:
             # Havoc: play the top of draw pile, then exhaust it.

@@ -412,3 +412,154 @@ def build_starting_deck() -> list[CardDef]:
     for c in IRONCLAD_STARTING_DECK:
         deck.extend([c] * c.count)
     return deck
+
+
+# ===========================================================================
+# Card upgrade system (Phase 7B) — real stat changes per decompiled Upgrade().
+# ===========================================================================
+#
+# Ground truth: decompiled/MegaCrit.Sts2.Core.Models.Cards/<Card>.cs OnUpgrade().
+# Each upgrade is expressed as a tuple of mutation primitives applied to the
+# base CardDef's effects/cost. The result is tagged id+"+" / name+"+" so
+# card_features() and the "+"-stripping rarity lookup keep working.
+#
+# Mutation primitives (all operate on a fresh copy of the effects list):
+#   ("dmg", n)            -> +n to every DEAL_DAMAGE effect's amount (per hit)
+#   ("block", n)          -> +n to every GAIN_BLOCK effect's amount
+#   ("power", pid, n)     -> +n to APPLY_POWER effects whose power_id == pid
+#   ("any_power", n)      -> +n to every APPLY_POWER effect's amount
+#   ("draw", n)           -> +n to every DRAW_CARD effect's amount
+#   ("cost", n)           -> add n to cost (n negative reduces cost; floored 0)
+#
+# Decompiled-verified per-card deltas (base -> upgraded shown for clarity):
+#   strike_ironclad : dmg+3   (6 -> 9)
+#   defend_ironclad : block+3 (5 -> 8)
+#   bash            : dmg+2, vulnerable+1   (8/2 -> 10/3)
+#   iron_wave       : dmg+2, block+2        (5/5 -> 7/7)
+#   inflame         : strength+1            (2 -> 3)
+#   pommel_strike   : dmg+1, draw+1         (9/draw1 -> 10/draw2)
+#   shrug_it_off    : block+3               (8 -> 11)
+#   thunderclap     : dmg+3                 (4 -> 7)
+#   tremble         : vulnerable+1          (3 -> 4)
+#   twin_strike     : dmg+2 per hit         (5x2 -> 7x2)
+#   bloodletting    : energy+1 (energy_gain amount)  (2 -> 3)
+#   anger           : dmg+2                 (6 -> 8)
+#   cinder          : dmg+6                 (18 -> 24)
+#   bludgeon        : dmg+10                (32 -> 42)
+#   uppercut        : weak+1, vulnerable+1  (1/1 -> 2/2)
+#   taunt           : block+1, vulnerable+1 (7/1 -> 8/2)
+#   stone_armor     : plating+2             (4 -> 6)
+#   rage            : strength+2            (3 -> 5)
+#   battle_trance   : draw+1                (3 -> 4)
+#   headbutt        : dmg+3                 (9 -> 12)
+#   dismantle       : dmg+2 per hit         (8x2 -> 10x2)
+#   perfected_strike: base dmg+1 (ExtraDamage per-Strike not modeled; +1 to base)
+#   demon_form      : strength/turn +1      (2 -> 3)
+#   metallicize     : block/turn +1 (STS1 3 -> 4)
+#   feel_no_pain    : amount+1              (3 -> 4)
+#   dark_embrace    : cost-1                (2 -> 1)
+#   juggernaut      : amount+2              (5 -> 7)
+#   rupture         : amount+1              (1 -> 2)
+#   combust         : amount+2 (STS1 5 -> 7)
+#   barricade       : cost-1                (3 -> 2)
+#   berserk         : amount unchanged; cost-0 already (STS1 reduces self-vuln) -> no stat delta
+#   brutality       : amount unchanged (STS1 upgrade = innate) -> no stat delta
+#   corruption      : cost-1                (3 -> 2)
+
+_UPGRADE_DELTAS: dict[str, tuple[tuple, ...]] = {
+    "strike_ironclad": (("dmg", 3),),
+    "defend_ironclad": (("block", 3),),
+    "bash": (("dmg", 2), ("power", "vulnerable", 1)),
+    "iron_wave": (("dmg", 2), ("block", 2)),
+    "inflame": (("power", "strength", 1),),
+    "pommel_strike": (("dmg", 1), ("draw", 1)),
+    "shrug_it_off": (("block", 3),),
+    "thunderclap": (("dmg", 3),),
+    "tremble": (("power", "vulnerable", 1),),
+    "twin_strike": (("dmg", 2),),
+    "bloodletting": (("energy", 1),),
+    "anger": (("dmg", 2),),
+    "cinder": (("dmg", 6),),
+    "bludgeon": (("dmg", 10),),
+    "clothesline": (("dmg", 2), ("power", "weak", 1)),  # TODO: no STS2 model
+    "uppercut": (("power", "weak", 1), ("power", "vulnerable", 1)),
+    "taunt": (("block", 1), ("power", "vulnerable", 1)),
+    "stone_armor": (("power", "plating", 2),),
+    "rage": (("power", "strength", 2),),
+    "battle_trance": (("draw", 1),),
+    "headbutt": (("dmg", 3),),
+    "dismantle": (("dmg", 2),),
+    "perfected_strike": (("dmg", 1),),
+    "demon_form": (("power", "demon_form", 1),),
+    "metallicize": (("power", "metallicize", 1),),  # STS1 3 -> 4
+    "feel_no_pain": (("power", "feel_no_pain", 1),),
+    "dark_embrace": (("cost", -1),),
+    "juggernaut": (("power", "juggernaut", 2),),
+    "rupture": (("power", "rupture", 1),),
+    "combust": (("power", "combust", 2),),  # STS1 5 -> 7
+    "barricade": (("cost", -1),),
+    "berserk": (),    # STS1 upgrade only reduces self-Vulnerable (not modeled)
+    "brutality": (),  # STS1 upgrade makes it Innate; no stat delta
+    "corruption": (("cost", -1),),
+}
+
+# Default deltas for any implemented card not in the table above:
+# attacks +3 damage, blocks +3 block. TODO: replace with the card's real
+# OnUpgrade() values once that card's effect is ported.
+_DEFAULT_ATTACK_DELTA: tuple[tuple, ...] = (("dmg", 3),)
+_DEFAULT_BLOCK_DELTA: tuple[tuple, ...] = (("block", 3),)
+
+
+def _apply_delta(effects: tuple[Effect, ...], delta: tuple) -> tuple[Effect, ...]:
+    from dataclasses import replace as _replace
+    kind = delta[0]
+    out: list[Effect] = []
+    for eff in effects:
+        new_eff = eff
+        if kind == "dmg" and eff.op is EffectOp.DEAL_DAMAGE:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "block" and eff.op is EffectOp.GAIN_BLOCK:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "draw" and eff.op is EffectOp.DRAW_CARD:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "energy" and eff.op is EffectOp.ENERGY_GAIN:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "any_power" and eff.op is EffectOp.APPLY_POWER:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif (kind == "power" and eff.op is EffectOp.APPLY_POWER
+              and eff.power_id == delta[1]):
+            new_eff = _replace(eff, amount=eff.amount + delta[2])
+        out.append(new_eff)
+    return tuple(out)
+
+
+def upgrade_card(card: CardDef) -> CardDef:
+    """Return the UPGRADED version of `card` with real stat changes.
+
+    Idempotent: a card whose id already ends with '+' is returned unchanged.
+    The result carries upgraded EFFECTS (and possibly reduced cost) so combat
+    resolves the better numbers, and is tagged id+"+" / name+"+" so
+    card_features() and the rarity lookup (which strips '+') keep working.
+    """
+    from dataclasses import replace as _replace
+    if card.id.endswith("+"):
+        return card
+
+    deltas = _UPGRADE_DELTAS.get(card.id)
+    if deltas is None:
+        # Fallback default for an implemented card without an explicit table
+        # entry: attacks gain damage, everything else gains block.
+        deltas = (_DEFAULT_ATTACK_DELTA if card.type is CardType.ATTACK
+                  else _DEFAULT_BLOCK_DELTA)
+
+    effects = card.effects
+    cost = card.cost
+    for delta in deltas:
+        if delta[0] == "cost":
+            if cost is not None and cost >= 0:
+                cost = max(0, cost + delta[1])
+        else:
+            effects = _apply_delta(effects, delta)
+
+    return _replace(card, id=card.id + "+", name=card.name + "+",
+                    effects=effects, cost=cost)

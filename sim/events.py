@@ -136,11 +136,11 @@ def _has_upgradable_card(rs: RunState) -> bool:
 def _upgrade_first_card(rs: RunState) -> Optional[str]:
     """Upgrade the first upgradable card. Returns the card id upgraded
     or None if no card was eligible."""
-    from dataclasses import replace
+    from .cards import upgrade_card
     for i, c in enumerate(rs.deck):
         if c.id.endswith("+") or c.id in {"ascenders_bane"}:
             continue
-        rs.deck[i] = replace(c, id=c.id + "+", name=c.name + "+")
+        rs.deck[i] = upgrade_card(c)
         return c.id
     return None
 

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .card_catalog import CARDS
+from .cards import upgrade_card
 from .combat import CombatState, HAND_SIZE
 from .dsl import CardDef
 from .encounter import EncounterPools, build_monster_for, generate_pools
@@ -429,7 +430,7 @@ def _step_combat(rs: RunState, body: dict, res: StepResult) -> StepResult:
         }
         source = room_for_source.get(rs.state_type, "regular")
         rs.pending_card_reward = [
-            CARDS[ch.card_id]
+            (upgrade_card(CARDS[ch.card_id]) if ch.upgraded else CARDS[ch.card_id])
             for ch in generate_card_reward(_encounter_rng(rs), source,
                                            act=rs.act, ascension=int(rs.ascension))
         ]
@@ -519,9 +520,7 @@ def _step_rest(rs: RunState, body: dict, res: StepResult) -> StepResult:
             if upgradables:
                 target = upgradables[0]
                 deck_idx = rs.deck.index(target)
-                from dataclasses import replace
-                rs.deck[deck_idx] = replace(target, id=target.id + "+",
-                                            name=target.name + "+")
+                rs.deck[deck_idx] = upgrade_card(target)
         rs.pending_rest_options = None
         rs.state_type = StateType.MAP
         return res

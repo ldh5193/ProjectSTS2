@@ -295,6 +295,11 @@ def card_features(card_id: str) -> list[float]:
     card = CARDS.get(base_id)
     if card is None:
         return [0.0] * CARD_FEATURE_DIM
+    if upgraded:
+        # Read the UPGRADED effects so damage/block/buff dims reflect the
+        # real upgraded numbers (not just the upgraded flag bit).
+        from .cards import upgrade_card
+        card = upgrade_card(card)
     rarity = RARITY_OF.get(base_id, CardRarity.BASIC)
 
     cost = card.cost if card.cost is not None and card.cost >= 0 else 0
