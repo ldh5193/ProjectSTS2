@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .card_catalog import CARDS
+from .card_catalog import CARDS, CardRarity
 from .cards import upgrade_card
 from .combat import CombatState, HAND_SIZE
 from .dsl import CardDef
@@ -36,7 +36,12 @@ from .relics import (
     trigger_on_combat_start,
     trigger_on_player_turn_start,
 )
-from .rewards import RarityRoller, generate_card_reward
+from .rewards import (
+    _POOL_BY_RARITY,
+    _rarity_table,
+    RarityRoller,
+    generate_card_reward,
+)
 
 
 @dataclass
@@ -103,6 +108,15 @@ def _relic_rng(rs: RunState):
     while staying deterministic on the run seed."""
     from .rng import Rng
     return Rng(rs.run_seed, f"relic_{rs.act}_{rs.floor}")
+
+
+def _shop_rng(rs: RunState):
+    """Per-(act,floor) isolated Rng for shop stocking. Keyed on floor so
+    each shop visit is deterministic on the run seed but distinct from
+    the relic/encounter streams (mirrors PlayerRng.Shops in
+    MerchantInventory.cs)."""
+    from .rng import Rng
+    return Rng(rs.run_seed, f"shop_{rs.act}_{rs.floor}")
 
 
 def _act_index(act_key: str) -> int:
@@ -204,6 +218,174 @@ def _step_map(rs: RunState, body: dict, res: StepResult) -> StepResult:
     return res
 
 
+# ---------------------------------------------------------------------------
+# Shop stocking (decompiled MerchantInventory.CreateForNormalMerchant).
+#
+# Inventory: 5 colored cards + 2 colorless cards + 3 relics + 3 potions + 1
+# card-removal. The sim has no colorless pool, so colorless slots are
+# sampled from the Ironclad pool too (Uncommon + Rare per
+# _colorlessCardRarities), and priced with the +15% colorless surcharge
+# from MerchantCardEntry.GetCost so the price ranges still match.
+#
+# Pricing (decompiled, exact):
+#   card:   rare 150, uncommon 75, common 50; colorless x1.15;
+#           x NextFloat(0.95, 1.05) jitter  (MerchantCardEntry.GetCost/CalcCost)
+#   relic:  Model.MerchantCost x NextFloat(0.85, 1.15)  (MerchantRelicEntry)
+#   potion: rare 100, uncommon 75, common 50; x NextFloat(0.95, 1.05)
+#           (MerchantPotionEntry.GetCost/CalcCost)
+#   removal: 75 base (100 at A6 Inflation) + 25 (50 at A6) per prior removal
+#           (MerchantCardRemovalEntry)
+# ---------------------------------------------------------------------------
+
+# Card base prices by rarity (MerchantCardEntry.GetCost).
+_CARD_BASE_COST = {
+    CardRarity.RARE: 150,
+    CardRarity.UNCOMMON: 75,
+    CardRarity.COMMON: 50,
+    CardRarity.BASIC: 50,
+    CardRarity.ANCIENT: 150,
+}
+# Potion base prices by rarity (MerchantPotionEntry.GetCost). The L1 potion
+# pool (FIRE/BLOCK/ENERGY) is all common-tier; price ~50 +/- jitter, which
+# lands inside the requested 50-75 window once the rare/uncommon options are
+# unavailable. We bias the jitter band up slightly to reach ~50-65.
+_POTION_BASE_COST = 50
+
+# L1 potion pool — same three commons used for combat drops (run_engine
+# _step_combat) so the shop can't grant a potion the engine can't apply.
+_SHOP_POTION_POOL = ("FIRE_POTION", "BLOCK_POTION", "ENERGY_POTION")
+
+# Default relic merchant cost when a registry entry has merchant_cost=0
+# (boss/event relics aren't normally shop-stocked; keep them buyable but
+# expensive so the price stays sane if one ever lands in a slot).
+_RELIC_DEFAULT_COST = 200
+
+
+def _stock_shop(rs: RunState) -> dict:
+    """Build the full shop inventory deterministically via _shop_rng.
+
+    Returns the pending_shop dict the action-space contract expects:
+      {"items": [<item dict>...], "can_proceed": True,
+       "card_removal_cost": int, "removable_card_indices": [...],
+       "removal_used": False}
+
+    Each item dict carries the action-space keys
+    {index, category, price, can_afford, is_stocked} PLUS a grant payload
+    (card_id / upgraded / relic_id / potion_id) the purchase handler reads.
+    """
+    from .relics import RELIC_REGISTRY, sample_relic_from_pool
+
+    rng = _shop_rng(rs)
+    asc = int(rs.ascension)
+    items: list[dict] = []
+    idx = 0
+
+    # ---- Cards: 5 colored + 2 colorless (sim has only Ironclad pool) ----
+    # Colored cards roll rarity by the shop odds table; colorless slots are
+    # fixed Uncommon/Rare (decompiled _colorlessCardRarities). Upgrade chance
+    # follows the same act scaling as card rewards.
+    table = _rarity_table("shop", asc)
+    roller = RarityRoller(ascension=asc)
+    upgrade_scale = 0.125 if asc >= 7 else 0.25
+    upgrade_chance = (rs.act - 1) * upgrade_scale
+    seen_cards: set[str] = set()
+
+    def _add_card(rarity, colorless: bool) -> None:
+        nonlocal idx
+        pool = [c for c in _POOL_BY_RARITY.get(rarity, []) if c not in seen_cards]
+        if not pool:
+            for fb in (CardRarity.COMMON, CardRarity.UNCOMMON, CardRarity.RARE):
+                pool = [c for c in _POOL_BY_RARITY.get(fb, []) if c not in seen_cards]
+                if pool:
+                    rarity = fb
+                    break
+        if not pool:
+            return
+        card_id = rng.next_item(pool)
+        seen_cards.add(card_id)
+        upgraded = False
+        if rarity is not CardRarity.RARE and upgrade_chance > 0:
+            if rng.next_float() <= upgrade_chance:
+                upgraded = True
+        base = _CARD_BASE_COST.get(rarity, 50)
+        if colorless:
+            base = round(base * 1.15)
+        price = int(round(base * rng.next_float(0.95, 1.05)))
+        items.append({
+            "index": idx,
+            "category": "card",
+            "price": price,
+            "can_afford": rs.gold >= price,
+            "is_stocked": True,
+            "card_id": card_id,
+            "upgraded": upgraded,
+        })
+        idx += 1
+
+    for _ in range(5):
+        _add_card(roller.roll(rng, table), colorless=False)
+    for rar in (CardRarity.UNCOMMON, CardRarity.RARE):
+        _add_card(rar, colorless=True)
+
+    # ---- Relics: 3, de-duped vs owned (MerchantInventory.PopulateRelicEntries) ----
+    owned = {r.id for r in rs.relics}
+    for slot in range(3):
+        rid = sample_relic_from_pool(rng, owned, boss=False)
+        if rid is None:
+            break
+        owned.add(rid)  # avoid duplicates within the same shop
+        rd = RELIC_REGISTRY.get(rid)
+        base = (rd.merchant_cost if rd and rd.merchant_cost > 0
+                else _RELIC_DEFAULT_COST)
+        price = int(round(base * rng.next_float(0.85, 1.15)))
+        items.append({
+            "index": idx,
+            "category": "relic",
+            "price": price,
+            "can_afford": rs.gold >= price,
+            "is_stocked": True,
+            "relic_id": rid,
+        })
+        idx += 1
+
+    # ---- Potions: 2 (PopulatePotionEntries stocks 3; L1 pool is small) ----
+    for _ in range(2):
+        pid = _SHOP_POTION_POOL[rng.next_int(0, len(_SHOP_POTION_POOL))]
+        # Common-tier base 50; jitter biased to the 50-65 window requested.
+        price = int(round(_POTION_BASE_COST * rng.next_float(1.0, 1.30)))
+        items.append({
+            "index": idx,
+            "category": "potion",
+            "price": price,
+            "can_afford": rs.gold >= price,
+            "is_stocked": True,
+            "potion_id": pid,
+        })
+        idx += 1
+
+    # ---- Card removal: 1 slot (MerchantCardRemovalEntry) ----
+    removal_cost = 100 if asc >= 6 else 75
+    removable_idxs = [
+        i for i, c in enumerate(rs.deck) if c.id != "ascenders_bane"
+    ]
+    items.append({
+        "index": idx,
+        "category": "card_removal",
+        "price": removal_cost,
+        "can_afford": rs.gold >= removal_cost,
+        "is_stocked": True,
+    })
+    idx += 1
+
+    return {
+        "items": items,
+        "can_proceed": True,
+        "card_removal_cost": removal_cost,
+        "removable_card_indices": removable_idxs,
+        "removal_used": False,
+    }
+
+
 def _enter_room(rs: RunState, node: MapNode) -> None:
     """Translate a node's room_type into the corresponding StateType and
     initialize any room-specific overlay payload."""
@@ -251,24 +433,14 @@ def _enter_room(rs: RunState, node: MapNode) -> None:
         rs.state_type = StateType.MAP
         return
     elif rt is StateType.SHOP:
-        # L1 shop: only card removal is offered. Real card/relic/potion
-        # buying is Phase 2 (needs full shop pool sampling). Card removal
-        # cost mirrors STS1's 75g base; STS2 may inflate it later.
+        # Full shop (Phase 7H): stock cards + relics + potions + card
+        # removal, mirroring MerchantInventory.CreateForNormalMerchant.
+        # The action-space contract (sim/action_space._shop_mask + decode)
+        # reads rs.pending_shop["items"] = list of
+        # {index, category, price, can_afford, is_stocked, ...}.
         rs.state_type = StateType.SHOP
         trigger_after_room_entered(rs, rs.state_type)
-        # Filter to removable cards (no curses).
-        removable_idxs = [
-            i for i, c in enumerate(rs.deck)
-            if c.id != "ascenders_bane"
-        ]
-        # A6 Inflation raises card-removal base 75 -> 100 (decompiled
-        # MerchantCardRemovalEntry.cs:17, AscensionHelper Inflation).
-        _removal_cost = 100 if int(rs.ascension) >= 6 else 75
-        rs.pending_shop = {
-            "card_removal_cost": _removal_cost,
-            "removable_card_indices": removable_idxs,
-            "removal_used": False,
-        }
+        rs.pending_shop = _stock_shop(rs)
         return
     elif rt is StateType.EVENT:
         # L1 events: dispatch through sim/events.py registry.
@@ -616,19 +788,86 @@ def _step_event(rs: RunState, body: dict, res: StepResult) -> StepResult:
     return res
 
 
+def _recompute_shop_affordability(rs: RunState) -> None:
+    """Refresh can_afford on every stocked item after gold changes."""
+    if not rs.pending_shop:
+        return
+    for it in rs.pending_shop.get("items", []):
+        it["can_afford"] = it.get("is_stocked", False) and rs.gold >= int(it.get("price", 0))
+
+
 def _step_shop(rs: RunState, body: dict, res: StepResult) -> StepResult:
-    """L1 shop: card removal at fixed cost. Real card/relic buying is Phase 2.
+    """Full shop: buy cards / relics / potions, remove a card, or leave.
 
     Body shapes:
+      - {"action": "shop_purchase", "index": local_slot} — buy the item in
+        that shop slot (card/relic/potion). Deducts gold, grants the item,
+        marks the slot unstocked, refreshes affordability.
       - {"action": "shop_purchase_removal", "index": deck_idx} — pay
-        cost, remove the card. Disabled if removal already used this
-        visit (one per shop).
+        cost, remove the card. One per shop visit.
       - {"action": "proceed"} — leave the shop.
     """
     action = body.get("action")
     if action == "proceed":
         rs.pending_shop = None
         rs.state_type = StateType.MAP
+        return res
+    if action == "shop_purchase":
+        if rs.pending_shop is None:
+            res.invalid_action = True
+            res.reason = "no pending shop"
+            return res
+        slot = body.get("index")
+        if slot is None or not isinstance(slot, int):
+            res.invalid_action = True
+            res.reason = "shop_purchase missing index"
+            return res
+        item = next((it for it in rs.pending_shop.get("items", [])
+                     if int(it.get("index", -1)) == slot), None)
+        if item is None:
+            res.invalid_action = True
+            res.reason = f"shop slot {slot} not found"
+            return res
+        # card_removal must come through shop_purchase_removal (decode
+        # already dispatches it there); reject it here defensively.
+        if item.get("category") == "card_removal":
+            res.invalid_action = True
+            res.reason = "card_removal must use shop_purchase_removal"
+            return res
+        if not item.get("is_stocked", False):
+            res.invalid_action = True
+            res.reason = f"shop slot {slot} already sold"
+            return res
+        price = int(item.get("price", 0))
+        if rs.gold < price:
+            res.invalid_action = True
+            res.reason = "not enough gold for purchase"
+            return res
+        category = item.get("category")
+        if category == "card":
+            cdef = CARDS.get(item.get("card_id"))
+            if cdef is None:
+                res.invalid_action = True
+                res.reason = f"unknown shop card {item.get('card_id')!r}"
+                return res
+            rs.deck.append(upgrade_card(cdef) if item.get("upgraded") else cdef)
+        elif category == "relic":
+            rs.add_relic(item.get("relic_id"))
+        elif category == "potion":
+            if not rs.add_potion(item.get("potion_id")):
+                # Belt full — purchase fails, no gold spent (mirrors the
+                # mod's PurchaseStatus.FailureSpace path).
+                res.invalid_action = True
+                res.reason = "no free potion slot"
+                return res
+        else:
+            res.invalid_action = True
+            res.reason = f"unbuyable shop category {category!r}"
+            return res
+        rs.gain_gold(-price)
+        item["is_stocked"] = False
+        item["can_afford"] = False
+        _recompute_shop_affordability(rs)
         return res
     if action == "shop_purchase_removal":
         if rs.pending_shop is None:
@@ -660,16 +899,18 @@ def _step_shop(rs: RunState, body: dict, res: StepResult) -> StepResult:
         rs.gain_gold(-cost)
         del rs.deck[idx]
         rs.pending_shop["removal_used"] = True
+        # Mark the card_removal item slot unstocked so the mask drops it
+        # (mirrors MerchantCardRemovalEntry.IsStocked => !Used).
+        for it in rs.pending_shop.get("items", []):
+            if it.get("category") == "card_removal":
+                it["is_stocked"] = False
+                it["can_afford"] = False
         # Refresh removable indices since deck mutated.
         rs.pending_shop["removable_card_indices"] = [
             i for i, c in enumerate(rs.deck)
             if c.id != "ascenders_bane"
         ]
-        return res
-    # Backward compat: old generic "shop_purchase" still proceeds.
-    if action == "shop_purchase":
-        rs.pending_shop = None
-        rs.state_type = StateType.MAP
+        _recompute_shop_affordability(rs)
         return res
     res.invalid_action = True
     res.reason = f"unsupported shop action {action!r}"

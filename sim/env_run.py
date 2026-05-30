@@ -536,20 +536,23 @@ class RunEnv(gym.Env):
                 ],
             }
         if rs.state_type is StateType.SHOP and rs.pending_shop is not None:
-            # Phase 3 shop only offers card removal — exposed as one
-            # "item" slot 0 (removal) plus the leave slot. Phase 4 will
-            # add buy items.
-            items: list[dict[str, Any]] = []
-            if not rs.pending_shop.get("removal_used", False):
-                items.append({
-                    "index": 0,
-                    "category": "card_removal",
-                    "price": rs.pending_shop.get("card_removal_cost", 75),
-                    "can_afford": rs.gold >= rs.pending_shop.get(
-                        "card_removal_cost", 75),
-                    "is_stocked": True,
-                })
-            view["shop"] = {"items": items, "can_proceed": True}
+            # Full shop (Phase 7H): pending_shop["items"] already holds the
+            # action-space dicts {index, category, price, can_afford,
+            # is_stocked, ...}. Project the buy keys straight through so
+            # _shop_mask / decode read them directly; carry the deck slice
+            # so decode's removal target picker can skip curses.
+            shop_items = [
+                {
+                    "index": int(it.get("index", i)),
+                    "category": it.get("category"),
+                    "price": int(it.get("price", 0)),
+                    "can_afford": bool(it.get("can_afford", False)),
+                    "is_stocked": bool(it.get("is_stocked", False)),
+                }
+                for i, it in enumerate(rs.pending_shop.get("items", []))
+            ]
+            view["shop"] = {"items": shop_items, "can_proceed": True}
+            view["deck"] = [{"id": c.id} for c in rs.deck]
         self._view_cache = (self._state_gen, view)
         return view
 
@@ -916,6 +919,45 @@ class RunEnv(gym.Env):
             v[cursor + CARD_FEATURE_DIM + 0] = min(1.0, feat_sum[4] / 200.0)
             v[cursor + CARD_FEATURE_DIM + 1] = min(1.0, feat_sum[5] / 150.0)
         cursor += CARD_FEATURE_DIM + 2
+
+        # Phase 7H: compact shop-buy summary (5 dims) in the free tail
+        # (cursor 376..380; OBS_DIM=384 leaves 8 free, so this fits with 3
+        # to spare). Lets the policy make BUY decisions, not just see the
+        # removal slot. Zero on every non-shop state so it never perturbs
+        # combat/map observations.
+        #   0: gold / 300 (shop-relevant budget scale, saturates at 300)
+        #   1: # affordable+stocked cards   / 7
+        #   2: # affordable+stocked relics  / 3
+        #   3: has an affordable+stocked energy relic (flag)
+        #   4: cheapest affordable card is buyable (flag)
+        if rs.state_type is StateType.SHOP and rs.pending_shop:
+            try:
+                from .relics import RELIC_REGISTRY
+                items = rs.pending_shop.get("items", [])
+                aff_cards = 0
+                aff_relics = 0
+                has_energy_relic = 0.0
+                any_card_aff = 0.0
+                for it in items:
+                    if not (it.get("is_stocked") and it.get("can_afford")):
+                        continue
+                    cat = it.get("category")
+                    if cat == "card":
+                        aff_cards += 1
+                        any_card_aff = 1.0
+                    elif cat == "relic":
+                        aff_relics += 1
+                        rd = RELIC_REGISTRY.get(it.get("relic_id"))
+                        if rd is not None and rd.category == "energy":
+                            has_energy_relic = 1.0
+                v[cursor + 0] = min(1.0, rs.gold / 300.0)
+                v[cursor + 1] = min(1.0, aff_cards / 7.0)
+                v[cursor + 2] = min(1.0, aff_relics / 3.0)
+                v[cursor + 3] = has_energy_relic
+                v[cursor + 4] = any_card_aff
+            except Exception:
+                pass
+        cursor += 5
 
         v.clip(0.0, 1.0, out=v)
         return v

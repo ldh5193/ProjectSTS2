@@ -108,6 +108,9 @@ def _new_rs_in_shop(gold: int = 200) -> RunState:
 
 
 def test_shop_view_exposes_removal_item_when_unused():
+    # Phase 7H: the full shop stocks cards+relics+potions+removal. The
+    # removal slot is the single card_removal entry and is stocked + (with
+    # 200 gold) affordable when unused.
     rs = _new_rs_in_shop(gold=200)
     env = RunEnv(ascension=0)
     env.rs = rs
@@ -115,19 +118,26 @@ def test_shop_view_exposes_removal_item_when_unused():
     view = env._mod_state_view()
     assert "shop" in view
     items = view["shop"]["items"]
-    assert len(items) == 1
-    assert items[0]["category"] == "card_removal"
-    assert items[0]["can_afford"] is True
+    removal = [it for it in items if it["category"] == "card_removal"]
+    assert len(removal) == 1
+    assert removal[0]["is_stocked"] is True
+    assert removal[0]["can_afford"] is True
 
 
 def test_shop_view_hides_removal_after_use():
-    rs = _new_rs_in_shop(gold=200)
-    rs.pending_shop["removal_used"] = True
+    # After the removal is used, its slot is unstocked (so the mask drops
+    # it) while the buy items remain in the view.
+    rs = _new_rs_in_shop(gold=1000)
+    from sim.run_engine import step
+    step(rs, {"action": "shop_purchase_removal", "index": 0})
     env = RunEnv(ascension=0)
     env.rs = rs
     env._invalidate_caches()
     view = env._mod_state_view()
-    assert view["shop"]["items"] == []
+    removal = [it for it in view["shop"]["items"]
+               if it["category"] == "card_removal"]
+    assert len(removal) == 1
+    assert removal[0]["is_stocked"] is False
     assert view["shop"]["can_proceed"] is True
 
 
