@@ -111,3 +111,37 @@ def test_bash_applies_vulnerable_and_next_strike_scaled():
     # Next Strike: 6 base × 1.5 = 9
     cs.play_card(0)  # Strike now at index 0
     assert cs.monster.hp == hp_before - 8 - 9
+
+
+def test_player_frail_and_weak_decay_at_end_of_player_turn():
+    # Faithful per-bearer rule: debuffs the PLAYER bears decay at the end of
+    # the PLAYER's own turn (Frail applied by DEBILITATE must decay, not stick).
+    # Tested in isolation so a monster's move can't re-apply the debuff.
+    cs = CombatState.new_combat(seed=7)
+    cs.player.add_or_stack_power(make_power("frail", 2, cs.player))
+    cs.player.add_or_stack_power(make_power("weak", 2, cs.player))
+    cs._end_of_turn_effects(cs.player)  # the player's own turn-end decay
+    assert cs.player.get_power("frail").amount == 1
+    assert cs.player.get_power("weak").amount == 1
+
+
+def test_monster_vulnerable_and_weak_decay_at_end_of_monster_turn():
+    # Faithful per-bearer rule: debuffs a MONSTER bears decay at the end of
+    # that MONSTER's own turn.
+    cs = CombatState.new_combat(seed=7)
+    cs.start_player_turn()
+    cs.monster.add_or_stack_power(make_power("vulnerable", 2, cs.monster))
+    cs.monster.add_or_stack_power(make_power("weak", 2, cs.monster))
+    cs.monster_turn()  # monster acts then decays its own debuffs
+    assert cs.monster.get_power("vulnerable").amount == 1
+    assert cs.monster.get_power("weak").amount == 1
+
+
+def test_frail_fully_decays_over_two_player_turns():
+    cs = CombatState.new_combat(seed=11)
+    cs.start_player_turn()
+    cs.player.add_or_stack_power(make_power("frail", 2, cs.player))
+    cs.end_player_turn()
+    assert cs.player.get_power("frail").amount == 1
+    cs.end_player_turn()
+    assert cs.player.get_power("frail") is None  # gone after 2 player turns

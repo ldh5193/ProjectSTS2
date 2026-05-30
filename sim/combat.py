@@ -101,6 +101,8 @@ class CombatState:
         self.player.energy = self.player.max_energy
         # Block does NOT auto-reset per §D.4. (No Barricade modeled.)
         self.player.block = 0  # Simplification: STS-style turn reset for player
+        # Poison ticks at the START of the owner's turn (PoisonPower.cs).
+        apply_poison_tick(self.player)
         self.draw(HAND_SIZE)
 
     def can_play(self, card_index: int) -> bool:
@@ -205,15 +207,23 @@ class CombatState:
                 self.exhaust_pile.append(c)
             return
 
+    # Duration debuffs that decay by 1 at the END of the bearer's OWN turn.
+    # In the real game (WeakPower/VulnerablePower/FrailPower .cs) these tick in
+    # AfterTurnEnd when side == Enemy; STS turn structure means a debuff lasts
+    # the faithful number of the bearer's own turns. We therefore decrement a
+    # creature's duration debuffs at the end of that creature's own turn:
+    #   - Player's Weak/Frail decay at end of the player's turn.
+    #   - Monster's Weak/Vulnerable decay at end of that monster's turn.
+    _DURATION_DEBUFFS: tuple[str, ...] = ("weak", "vulnerable", "frail")
+
     def end_player_turn(self) -> None:
         self.is_player_turn = False
         # Discard hand at end of player turn (STS convention).
         self.discard_pile.extend(self.hand)
         self.hand.clear()
-        # Weak's owner is player → tick at end of player turn.
-        self._tick_powers(self.player, ids=("weak",))
-        # Poison ticks at end of owner's turn — player's poison hits player.
-        apply_poison_tick(self.player)
+        # End-of-owner-turn effects for the player: Plating block-gain, then
+        # decay duration debuffs (Weak/Frail the player bears).
+        self._end_of_turn_effects(self.player)
         self.monster_turn()
         if self.alive_monsters():
             self.start_player_turn()
@@ -223,10 +233,14 @@ class CombatState:
         for m in self.alive_monsters():
             # Monster block resets per turn in MVP (matches STS UI).
             m.block = 0
-            events.append(m.take_turn(self.rng, self.player))
-            # Vulnerable's owner is monster → tick at end of monster turn.
-            self._tick_powers(m, ids=("vulnerable",))
+            # Poison ticks at the START of the owner's (monster's) turn.
             apply_poison_tick(m)
+            if not m.alive:
+                continue
+            events.append(m.take_turn(self.rng, self.player))
+            # End-of-owner-turn effects for the monster: Plating block-gain,
+            # then decay duration debuffs (Weak/Vulnerable the monster bears).
+            self._end_of_turn_effects(m)
             if not self.player.alive:
                 break
         # Re-target if the previously selected monster died this turn.
@@ -234,6 +248,26 @@ class CombatState:
         if alive and self.target_index >= len(alive):
             self.target_index = 0
         return events
+
+    @classmethod
+    def _end_of_turn_effects(cls, creature) -> None:
+        """Resolve a creature's own turn-end: grant Plating block, then decay
+        its duration debuffs."""
+        cls._apply_plating(creature)
+        cls._tick_powers(creature, ids=cls._DURATION_DEBUFFS)
+
+    @staticmethod
+    def _apply_plating(creature) -> None:
+        """Plating (PlatingPower.cs BeforeTurnEndEarly): at the owner's turn
+        end, gain Block == amount, then decrement the counter (by the attacker
+        count == 1 in single-player)."""
+        plating = creature.get_power("plating") if hasattr(creature, "get_power") else None
+        if plating is None or plating.amount <= 0:
+            return
+        creature.block += plating.amount
+        plating.amount -= 1
+        if plating.amount <= 0:
+            creature.powers.remove(plating)
 
     @staticmethod
     def _tick_powers(creature, ids: tuple[str, ...]) -> None:

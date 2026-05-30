@@ -28,6 +28,9 @@ def compute_modified_damage(base_amount: int, dealer: Creature, target: Creature
         modified *= p.modify_damage_multiplicative(dealer, target, base_amount)
 
     # Game uses decimal; we floor to int for simulator (matches §D.5 "13.5 → 13").
+    # TODO(faithful): real game keeps fractional damage through the block step
+    # and only truncates at HP-loss. We floor here (before block). Matters only
+    # for multi-hit fractional cases that don't exist in current content.
     return max(0, floor(modified))
 
 
@@ -37,14 +40,6 @@ def deal_damage(base_amount: int, dealer: Creature, target: Creature) -> tuple[i
     blocked = min(target.block, modified)
     target.block -= blocked
     unblocked = modified - blocked
-    # Plating: reduces HP loss per hit, consuming 1 stack per attack.
-    plating = target.get_power("plating") if hasattr(target, "get_power") else None
-    if plating is not None and plating.amount > 0 and unblocked > 0:
-        reduction = min(plating.amount, unblocked)
-        unblocked -= reduction
-        plating.amount -= 1
-        if plating.amount <= 0:
-            target.powers.remove(plating)
     hp_loss = target.lose_hp(unblocked)
     # Thorns: if target has thorns AND took unblocked damage from a powered
     # attack (we approximate "powered" as "the attack went through deal_damage"
@@ -53,6 +48,12 @@ def deal_damage(base_amount: int, dealer: Creature, target: Creature) -> tuple[i
     if (thorns is not None and thorns.amount > 0 and unblocked > 0
             and dealer is not target and dealer.alive):
         dealer.lose_hp(thorns.amount)
+    # Vigor (VigorPower.cs): consumed after the powered attack it boosted.
+    # We treat any attack routed through deal_damage as a powered attack, so
+    # remove the dealer's Vigor entirely (ModifyAmount(-amountWhenStarted)).
+    vigor = dealer.get_power("vigor") if hasattr(dealer, "get_power") else None
+    if vigor is not None:
+        dealer.powers.remove(vigor)
     return blocked, hp_loss
 
 
@@ -70,7 +71,8 @@ def gain_block(creature: Creature, amount: int) -> None:
 
 
 def apply_poison_tick(creature: Creature) -> int:
-    """Apply Poison damage at end of owner turn: HP -= stacks, stacks -= 1.
+    """Apply Poison damage at the START of the owner's turn (PoisonPower.cs
+    AfterSideTurnStart): HP -= stacks (unblockable), then stacks -= 1.
     Returns the HP loss (0 if no poison)."""
     poison = creature.get_power("poison") if hasattr(creature, "get_power") else None
     if poison is None or poison.amount <= 0:

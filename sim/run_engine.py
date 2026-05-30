@@ -250,8 +250,11 @@ def _enter_room(rs: RunState, node: MapNode) -> None:
             i for i, c in enumerate(rs.deck)
             if c.id != "ascenders_bane"
         ]
+        # A6 Inflation raises card-removal base 75 -> 100 (decompiled
+        # MerchantCardRemovalEntry.cs:17, AscensionHelper Inflation).
+        _removal_cost = 100 if int(rs.ascension) >= 6 else 75
         rs.pending_shop = {
-            "card_removal_cost": 75,
+            "card_removal_cost": _removal_cost,
             "removable_card_indices": removable_idxs,
             "removal_used": False,
         }
@@ -401,6 +404,23 @@ def _step_combat(rs: RunState, body: dict, res: StepResult) -> StepResult:
                 _potion_pool = ["FIRE_POTION", "BLOCK_POTION", "ENERGY_POTION"]
                 pidx = _rng.next_int(0, len(_potion_pool))
                 rs.add_potion(_potion_pool[pidx])
+        # Combat gold reward (decompiled EncounterModel.cs:42-78): monster
+        # 10-20, elite 35-45, boss 100. A3 Poverty cuts combat gold x0.75
+        # (AscensionHelper). Previously the sim granted ZERO combat gold,
+        # starving the shop/card-removal economy entirely.
+        _grng = _encounter_rng(rs)
+        if rs.state_type is StateType.MONSTER:
+            _gold = _grng.next_int(10, 21)
+        elif rs.state_type is StateType.ELITE:
+            _gold = _grng.next_int(35, 46)
+        elif rs.state_type is StateType.BOSS:
+            _gold = 100
+        else:
+            _gold = 0
+        if _gold > 0:
+            if int(rs.ascension) >= 3:  # Poverty
+                _gold = int(_gold * 0.75)
+            rs.gain_gold(_gold)
         # Open reward.
         room_for_source = {
             StateType.MONSTER: "regular",

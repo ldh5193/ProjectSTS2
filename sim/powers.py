@@ -101,22 +101,31 @@ class ThornsPower(Power):
 
 @dataclass
 class PlatingPower(Power):
-    """Plating: reduces incoming HP loss by `amount` per hit (after block).
-    Each hit consumes 1 stack."""
+    """Plating (PlatingPower.cs): NOT damage reduction. It grants the owner
+    Block equal to `amount` at the owner's turn-end (BeforeTurnEndEarly,
+    side == Owner.Side), and decrements at enemy turn-end by the attacker
+    count (1 in single-player). Enemies also gain `amount` block at round-1
+    side start. We model the recurring block-gain at the owner's turn end
+    (the faithful BeforeTurnEndEarly trigger) and decay the counter at the
+    same point. See combat.py end-of-turn handling."""
     id: str = field(default="plating", init=False)
     _owner: object = None
 
 
 @dataclass
 class PoisonPower(Power):
-    """Damage = stack count, applied at owner's turn end, then decrement by 1."""
+    """Poison (PoisonPower.cs): ticks at the START of the owner's turn
+    (AfterSideTurnStart, side == Owner.Side): deals `amount` unblockable
+    damage, then decrements by 1."""
     id: str = field(default="poison", init=False)
     _owner: object = None
 
 
 @dataclass
 class VigorPower(Power):
-    """Next attack from owner deals +amount damage, then removes self."""
+    """Vigor (VigorPower.cs): +amount additive damage on the owner's next
+    powered attack, then the power is removed entirely after that attack
+    (consumed). See deal_damage() which performs the consumption."""
     id: str = field(default="vigor", init=False)
 
     def modify_damage_additive(self, dealer, target, base_amount: int) -> int:
