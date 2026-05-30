@@ -15,19 +15,30 @@ from enum import Enum
 
 from .cards import (
     ANGER,
+    BARRICADE,
     BASH,
     BATTLE_TRANCE,
+    BERSERK,
     BLOODLETTING,
     BLUDGEON,
+    BRUTALITY,
     CINDER,
+    COMBUST,
+    CORRUPTION,
+    DARK_EMBRACE,
     DEFEND_IRONCLAD,
+    DEMON_FORM,
     DISMANTLE,
+    FEEL_NO_PAIN,
     HEADBUTT,
     INFLAME,
     IRON_WAVE,
+    JUGGERNAUT,
+    METALLICIZE,
     PERFECTED_STRIKE,
     POMMEL_STRIKE,
     RAGE,
+    RUPTURE,
     SHRUG_IT_OFF,
     STONE_ARMOR,
     STRIKE_IRONCLAD,
@@ -138,6 +149,11 @@ _META: list[tuple[str, str, int, CardType, CardRarity]] = [
     ("uppercut", "Uppercut", 2, CardType.ATTACK, CardRarity.UNCOMMON),
     ("vicious", "Vicious", 1, CardType.SKILL, CardRarity.UNCOMMON),
     ("whirlwind", "Whirlwind", -1, CardType.ATTACK, CardRarity.UNCOMMON),  # X-cost
+    # Engine powers without an STS2 card model (faithful STS1 semantics).
+    ("metallicize", "Metallicize", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("combust", "Combust", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("berserk", "Berserk", 0, CardType.POWER, CardRarity.UNCOMMON),
+    ("brutality", "Brutality", 0, CardType.POWER, CardRarity.UNCOMMON),
     # --- Rare (25) ---
     ("aggression", "Aggression", 1, CardType.SKILL, CardRarity.RARE),
     ("barricade", "Barricade", 3, CardType.POWER, CardRarity.RARE),
@@ -194,6 +210,18 @@ _IMPLEMENTED: dict[str, CardDef] = {
     HEADBUTT.id: HEADBUTT,
     DISMANTLE.id: DISMANTLE,
     PERFECTED_STRIKE.id: PERFECTED_STRIKE,
+    # Phase 7B engine power cards
+    DEMON_FORM.id: DEMON_FORM,
+    METALLICIZE.id: METALLICIZE,
+    FEEL_NO_PAIN.id: FEEL_NO_PAIN,
+    DARK_EMBRACE.id: DARK_EMBRACE,
+    JUGGERNAUT.id: JUGGERNAUT,
+    RUPTURE.id: RUPTURE,
+    COMBUST.id: COMBUST,
+    BARRICADE.id: BARRICADE,
+    BERSERK.id: BERSERK,
+    BRUTALITY.id: BRUTALITY,
+    CORRUPTION.id: CORRUPTION,
 }
 
 
@@ -235,7 +263,11 @@ _RARITY_VALUE: dict[CardRarity, float] = {
 }
 _ENEMY_DEBUFF_IDS = frozenset({"vulnerable", "weak", "frail"})
 _SELF_BUFF_IDS = frozenset({"strength", "dexterity", "intangible", "ritual",
-                             "rage", "metallicize", "plated_armor", "thorns"})
+                             "rage", "metallicize", "plated_armor", "thorns",
+                             # Phase 7B engine powers
+                             "demon_form", "feel_no_pain", "dark_embrace",
+                             "juggernaut", "rupture", "combust", "barricade",
+                             "berserk", "brutality", "corruption", "plating"})
 
 
 def card_features(card_id: str) -> list[float]:

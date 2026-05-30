@@ -95,29 +95,66 @@ class CombatState:
 
     # ---- turn lifecycle ----
 
+    # ---- power-trigger fan-out helpers ----
+
+    @staticmethod
+    def _fire_power_hook(creature, hook: str, *args) -> None:
+        """Call `hook(*args)` on every power the creature currently holds.
+        Iterates a snapshot so a hook that mutates `powers` is safe."""
+        for p in list(creature.powers):
+            getattr(p, hook)(*args)
+
     def start_player_turn(self) -> None:
         self.turn_number += 1
         self.is_player_turn = True
         self.player.energy = self.player.max_energy
-        # Block does NOT auto-reset per §D.4. (No Barricade modeled.)
-        self.player.block = 0  # Simplification: STS-style turn reset for player
+        # Block resets at turn start unless a power (Barricade) blocks the reset.
+        if not any(p.blocks_block_reset() for p in self.player.powers):
+            self.player.block = 0
         # Poison ticks at the START of the owner's turn (PoisonPower.cs).
         apply_poison_tick(self.player)
         self.draw(HAND_SIZE)
+        # Turn-start triggers: DemonForm (Strength), Berserk (energy),
+        # Brutality (lose HP + draw). Fire after the draw, per the .cs ordering
+        # of AfterSideTurnStart (DemonForm) which runs once the turn is set up.
+        self._fire_power_hook(self.player, "on_turn_start", self, self.player)
+
+    def effective_cost(self, card: CardDef) -> int:
+        """Card's energy cost after player power overrides (Corruption: skills
+        cost 0). Takes the minimum override across powers, floored at 0."""
+        cost = card.cost
+        for p in self.player.powers:
+            override = p.modify_card_cost(card)
+            if override is not None:
+                cost = min(cost, override)
+        return max(0, cost)
+
+    def _exhaust_card(self, card: CardDef) -> None:
+        """Move a card to the exhaust pile and fire on_card_exhausted for the
+        player's powers (Feel No Pain block, Dark Embrace draw)."""
+        self.exhaust_pile.append(card)
+        self._fire_power_hook(self.player, "on_card_exhausted",
+                              self, self.player, card)
 
     def can_play(self, card_index: int) -> bool:
         if not (0 <= card_index < len(self.hand)):
             return False
         card = self.hand[card_index]
-        return self.player.energy >= card.cost
+        return self.player.energy >= self.effective_cost(card)
 
     def play_card(self, card_index: int, target_is_monster: bool = True) -> None:
         if not self.can_play(card_index):
             raise ValueError(f"cannot play card at index {card_index}")
         card = self.hand.pop(card_index)
-        self.player.energy -= card.cost
+        self.player.energy -= self.effective_cost(card)
         self._resolve_effects(card)
-        self.discard_pile.append(card)
+        # Corruption: skills are exhausted on play instead of discarded.
+        from .dsl import CardType
+        if (card.type is CardType.SKILL
+                and any(p.id == "corruption" for p in self.player.powers)):
+            self._exhaust_card(card)
+        else:
+            self.discard_pile.append(card)
 
     def _resolve_effects(self, card: CardDef) -> None:
         for eff in card.effects:
@@ -161,7 +198,13 @@ class CombatState:
             return
         if eff.op is EffectOp.GAIN_BLOCK:
             for t in targets:
+                before = t.block
                 gain_block(t, eff.amount)
+                if t is self.player:
+                    gained = t.block - before
+                    if gained > 0:
+                        # Juggernaut: deal damage to a random enemy on block gain.
+                        self._fire_power_hook(t, "on_block_gained", self, t, gained)
             return
         if eff.op is EffectOp.APPLY_POWER:
             assert eff.power_id is not None
@@ -176,17 +219,21 @@ class CombatState:
             return
         if eff.op is EffectOp.SELF_HP_LOSE:
             # Unblockable self-damage (Bloodletting, Bloodwall, Breakthrough).
-            self.player.lose_hp(eff.amount)
+            lost = self.player.lose_hp(eff.amount)
+            if lost > 0:
+                # Rupture: gain Strength when HP is lost from a card effect.
+                self._fire_power_hook(self.player, "on_hp_lost_from_card",
+                                      self, self.player, lost)
             return
         if eff.op is EffectOp.EXHAUST_RANDOM:
             if self.hand:
                 idx = self.rng.randrange(len(self.hand))
-                self.exhaust_pile.append(self.hand.pop(idx))
+                self._exhaust_card(self.hand.pop(idx))
             return
         if eff.op is EffectOp.EXHAUST_SELF:
             # Move the just-played card from discard back to exhaust.
             if self.discard_pile and self.discard_pile[-1] is card:
-                self.exhaust_pile.append(self.discard_pile.pop())
+                self._exhaust_card(self.discard_pile.pop())
             return
         if eff.op is EffectOp.COPY_TO_DISCARD:
             self.discard_pile.append(card)
@@ -204,7 +251,7 @@ class CombatState:
                 c = self.draw_pile.pop()
                 # Resolve its effects against the current target context.
                 self._resolve_effects(c)
-                self.exhaust_pile.append(c)
+                self._exhaust_card(c)
             return
 
     # Duration debuffs that decay by 1 at the END of the bearer's OWN turn.
@@ -221,6 +268,9 @@ class CombatState:
         # Discard hand at end of player turn (STS convention).
         self.discard_pile.extend(self.hand)
         self.hand.clear()
+        # Turn-end triggers: Metallicize (block), Combust (lose HP + AoE).
+        # Fire before plating/decay so block stacks then plating adds on top.
+        self._fire_power_hook(self.player, "on_turn_end", self, self.player)
         # End-of-owner-turn effects for the player: Plating block-gain, then
         # decay duration debuffs (Weak/Frail the player bears).
         self._end_of_turn_effects(self.player)
@@ -237,7 +287,12 @@ class CombatState:
             apply_poison_tick(m)
             if not m.alive:
                 continue
+            # Turn-start triggers for the monster (so monster engine powers,
+            # if ever used, fire consistently with the player).
+            self._fire_power_hook(m, "on_turn_start", self, m)
             events.append(m.take_turn(self.rng, self.player))
+            # Turn-end triggers for the monster (Metallicize-likes).
+            self._fire_power_hook(m, "on_turn_end", self, m)
             # End-of-owner-turn effects for the monster: Plating block-gain,
             # then decay duration debuffs (Weak/Vulnerable the monster bears).
             self._end_of_turn_effects(m)

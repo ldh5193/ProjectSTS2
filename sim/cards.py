@@ -279,6 +279,104 @@ PERFECTED_STRIKE = CardDef(
 )
 
 
+# --- Engine "deck-power" cards (Phase 7B) ---------------------------------
+# Costs/amounts verified against decompiled/MegaCrit.Sts2.Core.Models.Cards/*.cs.
+# Metallicize / Combust / Berserk / Brutality have no STS2 card model (STS2
+# uses Furnace instead of Metallicize); they use faithful STS1 numbers.
+
+DEMON_FORM = CardDef(
+    id="demon_form", name="Demon Form", cost=3, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="demon_form", amount=2),  # DemonForm.cs: Strength 2/turn
+    ),
+)
+
+METALLICIZE = CardDef(
+    id="metallicize", name="Metallicize", cost=1, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="metallicize", amount=3),  # STS1: 3 block/turn end
+    ),
+)
+
+FEEL_NO_PAIN = CardDef(
+    id="feel_no_pain", name="Feel No Pain", cost=1, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="feel_no_pain", amount=3),  # FeelNoPain.cs: Power 3
+    ),
+)
+
+DARK_EMBRACE = CardDef(
+    id="dark_embrace", name="Dark Embrace", cost=2, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="dark_embrace", amount=1),  # DarkEmbrace.cs: draw 1/exhaust
+    ),
+)
+
+JUGGERNAUT = CardDef(
+    id="juggernaut", name="Juggernaut", cost=2, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="juggernaut", amount=5),  # Juggernaut.cs: 5 dmg/block gain
+    ),
+)
+
+RUPTURE = CardDef(
+    id="rupture", name="Rupture", cost=1, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="rupture", amount=1),  # Rupture.cs: Strength 1 per card HP-loss
+    ),
+)
+
+COMBUST = CardDef(
+    id="combust", name="Combust", cost=1, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="combust", amount=5),  # STS1: lose 1 HP, 5 AoE dmg/turn end
+    ),
+)
+
+BARRICADE = CardDef(
+    id="barricade", name="Barricade", cost=3, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="barricade", amount=1),  # Barricade.cs: block persists
+    ),
+)
+
+BERSERK = CardDef(
+    id="berserk", name="Berserk", cost=0, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="berserk", amount=1),  # STS1: +1 energy/turn (self-Vuln omitted)
+    ),
+)
+
+BRUTALITY = CardDef(
+    id="brutality", name="Brutality", cost=0, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="brutality", amount=1),  # STS1: lose 1 HP, draw 1/turn
+    ),
+)
+
+CORRUPTION = CardDef(
+    id="corruption", name="Corruption", cost=3, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="corruption", amount=1),  # Corruption.cs: skills cost 0, exhaust
+    ),
+)
+
+ENGINE_POWER_CARDS = (DEMON_FORM, METALLICIZE, FEEL_NO_PAIN, DARK_EMBRACE,
+                      JUGGERNAUT, RUPTURE, COMBUST, BARRICADE, BERSERK,
+                      BRUTALITY, CORRUPTION)
+
+
 IRONCLAD_LIBRARY_EXT = (BLUDGEON, CLOTHESLINE, UPPERCUT, TAUNT, STONE_ARMOR, RAGE,
                         BATTLE_TRANCE, HEADBUTT, DISMANTLE, PERFECTED_STRIKE)
 
@@ -303,6 +401,9 @@ IRONCLAD_LIBRARY: tuple[CardDef, ...] = (
     # Cycle B extras
     BLUDGEON, UPPERCUT, TAUNT, STONE_ARMOR, RAGE, BATTLE_TRANCE,
     HEADBUTT, DISMANTLE, PERFECTED_STRIKE,
+    # Phase 7B engine power cards
+    DEMON_FORM, METALLICIZE, FEEL_NO_PAIN, DARK_EMBRACE, JUGGERNAUT,
+    RUPTURE, COMBUST, BARRICADE, BERSERK, BRUTALITY, CORRUPTION,
 )
 
 
