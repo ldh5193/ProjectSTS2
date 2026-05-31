@@ -41,6 +41,11 @@ class CombatState:
     # so per-attack relic hooks (Kunai/Shuriken/Pen Nib) can read rs.relics.
     # None in standalone combat tests (hooks are then skipped harmlessly).
     run_state: object = None
+    # Per-step counter of POWER-type cards played. Incremented in play_card;
+    # read+reset by RunEnv._reward each env step for the power_card_played
+    # reward (scaling-engine signal). Lives here because play_card is the
+    # single choke point that sees a card's type. Zero in standalone tests.
+    powers_played_this_step: int = 0
 
     def _sync_monsters(self) -> None:
         """Ensure `self.monsters` includes `self.monster` for legacy code."""
@@ -199,6 +204,8 @@ class CombatState:
             self.discard_pile.append(card)
         if card.type is CardType.ATTACK:
             self._attacks_played_this_turn += 1
+        if card.type is CardType.POWER:
+            self.powers_played_this_step += 1
 
     def _resolve_effects(self, card: CardDef) -> None:
         for eff in card.effects:

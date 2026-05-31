@@ -112,6 +112,14 @@ class RewardConfig:
     enemy_power_weight: float = 0.0        # +N per Vuln/Weak stack applied to enemy
     self_power_weight: float = 0.0         # +N per Strength/Dex stack gained
     energy_unspent_penalty: float = 0.0    # −N per energy left at end_turn
+    # ---- meta-informed win predictors (added 2026-05-31) ----
+    # STS2 community stats: relic count is the #1 win predictor (winning
+    # runs avg ~17 relics vs ~7.5 losing), and scaling POWERS before Act 3
+    # are mandatory. The terminal victory signal alone never teaches the
+    # agent to hunt relics/elites or build a scaling engine; these dense
+    # per-step bonuses do. Default 0.0 so existing presets are unchanged.
+    relic_gained_weight: float = 0.0       # +N per NEW relic acquired this step
+    power_card_played_weight: float = 0.0  # +N per POWER-type card played this step
 
 
 REWARD_PRESETS: dict[str, RewardConfig] = {
@@ -291,6 +299,25 @@ REWARD_PRESETS: dict[str, RewardConfig] = {
         hp_delta_weight=0.025, block_gained_weight=0.005,
         damage_dealt_weight=0.002,
     ),
+    # ---- meta-informed win preset (added 2026-05-31) ----
+    # Encodes the statistically-proven STS2 win predictors directly into
+    # the reward so the agent learns WINNING BEHAVIORS, not just the sparse
+    # victory signal:
+    #   - relic_gained_weight=3.0: relic count is the #1 win predictor
+    #     (winning ~17 relics vs losing ~7.5). ~17 relics * 3 = 51 is
+    #     intentionally comparable to run_victory=30 — relics ARE that
+    #     predictive, so the dense relic bonus is allowed to be strong.
+    #   - elite_kill=2.0 (boosted): elites drop the relics that drive #1.
+    #   - power_card_played_weight=0.5: "no scaling powers before Act 3 =
+    #     no win" — rewards building a scaling engine.
+    # Victory/boss/act terminals mirror the "victory" preset so the win
+    # objective still dominates per-event.
+    "win_meta": RewardConfig(
+        run_victory=30.0, boss_kill=8.0, act_completion=4.0, elite_kill=2.0,
+        relic_gained_weight=3.0, power_card_played_weight=0.5,
+        floor_advance=0.005, living_cost=-0.0005, death=-2.0,
+        hp_delta_weight=0.01, damage_dealt_weight=0.003,
+    ),
 }
 
 
@@ -323,6 +350,11 @@ class RunEnv(gym.Env):
         self.reward_config = reward_config or RewardConfig()
         self.rs: RunState | None = None
         self._last_hp: int = 0
+        # Previous relic count, for the per-step relic_gained delta. Tracked
+        # on the env (not the StepResult) because relics can be granted from
+        # many sources (elite/boss drops, treasure, shop, events) and the
+        # only robust signal is len(rs.relics) growing. Reset in reset().
+        self._last_relic_count: int = 0
         # Per-step memoization. `_state_gen` is bumped any time we mutate
         # RunState (reset or step). Each cache stores `(gen, value)` so
         # repeated calls within the same "frame" reuse the work. This
@@ -363,6 +395,7 @@ class RunEnv(gym.Env):
         )
         start_run(self.rs)
         self._last_hp = self.rs.hp
+        self._last_relic_count = len(self.rs.relics)
         # Reset episode milestone counters for terminal score.
         self._acts_completed = 0
         self._boss_dmg_dealt_ratio = 0.0
@@ -1081,6 +1114,24 @@ class RunEnv(gym.Env):
             hp_now = self.rs.hp
             r += cfg.hp_delta_weight * (hp_now - self._last_hp)
             self._last_hp = hp_now
+        # Relic-gained shaping (#1 win predictor). Robust per-step delta:
+        # any growth in len(rs.relics) since the previous step, from ANY
+        # source (elite/boss drops, treasure, shop, events). Tracker is
+        # always kept current so a 0-weight preset costs only the compare.
+        if self.rs is not None:
+            relic_now = len(self.rs.relics)
+            if cfg.relic_gained_weight != 0.0 and relic_now > self._last_relic_count:
+                r += cfg.relic_gained_weight * (relic_now - self._last_relic_count)
+            self._last_relic_count = relic_now
+        # Power-card-played shaping (scaling engine). Read+reset the counter
+        # CombatState.play_card increments. Reset every step even at weight 0
+        # so it never leaks across steps.
+        if self.rs is not None and self.rs.combat is not None:
+            cs = self.rs.combat
+            n_powers = getattr(cs, "powers_played_this_step", 0)
+            if cfg.power_card_played_weight != 0.0 and n_powers:
+                r += cfg.power_card_played_weight * n_powers
+            cs.powers_played_this_step = 0
         # Per-action shaping. Only meaningful when pre and post are
         # both in-combat (snapshots return 0 outside combat so deltas
         # vanish for map/event/reward steps).
