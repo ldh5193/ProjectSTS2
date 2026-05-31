@@ -5,41 +5,47 @@ run_engine can dispatch them at the right lifecycle points:
 
 - on_combat_start(rs, cs)
 - on_player_turn_start(rs, cs)
+- on_player_turn_end(rs, cs)          (Orichalcum block-if-0, Sai)
 - after_combat_victory(rs)
 - after_room_entered(rs, room_type)
+- modify_hand_draw(rs, cs, base)
+- on_attack_played(rs, cs, card)      (Kunai/Shuriken/Pen Nib)
+- on_card_played(rs, cs, card)        (Nunchaku/OrnamentalFan/LetterOpener)
 
-Each RelicDef carries an optional callback per hook. The dispatcher
-(`trigger`) iterates rs.relics and calls any hooks the relic
-overrides. Missing hooks are no-ops.
+Each RelicDef carries an optional callback per hook. The dispatchers
+iterate rs.relics and call any hooks the relic overrides; missing hooks
+are no-ops. Per-combat counters (resets_per_combat) live on the relic's
+RelicInstance.counter and are zeroed by reset_combat_counters at combat
+start.
 
-Coverage in this slice (12 relics):
-
-- BurningBlood (Ironclad starter): heal 6 after combat victory.
-- Vajra: +1 Strength at combat start.
-- Anchor: +10 block at combat start.
-- BagOfMarbles: 1 Vulnerable to enemy at combat start (turn 1).
-- BronzeScales: 3 Thorns to self at combat start.
-- DataDisk: +1 Focus at combat start (no-op behavioral, registry only).
-- OddlySmoothStone: +1 Dexterity at combat start.
-- BloodVial: heal 2 at start of turn 1.
-- MealTicket: heal 15 on rest-site entry.
-- Pantograph: heal 25 on boss-room entry.
-- Lantern: +1 energy on turn 1.
-- RedMask: 1 Weak to enemy at combat start (turn 1).
+Relics are verified against decompiled/MegaCrit.Sts2.Core.Models.Relics/*.
+Some effects requiring mechanics the sim lacks (per-card damage doubling,
+block-broken / enemy-death / shuffle events, Focus/orbs) are approximated
+to the nearest primitive and tagged // TODO(fidelity). Pools are derived
+from each relic's `rarity` field (RelicFactory.RollRarity split: Common
+50% / Uncommon 33% / Rare 17%; Ancient relics in the boss tier).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from .dsl import CardType
 from .game_state import RelicInstance, RunState, StateType
 from .powers import make_power
+
+# Card-type constants for per-card relic counters (Nunchaku/OrnamentalFan
+# count Attacks; LetterOpener counts Skills).
+_ATTACK = CardType.ATTACK
+_SKILL = CardType.SKILL
 
 
 HookOnCombat = Callable[[RunState, object], None]      # (rs, combat_state)
 HookOnTurn = Callable[[RunState, object], None]
 HookOnVictory = Callable[[RunState], None]
 HookOnRoom = Callable[[RunState, StateType], None]
+HookOnTurnEnd = Callable[[RunState, object], None]     # (rs, combat_state)
+HookOnCardPlayed = Callable[[RunState, object, object], None]  # (rs, cs, card)
 
 
 # Identity category — used by the v4 obs builder to encode "what kind
@@ -75,6 +81,18 @@ class RelicDef:
     # PenNib). The relic stores its running counter on its RelicInstance
     # (rs.relics entry) via the `counter` field.
     on_attack_played: Optional[HookOnAttack] = None
+    # Turn-end hook — fired by combat.end_player_turn at the very start of
+    # the player's turn-end (before turn-end power hooks). Used by Orichalcum
+    # (block if 0 block), Sai (block per turn), Kusarigama (damage if 2 attacks).
+    on_player_turn_end: Optional[HookOnTurnEnd] = None
+    # General per-card hook — fired by combat.play_card after ANY card resolves.
+    # Used by LetterOpener (Nth Skill -> damage), Nunchaku / OrnamentalFan
+    # (Nth Attack -> energy / block). The relic stores its counter on its
+    # RelicInstance.counter via the helpers below.
+    on_card_played: Optional[HookOnCardPlayed] = None
+    # If True, the relic's RelicInstance.counter is reset to 0 at the start of
+    # each combat (decompiled per-combat counters: Kunai/Shuriken/Nunchaku/…).
+    resets_per_combat: bool = False
     # Obs category — see RELIC_CATEGORIES above.
     category: str = "misc"
 
@@ -119,6 +137,73 @@ def _attack_counter_power(rs, cs, card, *, relic_id: str,
     inst.counter = (inst.counter or 0) + 1
     if inst.counter % period == 0:
         cs.player.add_or_stack_power(make_power(power_id, amount, cs.player))
+
+
+def _deal_damage_all_monsters(cs, amount: int) -> None:
+    """Deal `amount` unblockable-by-block damage to every alive monster
+    (LetterOpener, Kusarigama). Uses the standard damage pipeline so Thorns/
+    block still apply, matching CreatureCmd.Damage(HittableEnemies, ...)."""
+    from .damage import deal_damage
+    for m in list(cs.alive_monsters()):
+        if m.alive:
+            deal_damage(amount, cs.player, m)
+
+
+def _relic_inst(rs, relic_id: str):
+    return next((r for r in rs.relics if r.id == relic_id), None)
+
+
+def _card_type_counter(rs, cs, card, *, relic_id: str, card_type,
+                       period: int, action) -> None:
+    """Generic 'every Nth card of `card_type` played -> run `action(cs)`'.
+    Counter lives on the relic's RelicInstance.counter. Mirrors Nunchaku
+    (Attack, period 10 -> +1 energy), OrnamentalFan (Attack, period 3 -> block),
+    LetterOpener (Skill, period 3 -> damage to all enemies)."""
+    if card.type is not card_type:
+        return
+    inst = _relic_inst(rs, relic_id)
+    if inst is None:
+        return
+    inst.counter = (inst.counter or 0) + 1
+    if inst.counter % period == 0:
+        action(cs)
+
+
+def _turn_period_energy(rs, cs, *, relic_id: str, period: int, amount: int) -> None:
+    """Every `period`-th player turn -> gain `amount` energy (HappyFlower).
+    Counter on the relic's RelicInstance; resets per combat."""
+    inst = _relic_inst(rs, relic_id)
+    if inst is None:
+        return
+    inst.counter = (inst.counter or 0) + 1
+    if inst.counter % period == 0:
+        cs.player.energy += amount
+
+
+def _turn_period_draw(rs, cs, *, relic_id: str, period: int, amount: int) -> None:
+    """Every `period`-th player turn -> draw `amount` cards (Pendulum)."""
+    inst = _relic_inst(rs, relic_id)
+    if inst is None:
+        return
+    inst.counter = (inst.counter or 0) + 1
+    if inst.counter % period == 0:
+        cs.draw(amount)
+
+
+def _conditional_low_hp_strength(rs, cs, *, threshold_pct: int, amount: int) -> None:
+    """RedSkull: while owner HP <= threshold% of max, owner has +amount
+    Strength. Applied at combat start (the resting/post-combat removal in the
+    decompile is moot here since powers reset between combats). We approximate
+    the AfterCurrentHpChanged re-check by applying the bonus once at combat
+    start if HP is already below threshold — the common case for this relic."""
+    if rs.hp * 100 <= rs.max_hp * threshold_pct:
+        _apply_power_to_self(cs, "strength", amount)
+
+
+def _apply_relic_power_to_self(cs, power_id: str, amount: int = 1) -> None:
+    """Apply a relic-backing power (TungstenRod/TheBoot/Ginger/Turnip) to the
+    player at combat start. `amount` is the power's magnitude (TheBoot=5)."""
+    cs.player.powers.append(make_power(power_id, amount, cs.player))
 
 
 RELIC_REGISTRY: dict[str, RelicDef] = {
@@ -179,8 +264,10 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     ),
     "DATA_DISK": RelicDef(
         id="DATA_DISK", name="Data Disk", rarity="common", merchant_cost=175,
-        # Focus has no in-sim effect yet (orb-related). Registry presence
-        # is enough so the relic can be granted without crashing.
+        # decompiled DataDisk.cs: +1 Focus at combat start. Focus only affects
+        # Orbs, which the Ironclad-only sim does not model, so this is a
+        # faithful no-op for the current character set.
+        # TODO(fidelity): wire Focus once Orb mechanics (Defect) are added.
         on_combat_start=lambda rs, cs: None,
         category="misc",
     ),
@@ -205,8 +292,12 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     ),
     "GINGER": RelicDef(
         id="GINGER", name="Ginger", rarity="uncommon", merchant_cost=250,
-        # Combat power-application check — combat code reads
-        # rs.has_relic("GINGER") before applying weak.
+        # Weak-immunity relic (STS1 Ginger semantics; STS2 has no exact match,
+        # JuzuBracelet/RingOfTheSnake are the nearest). FIXED: applies a real
+        # ginger power at combat start so the owner cannot gain Weak (was: a
+        # registry-only tag never read by combat). The Creature.add_or_stack
+        # guard now drops Weak while this power is present.
+        on_combat_start=lambda rs, cs: _apply_relic_power_to_self(cs, "ginger"),
         category="status_immune",
     ),
     "GIRYA": RelicDef(
@@ -276,12 +367,12 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     ),
     # --- Combat-start buff relics --------------------------------------
     "BRIMSTONE": RelicDef(
-        id="BRIMSTONE", name="Brimstone", rarity="rare", merchant_cost=300,
-        # decompiled Brimstone.cs: +2 Strength self, +1 Strength to enemies
-        # at the start of each of the owner's turns. L1 applies the
-        # combat-start tick (turn 1) — the recurring per-turn version would
-        # need on_player_turn_start; modelled here as a strong opener.
-        on_combat_start=lambda rs, cs: (
+        id="BRIMSTONE", name="Brimstone", rarity="shop", merchant_cost=300,
+        # decompiled Brimstone.cs (Ironclad, Shop): AfterSideTurnStart -> +2
+        # Strength self AND +1 Strength to all enemies at the start of EACH of
+        # the owner's turns. FIXED: now a per-turn hook (was: turn-1-only at
+        # combat start). The sim fires on_player_turn_start every player turn.
+        on_player_turn_start=lambda rs, cs: (
             _apply_power_to_self(cs, "strength", 2),
             _apply_power_to_all_monsters(cs, "strength", 1),
         ) and None,
@@ -289,40 +380,52 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     ),
     "ORICHALCUM": RelicDef(
         id="ORICHALCUM", name="Orichalcum", rarity="uncommon", merchant_cost=250,
-        # decompiled Orichalcum.cs: BlockVar(6) at turn end if you have 0
-        # block. L1 approximation: grant 6 block at combat start (the
-        # turn-end-conditional version needs a new hook; opener block is a
-        # faithful lower bound of its value).
-        on_combat_start=lambda rs, cs: _gain_block(cs, 6),
+        # decompiled Orichalcum.cs: BeforeTurnEndVeryEarly -> if Block == 0,
+        # gain BlockVar(6) at turn end. FIXED: now a turn-end hook gated on the
+        # player having 0 block (was: unconditional +6 block at combat start).
+        on_player_turn_end=lambda rs, cs: (
+            _gain_block(cs, 6) if cs.player.block == 0 else None),
         category="block_start",
     ),
     "TUNGSTEN_ROD": RelicDef(
-        id="TUNGSTEN_ROD", name="Tungsten Rod", rarity="boss",
-        # decompiled TungstenRod: reduce HP loss by 1. Combat code can read
-        # rs.has_relic("TUNGSTEN_ROD"); category only here for obs.
-        category="misc",
+        id="TUNGSTEN_ROD", name="Tungsten Rod", rarity="rare",
+        # decompiled TungstenRod.cs: ModifyHpLostAfterOsty -> reduce HP loss
+        # the owner takes by 1. FIXED: applies a real tungsten_rod power at
+        # combat start (was: registry-only no-op). Damage pipeline reads it.
+        on_combat_start=lambda rs, cs: _apply_relic_power_to_self(cs, "tungsten_rod", 1),
+        category="status_immune",
     ),
     "PAPER_PHROG": RelicDef(
         id="PAPER_PHROG", name="Paper Phrog", rarity="uncommon", merchant_cost=250,
-        # Ironclad pool (IroncladRelicPool.cs). STS analog: Vulnerable is
-        # 75% more effective. L1: apply +1 Vulnerable to all enemies at
-        # combat start as a proxy for its damage amplification.
-        on_combat_start=lambda rs, cs: _apply_power_to_all_monsters(cs, "vulnerable", 1),
+        # decompiled PaperPhrog.cs: ModifyVulnerableMultiplier +0.25 on powered
+        # attacks vs Vulnerable enemies (Vulnerable ×1.5 -> ×1.75). The sim has
+        # no per-relic vulnerable-multiplier primitive, so we apply the
+        # cruelty power (same +0.25 vulnerable-multiplier mechanic) at combat
+        # start as the faithful nearest primitive.
+        # TODO(fidelity): expose a relic-level vulnerable multiplier instead of
+        # reusing the cruelty power (functionally identical: +25% vuln dmg).
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "cruelty", 25),
         category="vuln_start",
     ),
     "RED_SKULL": RelicDef(
         id="RED_SKULL", name="Red Skull", rarity="common", merchant_cost=175,
-        # Ironclad pool. STS analog: +3 Strength while HP <= 50%. L1:
-        # +1 Strength at combat start (unconditional lower bound).
-        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "strength", 1),
+        # decompiled RedSkull.cs: +3 Strength while HP <= 50% of max (re-checked
+        # on HP change). FIXED: conditional on HP <= 50% at combat start (was:
+        # unconditional +1 Strength). TODO(fidelity): re-evaluate mid-combat on
+        # HP crossing the threshold (needs an on-hp-changed hook).
+        on_combat_start=lambda rs, cs: _conditional_low_hp_strength(
+            rs, cs, threshold_pct=50, amount=3),
         category="strength",
     ),
     "CHARONS_ASHES": RelicDef(
-        id="CHARONS_ASHES", name="Charon's Ashes", rarity="uncommon", merchant_cost=250,
-        # Ironclad pool. STS analog: +3 dmg to all enemies on Burn exhaust.
-        # L1: 3 thorns at combat start as a passive offensive proxy.
-        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "thorns", 3),
-        category="thorns",
+        id="CHARONS_ASHES", name="Charon's Ashes", rarity="rare",
+        # decompiled CharonsAshes.cs (Ironclad, Rare): AfterCardExhausted ->
+        # deal DamageVar(3) to ALL enemies. FIXED: real per-exhaust AoE damage
+        # (was: 3 thorns at combat start). Wired via the card-exhaust power
+        # hook below (charons_ashes power on the player).
+        on_combat_start=lambda rs, cs: cs.player.powers.append(
+            make_power("charons_ashes", 3, cs.player)),
+        category="aoe_damage",
     ),
     "VELVET_CHOKER": RelicDef(
         id="VELVET_CHOKER", name="Velvet Choker", rarity="boss",
@@ -333,27 +436,33 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     ),
     # --- Per-attack scaling relics (need on_attack_played hook) ---------
     "KUNAI": RelicDef(
-        id="KUNAI", name="Kunai", rarity="rare", merchant_cost=300,
+        id="KUNAI", name="Kunai", rarity="uncommon", merchant_cost=300,
         # decompiled Kunai.cs: every 3rd ATTACK played -> +1 Dexterity.
         on_attack_played=lambda rs, cs, card: _attack_counter_power(
             rs, cs, card, relic_id="KUNAI", period=3, power_id="dexterity", amount=1),
+        resets_per_combat=True,
         category="dexterity",
     ),
     "SHURIKEN": RelicDef(
-        id="SHURIKEN", name="Shuriken", rarity="rare", merchant_cost=300,
+        id="SHURIKEN", name="Shuriken", rarity="uncommon", merchant_cost=300,
         # decompiled Shuriken.cs: every 3rd ATTACK played -> +1 Strength.
         on_attack_played=lambda rs, cs, card: _attack_counter_power(
             rs, cs, card, relic_id="SHURIKEN", period=3, power_id="strength", amount=1),
+        resets_per_combat=True,
         category="strength",
     ),
     "PEN_NIB": RelicDef(
         id="PEN_NIB", name="Pen Nib", rarity="uncommon", merchant_cost=250,
-        # decompiled PenNib.cs: every 10th ATTACK -> gain +2 Vigor (a one-shot
-        # additive damage buff on the next powered attack). L1 maps PenNib's
-        # "double-damage on 10th attack" to a Vigor burst, which the sim's
-        # VigorPower already models faithfully.
+        # decompiled PenNib.cs: every 10th ATTACK played deals DOUBLE damage
+        # (ModifyDamageMultiplicative ×2 on the 10th attack). The sim has no
+        # per-card outgoing-damage doubling primitive at the relic layer, so we
+        # approximate the periodic burst with Vigor (flat +8 additive on the
+        # next powered attack), which VigorPower models faithfully.
+        # TODO(fidelity): exact ×2 on the 10th attack needs a card-damage
+        # multiplier hook in play_card; Vigor +8 is the nearest primitive.
         on_attack_played=lambda rs, cs, card: _attack_counter_power(
             rs, cs, card, relic_id="PEN_NIB", period=10, power_id="vigor", amount=8),
+        resets_per_combat=True,
         category="strength",
     ),
     "AKABEKO": RelicDef(
@@ -396,17 +505,245 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
         category="max_hp",
     ),
     "THE_BOOT": RelicDef(
-        id="THE_BOOT", name="The Boot", rarity="common", merchant_cost=175,
-        # STS analog: small unblockable attacks deal min 5. Combat code can
-        # read rs.has_relic("THE_BOOT"). Registry presence only here.
+        id="THE_BOOT", name="The Boot", rarity="event",
+        # decompiled TheBoot.cs: ModifyHpLostBeforeOsty -> when the owner deals
+        # a powered attack for 1..4 unblocked HP loss, raise it to 5. FIXED:
+        # applies a real the_boot power (amount 5) at combat start (was:
+        # registry-only no-op). The damage pipeline reads modify_hp_lost.
+        on_combat_start=lambda rs, cs: _apply_relic_power_to_self(cs, "the_boot", 5),
         category="misc",
     ),
     "HAND_DRILL": RelicDef(
-        id="HAND_DRILL", name="Hand Drill", rarity="uncommon", merchant_cost=250,
-        # STS analog: breaking block applies 2 Vulnerable. L1: +1 Vulnerable
-        # to enemy at combat start as a proxy.
-        on_combat_start=lambda rs, cs: _apply_power_to_monster(cs, "vulnerable", 1),
+        id="HAND_DRILL", name="Hand Drill", rarity="event",
+        # decompiled HandDrill.cs: AfterDamageGiven with WasBlockBroken ->
+        # apply 2 Vulnerable to the enemy whose block you broke. The sim lacks
+        # a block-broken event, so we approximate with +2 Vulnerable to a
+        # single enemy at combat start (was: +1).
+        # TODO(fidelity): fire on the block-broken event for exact timing.
+        on_combat_start=lambda rs, cs: _apply_power_to_monster(cs, "vulnerable", 2),
         category="vuln_start",
+    ),
+    # ===================================================================
+    # Phase 8 breadth expansion — verified vs decompiled Relics/*.cs.
+    # Mapped to existing RELIC_CATEGORIES buckets (no obs-layout change).
+    # ===================================================================
+
+    # --- Per-turn block relics (on_player_turn_start) ------------------
+    "SAI": RelicDef(
+        id="SAI", name="Sai", rarity="ancient",
+        # Sai.cs: AfterSideTurnStart (Player) -> gain BlockVar(7). Per-turn.
+        on_player_turn_start=lambda rs, cs: _gain_block(cs, 7),
+        category="block_start",
+    ),
+    "THE_ABACUS": RelicDef(
+        id="THE_ABACUS", name="The Abacus", rarity="shop", merchant_cost=250,
+        # TheAbacus.cs: AfterShuffle -> gain BlockVar(6). The sim has no shuffle
+        # event; approximate as +6 block at the start of each turn (a reshuffle
+        # happens roughly per turn once the deck cycles).
+        # TODO(fidelity): fire on draw-pile reshuffle for exact timing.
+        on_player_turn_start=lambda rs, cs: _gain_block(cs, 6),
+        category="block_start",
+    ),
+    "CAPTAINS_WHEEL": RelicDef(
+        id="CAPTAINS_WHEEL", name="Captain's Wheel", rarity="rare",
+        # CaptainsWheel.cs: AfterBlockCleared on RoundNumber == 3 -> gain
+        # BlockVar(18). Fires once, at the start of the player's 3rd turn.
+        on_player_turn_start=lambda rs, cs: (
+            _gain_block(cs, 18) if cs.turn_number == 3 else None),
+        category="block_start",
+    ),
+
+    # --- Combat-start buff relics (on_combat_start) --------------------
+    "SLING_OF_COURAGE": RelicDef(
+        id="SLING_OF_COURAGE", name="Sling of Courage", rarity="shop", merchant_cost=160,
+        # SlingOfCourage.cs: BeforeCombatStart (vs Elite) -> +2 Strength. We
+        # apply unconditionally at combat start (elite gating omitted —
+        # Strength is the relic's whole value).
+        # TODO(fidelity): gate on Elite encounters only.
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "strength", 2),
+        category="strength",
+    ),
+    "BELT_BUCKLE": RelicDef(
+        id="BELT_BUCKLE", name="Belt Buckle", rarity="shop", merchant_cost=160,
+        # BeltBuckle.cs: BeforeCombatStart -> +2 Dexterity (DexterityPower(2)).
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "dexterity", 2),
+        category="dexterity",
+    ),
+    "GORGET": RelicDef(
+        id="GORGET", name="Gorget", rarity="common", merchant_cost=175,
+        # Gorget.cs: AfterRoomEntered (Combat) -> apply PlatingPower(4). We
+        # apply Plating(4) at combat start (turn-end recurring block).
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "plating", 4),
+        category="block_start",
+    ),
+
+    # --- Energy relics (raise max_energy; ancient/boss pool) -----------
+    "SPIKED_GAUNTLETS": RelicDef(
+        id="SPIKED_GAUNTLETS", name="Spiked Gauntlets", rarity="ancient",
+        # SpikedGauntlets.cs: EnergyVar(1) -> +1 max energy (ModifyMaxEnergy).
+        on_combat_start=lambda rs, cs: _gain_energy(cs, 1),
+        category="energy",
+    ),
+    "WHISPERING_EARRING": RelicDef(
+        id="WHISPERING_EARRING", name="Whispering Earring", rarity="ancient",
+        # WhisperingEarring.cs: EnergyVar(1) -> +1 max energy.
+        on_combat_start=lambda rs, cs: _gain_energy(cs, 1),
+        category="energy",
+    ),
+    "PHILOSOPHERS_STONE": RelicDef(
+        id="PHILOSOPHERS_STONE", name="Philosopher's Stone", rarity="ancient",
+        # PhilosophersStone.cs: EnergyVar(1) +1 max energy; downside = all
+        # enemies start with +1 Strength. We model both: +1 energy and +1 Str
+        # to every monster at combat start.
+        on_combat_start=lambda rs, cs: (
+            _gain_energy(cs, 1),
+            _apply_power_to_all_monsters(cs, "strength", 1),
+        ) and None,
+        category="energy",
+    ),
+    "PRISMATIC_GEM": RelicDef(
+        id="PRISMATIC_GEM", name="Prismatic Gem", rarity="ancient",
+        # PrismaticGem.cs: EnergyVar(1) -> +1 max energy.
+        on_combat_start=lambda rs, cs: _gain_energy(cs, 1),
+        category="energy",
+    ),
+    "BREAD": RelicDef(
+        id="BREAD", name="Bread", rarity="shop", merchant_cost=160,
+        # Bread.cs: +1 energy on turn 1 (GainEnergy), then lose 2 energy at the
+        # start of turn 2 (LoseEnergy). Net: a turn-1 burst. We model the +1
+        # energy on turn 1 only (the downside reduction omitted as cheap-only).
+        # TODO(fidelity): subtract 2 energy on turn 2.
+        on_player_turn_start=lambda rs, cs: (
+            setattr(cs.player, "energy", cs.player.energy + 1)
+            if cs.turn_number == 1 else None),
+        category="energy",
+    ),
+    "VERY_HOT_COCOA": RelicDef(
+        id="VERY_HOT_COCOA", name="Very Hot Cocoa", rarity="ancient",
+        # VeryHotCocoa.cs: EnergyVar(4) -> on turn 1, gain +4 energy (big burst,
+        # not a permanent max-energy raise). We grant +4 live energy on turn 1.
+        on_player_turn_start=lambda rs, cs: (
+            setattr(cs.player, "energy", cs.player.energy + 4)
+            if cs.turn_number == 1 else None),
+        category="energy",
+    ),
+
+    # --- Per-turn energy/draw cadence relics ---------------------------
+    "HAPPY_FLOWER": RelicDef(
+        id="HAPPY_FLOWER", name="Happy Flower", rarity="common", merchant_cost=175,
+        # HappyFlower.cs: every 3rd player turn -> +1 energy (EnergyVar(1),
+        # Turns 3). Counter on the RelicInstance; resets per combat.
+        on_player_turn_start=lambda rs, cs: _turn_period_energy(
+            rs, cs, relic_id="HAPPY_FLOWER", period=3, amount=1),
+        resets_per_combat=True,
+        category="energy",
+    ),
+    "PENDULUM": RelicDef(
+        id="PENDULUM", name="Pendulum", rarity="common", merchant_cost=175,
+        # Pendulum.cs: every 3rd player turn -> draw 1 (CardsVar(1), Turns 3).
+        on_player_turn_start=lambda rs, cs: _turn_period_draw(
+            rs, cs, relic_id="PENDULUM", period=3, amount=1),
+        resets_per_combat=True,
+        category="draw_card",
+    ),
+
+    # --- Per-card cadence relics (on_card_played) ----------------------
+    "NUNCHAKU": RelicDef(
+        id="NUNCHAKU", name="Nunchaku", rarity="uncommon", merchant_cost=250,
+        # Nunchaku.cs: every 10th ATTACK played -> +1 energy (EnergyVar(1),
+        # Cards 10). Counter on the RelicInstance; resets per combat.
+        on_card_played=lambda rs, cs, card: _card_type_counter(
+            rs, cs, card, relic_id="NUNCHAKU", card_type=_ATTACK, period=10,
+            action=lambda c: setattr(c.player, "energy", c.player.energy + 1)),
+        resets_per_combat=True,
+        category="energy",
+    ),
+    "ORNAMENTAL_FAN": RelicDef(
+        id="ORNAMENTAL_FAN", name="Ornamental Fan", rarity="uncommon", merchant_cost=250,
+        # OrnamentalFan.cs: every 3rd ATTACK played this turn -> gain BlockVar(4).
+        # We use a running per-combat counter (the per-turn reset is omitted;
+        # net block over a combat is the same modulo turn boundaries).
+        # TODO(fidelity): reset the counter at the start of each player turn.
+        on_card_played=lambda rs, cs, card: _card_type_counter(
+            rs, cs, card, relic_id="ORNAMENTAL_FAN", card_type=_ATTACK, period=3,
+            action=lambda c: _gain_block(c, 4)),
+        resets_per_combat=True,
+        category="block_start",
+    ),
+    "LETTER_OPENER": RelicDef(
+        id="LETTER_OPENER", name="Letter Opener", rarity="uncommon", merchant_cost=250,
+        # LetterOpener.cs: every 3rd SKILL played this turn -> deal DamageVar(5)
+        # to ALL enemies. Per-combat counter (per-turn reset omitted).
+        # TODO(fidelity): reset the counter at the start of each player turn.
+        on_card_played=lambda rs, cs, card: _card_type_counter(
+            rs, cs, card, relic_id="LETTER_OPENER", card_type=_SKILL, period=3,
+            action=lambda c: _deal_damage_all_monsters(c, 5)),
+        resets_per_combat=True,
+        category="aoe_damage",
+    ),
+
+    # --- Turn-1 / turn-start utility -----------------------------------
+    "GREMLIN_HORN": RelicDef(
+        id="GREMLIN_HORN", name="Gremlin Horn", rarity="uncommon", merchant_cost=250,
+        # GremlinHorn.cs: AfterDeath of an enemy -> +1 energy and draw 1. The
+        # sim has no enemy-death relic hook; approximate with +1 energy on
+        # turn 1 (the relic's value is mid-combat tempo).
+        # TODO(fidelity): fire on enemy death (needs an on-death hook).
+        on_player_turn_start=lambda rs, cs: (
+            setattr(cs.player, "energy", cs.player.energy + 1)
+            if cs.turn_number == 1 else None),
+        category="energy",
+    ),
+    "INTIMIDATING_HELMET": RelicDef(
+        id="INTIMIDATING_HELMET", name="Intimidating Helmet", rarity="rare",
+        # IntimidatingHelmet.cs: when you play a card costing >= 2 energy, gain
+        # BlockVar(4). The sim lacks a before-card-played relic cost gate; we
+        # approximate with +4 block at combat start. EnergyVar(2) is the cost
+        # threshold, not an energy grant.
+        # TODO(fidelity): gain 4 block per >=2-cost card played.
+        on_combat_start=lambda rs, cs: _gain_block(cs, 4),
+        category="block_start",
+    ),
+    "CENTENNIAL_PUZZLE": RelicDef(
+        id="CENTENNIAL_PUZZLE", name="Centennial Puzzle", rarity="common", merchant_cost=175,
+        # CentennialPuzzle.cs: the first time you take unblocked damage each
+        # combat, draw 3. The sim has no on-damage-received relic hook; we
+        # approximate with draw +3 on turn 1 via a hand-draw modifier.
+        # TODO(fidelity): trigger on first unblocked-damage taken.
+        modify_hand_draw=lambda rs, cs, base: (
+            base + 3 if getattr(cs, "turn_number", 1) == 1 else base),
+        category="draw_card",
+    ),
+
+    # --- Max-HP / heal-on-pickup relics --------------------------------
+    "DRAGON_FRUIT": RelicDef(
+        id="DRAGON_FRUIT", name="Dragon Fruit", rarity="shop", merchant_cost=160,
+        # DragonFruit.cs: +1 max HP on pickup (and Frail->nothing). Pickup max
+        # HP handled in add_relic. (Real value also adds a status-card removal
+        # which the sim omits.)
+        category="max_hp",
+    ),
+    "REGAL_PILLOW": RelicDef(
+        id="REGAL_PILLOW", name="Regal Pillow", rarity="common", merchant_cost=175,
+        # RegalPillow.cs: HealVar(15) -> heal +15 extra when resting.
+        after_room_entered=lambda rs, rt: rs.heal(15) if rt is StateType.REST else None,
+        category="heal_rest",
+    ),
+
+    # --- Gold relics ---------------------------------------------------
+    "OLD_COIN": RelicDef(
+        id="OLD_COIN", name="Old Coin", rarity="rare",
+        # OldCoin.cs: GoldVar(300) -> +300 gold on pickup (handled in add_relic).
+        category="gold",
+    ),
+
+    # --- Status-immunity relics ----------------------------------------
+    "TURNIP": RelicDef(
+        id="TURNIP", name="Turnip", rarity="rare",
+        # Frail-immunity relic (STS1 Turnip). Applies a turnip power at combat
+        # start so the owner cannot gain Frail (read by Creature.add_or_stack).
+        on_combat_start=lambda rs, cs: _apply_relic_power_to_self(cs, "turnip"),
+        category="status_immune",
     ),
 }
 
@@ -478,6 +815,35 @@ def trigger_on_attack_played(rs: RunState, combat, card) -> None:
             rd.on_attack_played(rs, combat, card)
 
 
+def trigger_on_player_turn_end(rs: RunState, combat) -> None:
+    """Fired by combat.end_player_turn at the very start of the player's
+    turn-end (Orichalcum block-if-0, Sai/Kusarigama)."""
+    for r in rs.relics:
+        rd = RELIC_REGISTRY.get(r.id)
+        if rd and rd.on_player_turn_end:
+            rd.on_player_turn_end(rs, combat)
+
+
+def trigger_on_card_played(rs: RunState, combat, card) -> None:
+    """Fired by combat.play_card after ANY card resolves. Drives the per-card
+    cadence relics (Nunchaku/OrnamentalFan Attack-count, LetterOpener
+    Skill-count)."""
+    for r in rs.relics:
+        rd = RELIC_REGISTRY.get(r.id)
+        if rd and rd.on_card_played:
+            rd.on_card_played(rs, combat, card)
+
+
+def reset_combat_counters(rs: RunState) -> None:
+    """Reset RelicInstance.counter to 0 for every owned relic flagged
+    resets_per_combat (Kunai/Shuriken/Nunchaku/PenNib/HappyFlower/…). Called
+    by run_engine at the start of each combat."""
+    for r in rs.relics:
+        rd = RELIC_REGISTRY.get(r.id)
+        if rd and rd.resets_per_combat:
+            r.counter = 0
+
+
 def relic_ids() -> list[str]:
     return list(RELIC_REGISTRY)
 
@@ -491,30 +857,48 @@ def relic_ids() -> list[str]:
 # no-op). De-dup and RNG-determinism are handled by sample_relic_from_pool.
 # ---------------------------------------------------------------------------
 
-# Common/uncommon/rare = the per-floor reward pool (elite + treasure draw
-# from these). Boss pool is the post-boss reward (energy relics live here).
-RELIC_POOLS: dict[str, list[str]] = {
-    "common": [
-        "VAJRA", "ANCHOR", "BAG_OF_MARBLES", "BRONZE_SCALES",
-        "ODDLY_SMOOTH_STONE", "BLOOD_VIAL", "RED_MASK", "RED_SKULL",
-        "LANTERN", "BAG_OF_PREPARATION", "PEAR", "THE_BOOT",
-    ],
-    "uncommon": [
-        "PANTOGRAPH", "GINGER", "GIRYA", "BLESSED_ANTLER",
-        "ORICHALCUM", "PAPER_PHROG", "CHARONS_ASHES", "PEN_NIB",
-        "AKABEKO", "MANGO", "DARKSTONE_PERIAPT", "HAND_DRILL",
-    ],
-    "rare": [
-        "BRIMSTONE", "KUNAI", "SHURIKEN", "MEAT_ON_THE_BONE",
-    ],
-    "boss": [
-        "ECTOPLASM", "SOZU", "COFFEE_DRIPPER", "VELVET_CHOKER",
-        "TUNGSTEN_ROD",
-    ],
+# Pools are derived from each relic's `rarity` field (single source of truth),
+# mirroring how the decompiled SharedRelicPool / IroncladRelicPool split by
+# RelicModel.Rarity at draw time. STS2 rarity -> reward-tier mapping:
+#   common   -> "common"    (regular reward common tier)
+#   uncommon -> "uncommon"
+#   rare     -> "rare"
+#   shop     -> "rare"       (Shop-rarity relics are reward-eligible via shop;
+#                             folded into the rare reward tier so they still
+#                             appear in the run rather than being unreachable)
+#   ancient  -> "boss"       (Ancient = STS2's boss/energy-with-downside class;
+#                             granted only via the boss-reward path)
+#   event/starter/none      -> excluded from reward pools (event-only / starter)
+_RARITY_TO_TIER: dict[str, str] = {
+    "common": "common",
+    "uncommon": "uncommon",
+    "rare": "rare",
+    "shop": "rare",
+    "ancient": "boss",
+    # "boss" is the sim's legacy alias for the Ancient energy-relic class
+    # (Ectoplasm/Sozu/Coffee Dripper/Velvet Choker). STS2 has no "Boss"
+    # rarity — these are RelicRarity.Ancient — but the alias is kept so the
+    # boss-reward path stays wired. Both map to the boss reward tier.
+    "boss": "boss",
 }
 
-# Weighted rarity split for the common/uncommon/rare reward draw
-# (decompiled RelicPoolModel rarity weighting; simplified L1 weights).
+
+def _build_pools() -> dict[str, list[str]]:
+    pools: dict[str, list[str]] = {"common": [], "uncommon": [], "rare": [], "boss": []}
+    for rid, rd in RELIC_REGISTRY.items():
+        tier = _RARITY_TO_TIER.get(rd.rarity)
+        if tier is not None:
+            pools[tier].append(rid)
+    return pools
+
+
+# Common/uncommon/rare = the per-floor reward pool (elite + treasure draw
+# from these). Boss pool is the post-boss reward (ancient energy relics).
+RELIC_POOLS: dict[str, list[str]] = _build_pools()
+
+# Weighted rarity split for the common/uncommon/rare reward draw. Verified vs
+# decompiled RelicFactory.RollRarity: num < 0.5 -> Common; < 0.83 -> Uncommon;
+# else Rare  =>  Common 50% / Uncommon 33% / Rare 17%.
 _REWARD_RARITY_WEIGHTS = (("common", 50), ("uncommon", 33), ("rare", 17))
 
 

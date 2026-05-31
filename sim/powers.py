@@ -32,6 +32,21 @@ class Power:
     def modify_block_multiplicative(self, dealer, base_amount: int) -> float:
         return 1.0
 
+    def modify_hp_lost(self, dealer, target, amount: int) -> int:
+        """Modify unblocked HP loss about to be applied to `target`.
+        Return the (possibly adjusted) amount. Used by relic-powers
+        Tungsten Rod (−1 to HP loss the owner takes) and The Boot (min 5
+        on the owner's small powered attacks). Default: no change."""
+        return amount
+
+    def blocks_weak(self) -> bool:
+        """If True, the owner cannot be afflicted with Weak (Ginger)."""
+        return False
+
+    def blocks_frail(self) -> bool:
+        """If True, the owner cannot be afflicted with Frail (Turnip)."""
+        return False
+
     # ---- trigger hooks (no-op defaults; engine powers override) ----
     # `cs` is the CombatState, `owner` is the creature that holds this power
     # (i.e. the side whose event just fired).
@@ -557,6 +572,77 @@ class ViciousPower(Power):
 
 
 @dataclass
+class TungstenRodPower(Power):
+    """Relic-power backing TungstenRod.cs (ModifyHpLostAfterOsty): reduces HP
+    loss the owner takes by `amount` (base 1, floored at 0). Applied to the
+    player at combat start by the TUNGSTEN_ROD relic."""
+    id: str = field(default="tungsten_rod", init=False)
+    _owner: object = None
+
+    def modify_hp_lost(self, dealer, target, amount: int) -> int:
+        if target is not self._owner:
+            return amount
+        return max(0, amount - self.amount)
+
+
+@dataclass
+class TheBootPower(Power):
+    """Relic-power backing TheBoot.cs (ModifyHpLostBeforeOsty): when the owner
+    deals a powered attack for 1..`amount`-1 unblocked HP loss to an enemy,
+    raise it to `amount` (base 5). Applied to the player at combat start by the
+    THE_BOOT relic. We approximate 'powered attack' as any damage routed
+    through deal_damage where dealer is the owner and target is not the owner."""
+    id: str = field(default="the_boot", init=False)
+    _owner: object = None
+
+    def modify_hp_lost(self, dealer, target, amount: int) -> int:
+        if dealer is not self._owner or target is self._owner:
+            return amount
+        if 1 <= amount < self.amount:
+            return self.amount
+        return amount
+
+
+@dataclass
+class CharonsAshesPower(Power):
+    """Relic-power backing CharonsAshes.cs (AfterCardExhausted): whenever a
+    card the owner owns is exhausted, deal `amount` (base 3) damage to ALL
+    enemies. Applied to the player at combat start by the CHARONS_ASHES relic."""
+    id: str = field(default="charons_ashes", init=False)
+    _owner: object = None
+
+    def on_card_exhausted(self, cs, owner, card) -> None:
+        from .damage import deal_damage
+        for m in cs.alive_monsters():
+            if m.alive:
+                deal_damage(self.amount, owner, m)
+
+
+@dataclass
+class GingerPower(Power):
+    """Relic-power backing Weak-immunity (JuzuBracelet/Ginger-style). While
+    present the owner cannot gain Weak. Applied to the player at combat start
+    by the GINGER relic and read by combat's weak-application guard."""
+    id: str = field(default="ginger", init=False)
+    _owner: object = None
+
+    def blocks_weak(self) -> bool:
+        return True
+
+
+@dataclass
+class TurnipPower(Power):
+    """Relic-power backing Frail-immunity (Turnip-style). While present the
+    owner cannot gain Frail. Applied to the player at combat start by the
+    TURNIP relic and read by combat's frail-application guard."""
+    id: str = field(default="turnip", init=False)
+    _owner: object = None
+
+    def blocks_frail(self) -> bool:
+        return True
+
+
+@dataclass
 class NoDrawPower(Power):
     """NoDrawPower.cs: the owner cannot draw cards for the rest of the turn.
     Applied by Battle Trance after its draw. Ticked off at the owner's turn
@@ -602,6 +688,12 @@ POWER_REGISTRY: dict[str, type[Power]] = {
     "hellraiser": HellraiserPower,
     "unmovable": UnmovablePower,
     "vicious": ViciousPower,
+    # Relic-backing powers (applied at combat start by relics).
+    "tungsten_rod": TungstenRodPower,
+    "the_boot": TheBootPower,
+    "ginger": GingerPower,
+    "turnip": TurnipPower,
+    "charons_ashes": CharonsAshesPower,
 }
 
 

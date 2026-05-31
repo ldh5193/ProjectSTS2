@@ -492,12 +492,12 @@ def _start_combat(rs: RunState, encounter_id: str) -> None:
     _r.Random(rs.run_seed).shuffle(cs.draw_pile)
     cs.hand = []
     cs.discard_pile = []
-    cs.run_state = rs  # enable per-attack relic hooks (Kunai/Shuriken/Pen Nib)
-    # Reset per-attack scaling-relic counters at the start of each combat
-    # (decompiled Kunai/Shuriken reset on combat end; equivalent here).
-    for r in rs.relics:
-        if r.id in ("KUNAI", "SHURIKEN", "PEN_NIB"):
-            r.counter = 0
+    cs.run_state = rs  # enable per-attack/per-card/turn-end relic hooks
+    # Reset per-combat relic counters (Kunai/Shuriken/Nunchaku/PenNib/
+    # HappyFlower/Pendulum/…). Each is flagged resets_per_combat in the
+    # registry (decompiled per-combat counters reset on combat end).
+    from .relics import reset_combat_counters
+    reset_combat_counters(rs)
     cs.start_player_turn()
     rs.combat = cs
     # Fire on-combat-start relic hooks now that cs.player/cs.monster are wired up.

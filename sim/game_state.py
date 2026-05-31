@@ -310,6 +310,10 @@ class RunState:
             self.gain_max_hp(14)
         elif relic_id == "DARKSTONE_PERIAPT":
             self.gain_max_hp(6)
+        elif relic_id == "DRAGON_FRUIT":
+            self.gain_max_hp(1)
+        elif relic_id == "OLD_COIN":
+            self.gain_gold(300)
 
     def add_potion(self, potion_id: str) -> bool:
         """Place a potion in the first empty slot. Returns False if all

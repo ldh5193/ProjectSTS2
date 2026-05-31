@@ -25,6 +25,12 @@ class Creature:
         return None
 
     def add_or_stack_power(self, new_power: Power) -> None:
+        # Status-immunity relics (Ginger -> Weak, Turnip -> Frail). If the
+        # owner carries an immunity power, the matching debuff is ignored.
+        if new_power.id == "weak" and any(p.blocks_weak() for p in self.powers):
+            return
+        if new_power.id == "frail" and any(p.blocks_frail() for p in self.powers):
+            return
         existing = self.get_power(new_power.id)
         if existing is None:
             self.powers.append(new_power)

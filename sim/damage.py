@@ -40,6 +40,16 @@ def deal_damage(base_amount: int, dealer: Creature, target: Creature) -> tuple[i
     blocked = min(target.block, modified)
     target.block -= blocked
     unblocked = modified - blocked
+    # HP-loss modifiers (relic-powers): The Boot (dealer-side, raise small
+    # powered hits to 5) then Tungsten Rod (target-side, −1 HP loss). Order
+    # mirrors the decompile: ModifyHpLostBeforeOsty (Boot) then AfterOsty
+    # (Tungsten Rod). Both are no-ops unless the relic-power is present.
+    if unblocked > 0:
+        for p in dealer.powers:
+            unblocked = p.modify_hp_lost(dealer, target, unblocked)
+        for p in target.powers:
+            unblocked = p.modify_hp_lost(dealer, target, unblocked)
+        unblocked = max(0, unblocked)
     hp_loss = target.lose_hp(unblocked)
     # Thorns: if target has thorns AND took unblocked damage from a powered
     # attack (we approximate "powered" as "the attack went through deal_damage"
@@ -58,16 +68,16 @@ def deal_damage(base_amount: int, dealer: Creature, target: Creature) -> tuple[i
 
 
 def gain_block(creature: Creature, amount: int) -> None:
-    """Add block to a creature, applying Dexterity (additive +N from owner)
-    and Frail (×0.75 multiplicative on the owner's powered block)."""
-    actual = amount
-    dex = creature.get_power("dexterity") if hasattr(creature, "get_power") else None
-    if dex is not None:
-        actual += dex.amount
-    frail = creature.get_power("frail") if hasattr(creature, "get_power") else None
-    if frail is not None:
-        actual = int(actual * 0.75)
-    creature.block += max(0, actual)
+    """Add block to a creature, applying Dexterity (additive +N from owner),
+    Frail (×0.75) and any other block-multiplicative powers (Unmovable ×2 on
+    the owner's first N card block-gains this turn)."""
+    actual = float(amount)
+    if hasattr(creature, "get_power"):
+        for p in creature.powers:
+            actual += p.modify_block_additive(creature, amount)
+        for p in creature.powers:
+            actual *= p.modify_block_multiplicative(creature, amount)
+    creature.block += max(0, int(actual))
 
 
 def apply_poison_tick(creature: Creature) -> int:

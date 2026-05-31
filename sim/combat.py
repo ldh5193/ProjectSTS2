@@ -214,9 +214,13 @@ class CombatState:
         # Per-attack relic hooks (Kunai/Shuriken/Pen Nib) fire after an
         # ATTACK card resolves. Only when a RunState is attached (real runs;
         # standalone combat tests leave run_state=None).
-        if card.type is CardType.ATTACK and self.run_state is not None:
-            from .relics import trigger_on_attack_played
-            trigger_on_attack_played(self.run_state, self, card)
+        if self.run_state is not None:
+            from .relics import trigger_on_attack_played, trigger_on_card_played
+            if card.type is CardType.ATTACK:
+                trigger_on_attack_played(self.run_state, self, card)
+            # General per-card relic hook (LetterOpener counts Skills,
+            # Nunchaku/OrnamentalFan count Attacks via card type).
+            trigger_on_card_played(self.run_state, self, card)
         # Exhaust keyword: card leaves play to the exhaust pile. Also Corruption:
         # skills are exhausted on play instead of discarded.
         if card.exhaust or (
@@ -578,6 +582,12 @@ class CombatState:
 
     def end_player_turn(self) -> None:
         self.is_player_turn = False
+        # Relic turn-end hooks (Orichalcum: BeforeTurnEndVeryEarly block check;
+        # Sai/Kusarigama). Fire BEFORE the player's turn-end power hooks so
+        # Orichalcum sees the pre-Metallicize block value (block == 0 check).
+        if self.run_state is not None:
+            from .relics import trigger_on_player_turn_end
+            trigger_on_player_turn_end(self.run_state, self)
         # Turn-end triggers (Metallicize block, Combust AoE, Stampede auto-play
         # of hand Attacks) fire BEFORE the hand is discarded so Stampede still
         # sees its Attacks (StampedePower.BeforeTurnEndEarly).
