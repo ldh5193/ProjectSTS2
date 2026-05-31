@@ -542,8 +542,18 @@ class TheInsatiable(Monster):
 
 # --- Doormaker (Act 3 boss, solo) -----------------------------------------
 # Cites: decompiled/MegaCrit.Sts2.Core.Models.Monsters/Doormaker.cs
-# Simplified — the Hunger/Scrutiny/Grasp power swap visuals aren't
-# modeled; the damage cycle is what matters for combat.
+# Doormaker rotates a "phase power" via SwapPhasePower<T>: HungerPower on
+# DRAMATIC_OPEN and after GRASP, ScrutinyPower after HUNGER, GraspPower after
+# SCRUTINY (Doormaker.cs:129/142/152/164). We wire HungerPower faithfully (it
+# afflicts every Attack/Skill card with Devoured+Exhaust — HungerPower.cs); the
+# phase power is removed when leaving the Hunger phase, mirroring SwapPhasePower
+# which first Remove<HungerPower> then Apply<T>.
+# TODO(fidelity): ScrutinyPower (discards a non-draw card — ScrutinyPower.cs
+#   ShouldDraw false off-handDraw) and GraspPower (Weighted affliction:
+#   +1 energy cost on ALL cards — GraspPower.cs Afflict<Weighted>) are not yet
+#   modeled (no ScrutinyPower/GraspPower/Weighted primitive in powers.py). The
+#   Hunger phase is the only one whose affliction layer exists. Wire Scrutiny/
+#   Grasp once those power+affliction primitives land.
 
 
 class DoormakerMove(str, Enum):
@@ -570,6 +580,21 @@ class Doormaker(Monster):
     cycle_index: int = 0
     opened: bool = False
     ascension: int = 0
+    # Combat back-reference (attached by CombatState._attach_combat_refs) so the
+    # phase-power swaps can mutate the player's cards via the AfterApplied hook.
+    _combat: object = None
+
+    def _swap_phase_power(self, target_id: str | None) -> None:
+        """SwapPhasePower<T>: remove the current Hunger phase power (the only
+        phase power modeled), then apply `target_id` if it is one we model.
+        Mirrors Doormaker.SwapPhasePower which first removes Hunger/Scrutiny/
+        Grasp then applies the next phase power."""
+        cs = getattr(self, "_combat", None)
+        if cs is None:
+            return
+        cs.remove_player_affliction_power("hunger")
+        if target_id == "hunger":
+            cs.apply_player_affliction_power("hunger", 1)
 
     @classmethod
     def spawn(cls, rng: random.Random, ascension: int = 0) -> "Doormaker":
@@ -606,15 +631,20 @@ class Doormaker(Monster):
         event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
 
         if move is DoormakerMove.DRAMATIC_OPEN:
-            pass  # no damage, just the cinematic reveal
+            # DramaticOpenMove: reveal (no damage), then SwapPhasePower<Hunger>.
+            self._swap_phase_power("hunger")
         elif move is DoormakerMove.HUNGER:
             dmg = _a9(self.ascension, 30, 35)
             blocked, hp_loss = deal_damage(dmg, self, player)
             event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
+            # HungerMove ends with SwapPhasePower<ScrutinyPower> -> remove Hunger
+            # (Scrutiny is not yet modeled; see the TODO above).
+            self._swap_phase_power(None)
         elif move is DoormakerMove.SCRUTINY:
             dmg = _a9(self.ascension, 24, 26)
             blocked, hp_loss = deal_damage(dmg, self, player)
             event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
+            # ScrutinyMove ends with SwapPhasePower<GraspPower> (not modeled).
         elif move is DoormakerMove.GRASP:
             per_hit = _a9(self.ascension, 10, 11)
             for _ in range(2):
@@ -625,6 +655,8 @@ class Doormaker(Monster):
             strength = StrengthPower(amount=_a9(self.ascension, 3, 4))
             strength._owner = self
             self.add_or_stack_power(strength)
+            # GraspMove ends with SwapPhasePower<HungerPower> -> re-apply Hunger.
+            self._swap_phase_power("hunger")
 
         self.last_move = move
         self.next_move = self.roll_next_move(rng)
@@ -1783,6 +1815,11 @@ class _Move:
     self_powers: tuple[tuple[str, int], ...] = ()
     # player debuffs (id -> amount); only sim-registered powers.
     debuffs: tuple[tuple[str, int], ...] = ()
+    # card-affliction status powers (id, amount) the move applies to the player
+    # (Hex/Hunger/Dampen/Tangled). Unlike `debuffs`, these must fire the power's
+    # AfterApplied hook so it mutates the player's cards — they are routed through
+    # CombatState.apply_player_affliction_power when a combat is attached.
+    card_afflictions: tuple[tuple[str, int], ...] = ()
     status: tuple = ()                 # (card_id, pile, count) or empty
     next: str | None = None            # deterministic follow-up state name
 
@@ -1811,6 +1848,10 @@ class _TableMonster(Monster):
     last_move: str | None = None
     next_move: str | None = None
     ascension: int = 0
+    # Combat back-reference (attached by CombatState._attach_combat_refs). Needed
+    # by moves that apply a card-affliction status power (Hex/Hunger/Dampen),
+    # which must mutate the player's cards via the engine's AfterApplied hook.
+    _combat: object = None
 
     # NB: the following are plain CLASS attributes (no type annotation) so the
     # dataclass machinery does NOT turn them into instance fields. If they were
@@ -1914,6 +1955,8 @@ class _TableMonster(Monster):
             self.add_or_stack_power(st)
         for pid, amt in mv.debuffs:
             player.add_or_stack_power(make_power(pid, amt, player))
+        for pid, amt in mv.card_afflictions:
+            self._apply_card_affliction(player, pid, amt)
         if mv.status:
             card_id, pile, count = mv.status
             _queue_status(self, _STATUS_CARDS[card_id], pile, count)
@@ -1921,6 +1964,18 @@ class _TableMonster(Monster):
         self.last_move = name
         self.next_move = self.roll_next_move(rng)
         return event
+
+    def _apply_card_affliction(self, player, power_id: str, amount: int) -> None:
+        """Apply a card-affliction status power (Hex/Hunger/Dampen/Tangled) to
+        the player, firing AfterApplied so it mutates the player's cards. Routes
+        through the live CombatState (so it can reach all card piles); in
+        standalone tests with no combat attached, falls back to a bare power so
+        the debuff at least registers on the player."""
+        cs = getattr(self, "_combat", None)
+        if cs is not None:
+            cs.apply_player_affliction_power(power_id, amount)
+        else:
+            player.add_or_stack_power(make_power(power_id, amount, player))
 
 
 # --- Overgrowth normals/weaks ---------------------------------------------
@@ -1984,13 +2039,16 @@ class Mawler(_TableMonster):
 
 class VineShambler(_TableMonster):
     # VineShambler.cs: HP 61 (A8 64). Start SWIPE(6/7 x2) -> GRASPING_VINES
-    # (8/9 + Tangled~Frail) -> CHOMP(16/18) -> SWIPE (loop).
+    # (8/9 + TangledPower 1 — VineShambler.cs:66 PowerCmd.Apply<TangledPower>
+    # (targets, 1m); Entangles every Attack card: +1 energy cost this turn) ->
+    # CHOMP(16/18) -> SWIPE (loop).
     MNAME = "Vine Shambler"
     HP, HP_A8 = 61, 64
     START = "SWIPE"
     MOVES = {
         "GRASPING_VINES": _Move("GRASPING_VINES", dmg=(8, 9),
-                                debuffs=(("frail", 1),), next="CHOMP"),
+                                card_afflictions=(("tangled", 1),),
+                                next="CHOMP"),
         "SWIPE": _Move("SWIPE", dmg=(6, 7), hits=2, next="GRASPING_VINES"),
         "CHOMP": _Move("CHOMP", dmg=(16, 18), next="SWIPE"),
     }
@@ -2556,13 +2614,15 @@ class FlailKnight(_TableMonster):
 
 
 class SpectralKnight(_TableMonster):
-    # SpectralKnight.cs: HP 93 (A8 97). HEX(debuff~Weak2) -> SOUL_SLASH(15/17)
-    # -> RAND SOUL_SLASH(15/17) w2 / SOUL_FLAME(3/4 x3) CannotRepeat.
+    # SpectralKnight.cs: HP 93 (A8 97). HEX applies HexPower 2 (PowerCmd.Apply
+    # <HexPower>(target, 2m) — SpectralKnight.cs:66) -> SOUL_SLASH(15/17) ->
+    # RAND SOUL_SLASH(15/17) w2 / SOUL_FLAME(3/4 x3) CannotRepeat. Hex afflicts
+    # every player card with Ethereal (HexPower.cs).
     MNAME = "Spectral Knight"
     HP, HP_A8 = 93, 97
     START = "HEX"
     MOVES = {
-        "HEX": _Move("HEX", debuffs=(("weak", 2),), next="SOUL_SLASH"),
+        "HEX": _Move("HEX", card_afflictions=(("hex", 2),), next="SOUL_SLASH"),
         "SOUL_SLASH": _Move("SOUL_SLASH", dmg=(15, 17)),
         "SOUL_FLAME": _Move("SOUL_FLAME", dmg=(3, 4), hits=3),
     }
@@ -2579,15 +2639,17 @@ class SpectralKnight(_TableMonster):
 
 class MagiKnight(_TableMonster):
     # MagiKnight.cs: HP 82 (A8 89). POWER_SHIELD(6/7 + 5/9 blk) -> DAMPEN
-    # (debuff~Weak2) -> SPEAR(10/11) -> PREP(+blk) -> MAGIC_BOMB(35/40) ->
-    # SPEAR (loop).
+    # applies DampenPower 1 (MagiKnight.cs:89 PowerCmd.Apply(dampen, target, 1m)
+    # — downgrades every upgraded player card) -> SPEAR(10/11) -> PREP(+blk) ->
+    # MAGIC_BOMB(35/40) -> SPEAR (loop).
     MNAME = "Magi Knight"
     HP, HP_A8 = 82, 89
     START = "POWER_SHIELD"
     MOVES = {
         "POWER_SHIELD": _Move("POWER_SHIELD", dmg=(6, 7), block=(5, 9),
                               next="DAMPEN"),
-        "DAMPEN": _Move("DAMPEN", debuffs=(("weak", 2),), next="SPEAR"),
+        "DAMPEN": _Move("DAMPEN", card_afflictions=(("dampen", 1),),
+                        next="SPEAR"),
         "SPEAR": _Move("SPEAR", dmg=(10, 11), next="PREP"),
         "PREP": _Move("PREP", block=(9, 9), next="MAGIC_BOMB"),
         "MAGIC_BOMB": _Move("MAGIC_BOMB", dmg=(35, 40), next="SPEAR"),

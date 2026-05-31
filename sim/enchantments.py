@@ -55,6 +55,11 @@ STEADY = "steady"           # Steady.cs   — OnEnchant: Retain
 ROYALLY_APPROVED = "royally_approved"  # RoyallyApproved.cs — Innate + Retain
 GOOPY = "goopy"             # Goopy.cs    — Exhaust; +block grows per play
 CLONE = "clone"             # Clone.cs    — no combat effect; CLONE rest duplicates
+SOULS = "souls"             # SoulsPower.cs— OnEnchant REMOVES the Exhaust keyword
+                            # (CanEnchant requires the card to already Exhaust).
+PERFECT_FIT = "perfect_fit" # PerfectFit.cs— ModifyShuffleOrder: on every NON-
+                            # initial shuffle, move this card to the top of the
+                            # draw pile (drawn first). No OnEnchant keyword.
 ETHEREAL_ENCHANT = "ethereal_enchant"  # GhostSeed applies the Ethereal KEYWORD
                                        # directly (not an EnchantmentModel); see
                                        # relics.py GhostSeed.
@@ -94,6 +99,18 @@ class Enchantment:
         if self.id == ETHEREAL_ENCHANT:
             return {KW_ETHEREAL}
         return set()
+
+    def removed_keywords(self) -> set[str]:
+        """Keywords this enchant STRIPS from the card on enchant (OnEnchant ->
+        CardCmd.RemoveKeyword). SoulsPower removes Exhaust (SoulsPower.cs:27)."""
+        if self.id == SOULS:
+            return {KW_EXHAUST}
+        return set()
+
+    def shuffle_to_top(self) -> bool:
+        """PerfectFit.ModifyShuffleOrder: on a non-initial shuffle, the enchanted
+        card is moved to the top of the draw pile (drawn first)."""
+        return self.id == PERFECT_FIT
 
     # ---- damage modifiers (powered card attacks only) -------------------
     def damage_additive(self) -> int:
@@ -179,6 +196,10 @@ def can_enchant(enchant_id: str, card) -> bool:
     if enchant_id == SPIRAL:
         cid = card.id[:-1] if card.id.endswith("+") else card.id
         return cid in ("strike_ironclad", "defend_ironclad")
+    # SoulsPower.cs: only cards that already have the Exhaust keyword (it removes
+    # Exhaust). We read the card's exhaust flag / enchant-keyword view.
+    if enchant_id == SOULS:
+        return KW_EXHAUST in card_keywords(card)
     # Adroit: Kifuda picks any enchantable card; no CardType gate in Adroit.cs.
     # Swift/Sown/Steady/Glam/Nimble/Goopy/Clone: no CardType restriction beyond
     # the base rule (Nimble additionally needs GainsBlock; Goopy needs Defend
@@ -205,6 +226,10 @@ def enchant_card(card, enchant_id: str, amount: int = 0):
     new = replace(card, enchantment=ench)
     if KW_EXHAUST in kw and not new.exhaust:
         new = replace(new, enchantment=ench, exhaust=True)
+    # OnEnchant keyword REMOVAL (SoulsPower strips Exhaust). Flip the CardDef
+    # exhaust flag off so the combat exhaust path no longer fires for this card.
+    if KW_EXHAUST in ench.removed_keywords() and new.exhaust:
+        new = replace(new, enchantment=ench, exhaust=False)
     return new
 
 

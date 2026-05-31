@@ -341,14 +341,18 @@ def _wellspring_options(rs: RunState) -> list[EventOption]:
 
 
 # --- 3. GraveOfTheForgotten (any act, requires enchantable card) ---
-# Confront: add Decay curse + enchant 1 card with SoulsPower (placeholder).
+# Confront: add Decay curse + enchant 1 card with SoulsPower.
 # Accept: gain ForgottenSoul relic.
 def _grave_options(rs: RunState) -> list[EventOption]:
     def confront(rs: RunState) -> None:
         _add_curse(rs, "decay")
-        # Enchantment system not yet in sim — upgrade-as-proxy stays
-        # roughly EV-aligned for L1.
-        _upgrade_first_card(rs)
+        # SoulsPower (SoulsPower.cs): enchant an exhausting card, REMOVING its
+        # Exhaust keyword. Now backed by the real enchantment layer. SoulsPower
+        # only applies to Exhaust cards; if the deck has none, fall back to an
+        # upgrade (EV-aligned) so the option still resolves.
+        from .enchantments import SOULS
+        if _enchant_first_card(rs, SOULS) is None:
+            _upgrade_first_card(rs)
     def accept(rs: RunState) -> None:
         # decompiled GraveOfTheForgotten.Accept grants a relic. The sim's
         # ForgottenSoul model isn't registry-backed, so resolve to a real
@@ -788,8 +792,13 @@ def _field_of_holes_options(rs: RunState) -> list[EventOption]:
         _remove_first_removable_card(rs)
         _add_curse(rs, "normality")
     def enter_hole(rs: RunState) -> None:
-        # Enchant (PerfectFit) proxy -> upgrade a card.
-        _upgrade_first_card(rs)
+        # PerfectFit (PerfectFit.cs): enchant a card so it shuffles to the top of
+        # the draw pile (drawn first) on every non-initial shuffle. Backed by the
+        # real enchantment layer + combat shuffle hook. Falls back to an upgrade
+        # if no card is enchantable.
+        from .enchantments import PERFECT_FIT
+        if _enchant_first_card(rs, PERFECT_FIT) is None:
+            _upgrade_first_card(rs)
     return [
         EventOption("resist", "Resist (remove 2 + curse)", resist,
                     tag="CARD_REMOVE_CURSE"),
@@ -800,11 +809,12 @@ def _field_of_holes_options(rs: RunState) -> list[EventOption]:
 
 # === Phase 8B: remaining decompiled events (toward full 68 coverage) ===
 #
-# Enchantment system note: the sim has no per-card enchantment layer
-# (Sharp/Nimble/Swift/Vigorous/Corrupted/PerfectFit/SoulsPower/Spiral/
-# Sown/Steady/Slither). Every event that "enchants" a card is modeled as
-# an upgrade of the affected card(s) — the nearest EV-aligned primitive
-# available. Flagged // TODO(fidelity: enchantments) on each.
+# Enchantment system note: the per-card enchantment layer now EXISTS
+# (sim/enchantments.py — Sharp/Nimble/Swift/Sown/Steady/Vigorous/Corrupted/
+# Spiral/Glam/Goopy/Souls/PerfectFit). Events that enchant a card apply the
+# REAL enchantment via _enchant_first_card, falling back to an upgrade only
+# when no card is enchantable. Slither remains unmodeled (TODO(fidelity):
+# Slither.cs — no primitive yet).
 #
 # Transform note: the sim has no transform pool, so "transform" collapses
 # to remove-and-add-colorless (see _transform_first_removable) — already

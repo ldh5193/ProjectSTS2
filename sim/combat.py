@@ -124,6 +124,11 @@ class CombatState:
                 self.draw_pile = self.discard_pile
                 self.discard_pile = []
                 self.rng.shuffle(self.draw_pile)
+                # PerfectFit.ModifyShuffleOrder (non-initial shuffle): any card
+                # carrying the PerfectFit enchant is moved to the TOP of the draw
+                # pile (popped first). The draw pile pops from the END, so "top"
+                # is the last element. Stable across multiple PerfectFit cards.
+                self._apply_perfect_fit_shuffle()
                 # Reshuffle event: TheAbacus (+block), BiiigHug-style on_shuffle
                 # relic hooks fire when the discard pile is reshuffled into draw.
                 if self.run_state is not None:
@@ -148,6 +153,19 @@ class CombatState:
             if self.run_state is not None:
                 from .relics import trigger_on_card_drawn
                 trigger_on_card_drawn(self.run_state, self, card)
+
+    def _apply_perfect_fit_shuffle(self) -> None:
+        """PerfectFit.ModifyShuffleOrder (non-initial shuffle): move every
+        PerfectFit-enchanted card to the top of the draw pile so it is drawn
+        first. The draw pile pops from the end, so the top is the tail."""
+        pf = [c for c in self.draw_pile
+              if getattr(getattr(c, "enchantment", None), "shuffle_to_top", None)
+              and c.enchantment.shuffle_to_top()]
+        if not pf:
+            return
+        rest = [c for c in self.draw_pile if c not in pf]
+        # Drawn first == last to be popped: place PerfectFit cards at the tail.
+        self.draw_pile = rest + pf
 
     # ---- turn lifecycle ----
 
