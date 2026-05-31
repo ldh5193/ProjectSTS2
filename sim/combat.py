@@ -146,8 +146,14 @@ class CombatState:
         self._cards_exhausted_this_turn = 0
         self.player.energy = self.player.max_energy
         # Block resets at turn start unless a power (Barricade) blocks the reset.
+        # SturdyClamp caps retained block instead of clearing it (block_reset_cap).
         if not any(p.blocks_block_reset() for p in self.player.powers):
-            self.player.block = 0
+            caps = [c for c in (p.block_reset_cap() for p in self.player.powers)
+                    if c is not None]
+            if caps:
+                self.player.block = min(self.player.block, min(caps))
+            else:
+                self.player.block = 0
         # Poison ticks at the START of the owner's turn (PoisonPower.cs).
         apply_poison_tick(self.player)
         self.draw(HAND_SIZE)
@@ -183,6 +189,10 @@ class CombatState:
         self._cards_exhausted_this_turn += 1
         self._fire_power_hook(self.player, "on_card_exhausted",
                               self, self.player, card)
+        # Per-exhaust relic hook (JossPaper: every Nth card exhausted -> draw).
+        if self.run_state is not None:
+            from .relics import trigger_on_card_exhausted
+            trigger_on_card_exhausted(self.run_state, self, card)
 
     def can_play(self, card_index: int) -> bool:
         if not (0 <= card_index < len(self.hand)):

@@ -798,6 +798,12 @@ def apply_potion(rs, cs, potion_id: str, target_idx: int = 0) -> bool:
     if d is None:
         return False
     d.apply(rs, cs, target_idx)
+    # Per-potion-use relic hook (ReptileTrinket: +3 Strength when a potion is
+    # used in combat). Only fires in-combat (cs is not None), matching
+    # CombatManager.Instance.IsInProgress in the decompile.
+    if rs is not None and cs is not None:
+        from .relics import trigger_on_potion_used
+        trigger_on_potion_used(rs, cs, potion_id)
     return True
 
 

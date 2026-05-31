@@ -177,6 +177,10 @@ class RunState:
     # None when not at a rest site. Drained by _step_rest.
     pending_rest_options: list[dict] | None = None
 
+    # VenerableTeaSet.cs (GainEnergyInNextCombat): set True on entering a rest
+    # site, consumed at the next combat's turn-1 energy reset (+2 energy).
+    venerable_tea_armed: bool = False
+
     # Anti-repeat memory for the various pools.
     history_monster_encounters: list[str] = field(default_factory=list)
     history_elite_encounters: list[str] = field(default_factory=list)
@@ -334,6 +338,20 @@ class RunState:
             # PotionBelt.cs: +2 potion slots.
             self.max_potion_slots += 2
             self.potions.extend([None, None])
+        elif relic_id == "LOOMING_FRUIT":
+            # LoomingFruit.cs: MaxHpVar(31) on pickup.
+            self.gain_max_hp(31)
+        elif relic_id == "CAULDRON":
+            # Cauldron.cs: on pickup, offer 5 potion rewards (DynamicVar
+            # "Potions" == 5). We fill up to 5 empty potion slots immediately.
+            # The reward path's pool-roll is approximated by None placeholders
+            # being filled lazily; here we just fill any empty slots up to 5.
+            for _ in range(5):
+                # add_potion fills the first empty slot; stop when full.
+                if not any(p is None for p in self.potions) and \
+                        len(self.potions) >= self.max_potion_slots:
+                    break
+                self.add_potion("BLOCK_POTION")
 
     def add_potion(self, potion_id: str) -> bool:
         """Place a potion in the first empty slot. Returns False if all

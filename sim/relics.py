@@ -105,6 +105,12 @@ class RelicDef:
     # Monster-death hook — fired by combat.play_card for each enemy that dies
     # during a card's resolution (GremlinHorn: +1 energy & draw 1 per death).
     on_monster_death: Optional[HookOnCardPlayed] = None  # (rs, cs, monster)
+    # Card-exhaust hook — fired by combat._exhaust_card after a card belonging
+    # to the player is exhausted (JossPaper: every 5th exhaust -> draw 1).
+    on_card_exhausted: Optional[HookOnCardPlayed] = None  # (rs, cs, card)
+    # Potion-use hook — fired by potions.apply_potion after a potion resolves
+    # IN COMBAT (ReptileTrinket: +3 Strength when a potion is used in combat).
+    on_potion_used: Optional[Callable[[RunState, object, str], None]] = None  # (rs, cs, potion_id)
     # If True, the relic's RelicInstance.counter is reset to 0 at the start of
     # each combat (decompiled per-combat counters: Kunai/Shuriken/Nunchaku/…).
     resets_per_combat: bool = False
@@ -262,6 +268,38 @@ def _damage_all_on_turn(cs, turn: int, amount: int) -> None:
 
 def _gain_max_hp_pickup(rs, amount: int) -> None:
     rs.gain_max_hp(amount)
+
+
+def _exhaust_counter_draw(rs, cs, card, *, relic_id: str, period: int, amount: int) -> None:
+    """Every `period`-th card the owner exhausts -> draw `amount` (JossPaper,
+    period 5, draw 1). Counter on the relic's RelicInstance; resets per combat."""
+    inst = _relic_inst(rs, relic_id)
+    if inst is None:
+        return
+    inst.counter = (inst.counter or 0) + 1
+    if inst.counter % period == 0:
+        cs.draw(amount)
+
+
+def _power_card_draw(rs, cs, card, *, amount: int) -> None:
+    """When the owner plays a Power card -> draw `amount` (GamePiece, draw 1)."""
+    if card.type is CardType.POWER:
+        cs.draw(amount)
+
+
+def _venerable_tea_combat_start(rs, cs, *, amount: int) -> None:
+    """VenerableTeaSet: if armed (rested before this combat), gain `amount`
+    energy on turn 1 and disarm. Fired at combat start."""
+    if getattr(rs, "venerable_tea_armed", False):
+        cs.player.energy += amount
+        cs.player.max_energy += amount
+        rs.venerable_tea_armed = False
+
+
+def _venerable_tea_arm_on_rest(rs, rt) -> None:
+    """VenerableTeaSet: arm the +2-energy bonus when entering a rest site."""
+    if rt is StateType.REST:
+        rs.venerable_tea_armed = True
 
 
 RELIC_REGISTRY: dict[str, RelicDef] = {
@@ -1317,6 +1355,296 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
         # Map navigation is not modelled; documented no-op.
         category="misc",
     ),
+
+    # ===================================================================
+    # Phase 8B.6 — SHARED pool completion (all 118 SharedRelicPool ids now
+    # in the registry). Each verified vs decompiled Relics/*.cs (rarity +
+    # trigger + magnitude). Implemented effects use the engine hooks below;
+    # reward/shop/rest/deck/enchant-only relics are faithful documented
+    # no-ops (the sim has no primitive for them yet — tagged TODO(fidelity)).
+    # ===================================================================
+
+    # ---- Implemented: combat / run-state effects ----------------------
+    "AMETHYST_AUBERGINE": RelicDef(
+        id="AMETHYST_AUBERGINE", name="Amethyst Aubergine", rarity="common",
+        pool="shared",
+        # AmethystAubergine.cs: GoldVar(15) -> +15 gold after each combat room
+        # (TryModifyRewards on IsCombatRoom). We grant on combat victory.
+        after_combat_victory=lambda rs: rs.gain_gold(15),
+        category="gold",
+    ),
+    "GAME_PIECE": RelicDef(
+        id="GAME_PIECE", name="Game Piece", rarity="rare", pool="shared",
+        # GamePiece.cs: AfterCardPlayed (Power) -> draw CardsVar(1).
+        on_card_played=lambda rs, cs, card: _power_card_draw(rs, cs, card, amount=1),
+        category="draw_card",
+    ),
+    "JOSS_PAPER": RelicDef(
+        id="JOSS_PAPER", name="Joss Paper", rarity="uncommon", pool="shared",
+        merchant_cost=250,
+        # JossPaper.cs: every ExhaustAmount(5) cards exhausted -> draw CardsVar(1).
+        on_card_exhausted=lambda rs, cs, card: _exhaust_counter_draw(
+            rs, cs, card, relic_id="JOSS_PAPER", period=5, amount=1),
+        resets_per_combat=True,
+        category="draw_card",
+    ),
+    "REPTILE_TRINKET": RelicDef(
+        id="REPTILE_TRINKET", name="Reptile Trinket", rarity="uncommon",
+        pool="shared", merchant_cost=250,
+        # ReptileTrinket.cs: AfterPotionUsed (in combat) -> +PowerVar<Strength>(3).
+        on_potion_used=lambda rs, cs, pid: _apply_power_to_self(cs, "strength", 3),
+        category="strength",
+    ),
+    "RINGING_TRIANGLE": RelicDef(
+        id="RINGING_TRIANGLE", name="Ringing Triangle", rarity="shop",
+        pool="shared", merchant_cost=160,
+        # RingingTriangle.cs: ShouldFlush false while RoundNumber == 1 -> the
+        # hand is RETAINED (not discarded) at the end of turn 1. We apply a
+        # retain_hand power (amount large enough to keep the whole hand) for
+        # 1 turn at combat start. RetainHandPower ticks down at turn end.
+        on_combat_start=lambda rs, cs: cs.player.powers.append(
+            make_power("retain_hand", 1, cs.player)),
+        category="draw_card",
+    ),
+    "SPARKLING_ROUGE": RelicDef(
+        id="SPARKLING_ROUGE", name="Sparkling Rouge", rarity="uncommon",
+        pool="shared", merchant_cost=250,
+        # SparklingRouge.cs: AfterBlockCleared on RoundNumber == 3 ->
+        # +PowerVar<Strength>(1) and +PowerVar<Dexterity>(1). Fires at the start
+        # of the player's 3rd turn.
+        on_player_turn_start=lambda rs, cs: (
+            _apply_power_to_self(cs, "strength", 1),
+            _apply_power_to_self(cs, "dexterity", 1),
+        ) and None if cs.turn_number == 3 else None,
+        category="strength",
+    ),
+    "STURDY_CLAMP": RelicDef(
+        id="STURDY_CLAMP", name="Sturdy Clamp", rarity="rare", pool="shared",
+        # SturdyClamp.cs: ShouldClearBlock false + cap retained block to 10
+        # (BlockVar(10)). We apply a sturdy_clamp power (cap 10) at combat start;
+        # the engine caps turn-start block to it instead of clearing to 0.
+        on_combat_start=lambda rs, cs: cs.player.powers.append(
+            make_power("sturdy_clamp", 10, cs.player)),
+        category="block_start",
+    ),
+    "BEATING_REMNANT": RelicDef(
+        id="BEATING_REMNANT", name="Beating Remnant", rarity="rare", pool="shared",
+        # BeatingRemnant.cs: ModifyHpLostAfterOsty -> cap TOTAL unblocked HP loss
+        # the owner takes each turn to MaxHpLoss(20). We apply a beating_remnant
+        # power (cap 20) at combat start; it accumulates per turn and resets at
+        # the owner's turn start.
+        on_combat_start=lambda rs, cs: cs.player.powers.append(
+            make_power("beating_remnant", 20, cs.player)),
+        category="status_immune",
+    ),
+    "VENERABLE_TEA_SET": RelicDef(
+        id="VENERABLE_TEA_SET", name="Venerable Tea Set", rarity="common",
+        pool="shared", merchant_cost=175,
+        # VenerableTeaSet.cs: after resting, gain EnergyVar(2) at the next
+        # combat's first energy reset. We arm a flag on entering a rest site and
+        # grant +2 energy at the next combat start (then disarm).
+        after_room_entered=lambda rs, rt: _venerable_tea_arm_on_rest(rs, rt),
+        on_combat_start=lambda rs, cs: _venerable_tea_combat_start(rs, cs, amount=2),
+        category="energy",
+    ),
+    "LOOMING_FRUIT": RelicDef(
+        id="LOOMING_FRUIT", name="Looming Fruit", rarity="ancient", pool="shared",
+        # LoomingFruit.cs: MaxHpVar(31) on pickup (handled in add_relic).
+        category="max_hp",
+    ),
+    "CAULDRON": RelicDef(
+        id="CAULDRON", name="Cauldron", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # Cauldron.cs: on pickup, gain Potions(5) (handled in add_relic by
+        # filling up to 5 potion slots).
+        category="misc",
+    ),
+
+    # ---- Documented no-ops: reward / shop / rest / deck / enchant ------
+    # These relics modify card rewards, shop pricing, rest options, deck
+    # contents on pickup, or use the Enchantment system — none of which the
+    # combat sim models yet. They occupy their real pool slot (so the pool
+    # distribution stays faithful) but have no in-combat effect. Each carries a
+    # TODO(fidelity) with the real effect for the next batch to finish.
+    "BOOK_OF_FIVE_RINGS": RelicDef(
+        id="BOOK_OF_FIVE_RINGS", name="Book of Five Rings", rarity="common",
+        pool="shared", merchant_cost=175,
+        # BookOfFiveRings.cs: every 5 cards added to your deck -> heal 20.
+        # TODO(fidelity: deck-add events): fire heal(20) on every 5th card added
+        # to the deck. The sim has no add-to-deck event hook yet.
+        category="misc",
+    ),
+    "RAZOR_TOOTH": RelicDef(
+        id="RAZOR_TOOTH", name="Razor Tooth", rarity="rare", pool="shared",
+        # RazorTooth.cs: AfterCardPlayed (Attack/Skill, upgradable) -> upgrade
+        # that card permanently.
+        # TODO(fidelity: in-combat card upgrade): upgrade the played card.
+        # The sim has no mid-combat per-card upgrade primitive.
+        category="misc",
+    ),
+    "STONE_CRACKER": RelicDef(
+        id="STONE_CRACKER", name="Stone Cracker", rarity="uncommon",
+        pool="shared", merchant_cost=250,
+        # StoneCracker.cs: AfterRoomEntered (Combat) -> upgrade CardsVar(2) random
+        # upgradable cards in the draw pile this combat.
+        # TODO(fidelity: combat deck upgrade): upgrade 2 draw-pile cards.
+        category="misc",
+    ),
+    "LAVA_LAMP": RelicDef(
+        id="LAVA_LAMP", name="Lava Lamp", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # LavaLamp.cs: if you took no unblocked damage this combat, your card
+        # reward options are upgraded.
+        # TODO(fidelity: reward upgrade): upgrade card-reward options on a
+        # no-damage combat. Reward-shaping; documented no-op.
+        category="card_pick",
+    ),
+    "GHOST_SEED": RelicDef(
+        id="GHOST_SEED", name="Ghost Seed", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # GhostSeed.cs: your basic Strike/Defend cards gain Ethereal.
+        # TODO(fidelity: Ethereal keyword): the sim has no Ethereal mechanic.
+        category="misc",
+    ),
+    "BURNING_STICKS": RelicDef(
+        id="BURNING_STICKS", name="Burning Sticks", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # BurningSticks.cs: the first Skill you exhaust each combat -> add a copy
+        # of it to your hand.
+        # TODO(fidelity: card-clone into hand): clone the first exhausted Skill.
+        category="misc",
+    ),
+    "DINGY_RUG": RelicDef(
+        id="DINGY_RUG", name="Dingy Rug", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # DingyRug.cs: colorless cards are added to your card-reward pool.
+        # TODO(fidelity: reward pool): inject colorless cards into rewards.
+        category="card_pick",
+    ),
+    "DOLLYS_MIRROR": RelicDef(
+        id="DOLLYS_MIRROR", name="Dolly's Mirror", rarity="shop", pool="shared",
+        # DollysMirror.cs: on pickup, duplicate a card in your deck.
+        # TODO(fidelity: deck duplicate on pickup).
+        category="misc",
+    ),
+    "FRESNEL_LENS": RelicDef(
+        id="FRESNEL_LENS", name="Fresnel Lens", rarity="event", pool="shared",
+        # FresnelLens.cs: cards added to your deck gain Nimble(2) (Enchantment).
+        # TODO(fidelity: Enchantment system).
+        category="misc",
+    ),
+    "GNARLED_HAMMER": RelicDef(
+        id="GNARLED_HAMMER", name="Gnarled Hammer", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # GnarledHammer.cs: on pickup, enchant 3 cards with Sharp(3).
+        # TODO(fidelity: Enchantment system).
+        category="misc",
+    ),
+    "KIFUDA": RelicDef(
+        id="KIFUDA", name="Kifuda", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # Kifuda.cs: on pickup, enchant 3 cards with Adroit(3).
+        # TODO(fidelity: Enchantment system).
+        category="misc",
+    ),
+    "PUNCH_DAGGER": RelicDef(
+        id="PUNCH_DAGGER", name="Punch Dagger", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # PunchDagger.cs: on pickup, enchant 1 card with Momentum(5).
+        # TODO(fidelity: Enchantment system).
+        category="misc",
+    ),
+    "ROYAL_STAMP": RelicDef(
+        id="ROYAL_STAMP", name="Royal Stamp", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # RoyalStamp.cs: on pickup, enchant 1 card with RoyallyApproved.
+        # TODO(fidelity: Enchantment system).
+        category="misc",
+    ),
+    "WING_CHARM": RelicDef(
+        id="WING_CHARM", name="Wing Charm", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # WingCharm.cs: a card-reward option is enchanted with Swift(1).
+        # TODO(fidelity: Enchantment system).
+        category="card_pick",
+    ),
+    "MYSTIC_LIGHTER": RelicDef(
+        id="MYSTIC_LIGHTER", name="Mystic Lighter", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # MysticLighter.cs: DamageVar(9) -> powered attacks from ENCHANTED cards
+        # deal +9 damage.
+        # TODO(fidelity: Enchantment system) — needs per-card enchant state.
+        category="misc",
+    ),
+    "LASTING_CANDY": RelicDef(
+        id="LASTING_CANDY", name="Lasting Candy", rarity="uncommon",
+        pool="shared", merchant_cost=250,
+        # LastingCandy.cs: every other combat, a Power card is added to the card
+        # reward options.
+        # TODO(fidelity: reward shaping) — inject a Power into rewards every 2nd
+        # combat. Reward-only; documented no-op.
+        category="card_pick",
+    ),
+    "ORRERY": RelicDef(
+        id="ORRERY", name="Orrery", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # Orrery.cs: on pickup, offer CardsVar(5) card-reward choices.
+        # TODO(fidelity: pickup reward offer). Documented no-op.
+        category="card_pick",
+    ),
+    "MINIATURE_TENT": RelicDef(
+        id="MINIATURE_TENT", name="Miniature Tent", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # MiniatureTent.cs: rest sites let you use ALL options (no single-choice).
+        # TODO(fidelity: rest multi-option). Rest-only; documented no-op.
+        category="misc",
+    ),
+    "TINY_MAILBOX": RelicDef(
+        id="TINY_MAILBOX", name="Tiny Mailbox", rarity="uncommon", pool="shared",
+        # TinyMailbox.cs: when you rest, also gain 2 potions.
+        # TODO(fidelity: rest potion reward). Rest-only; documented no-op.
+        category="misc",
+    ),
+    "LUCKY_FYSH": RelicDef(
+        id="LUCKY_FYSH", name="Lucky Fysh", rarity="uncommon", pool="shared",
+        # LuckyFysh.cs: GoldVar(15) -> +15 gold whenever a card is added to your
+        # deck.
+        # TODO(fidelity: deck-add events) — grant gold on every deck add. The sim
+        # has no add-to-deck event hook yet.
+        category="gold",
+    ),
+    "BOWLER_HAT": RelicDef(
+        id="BOWLER_HAT", name="Bowler Hat", rarity="uncommon", pool="shared",
+        # BowlerHat.cs: GoldIncrease(1.25) -> all gold you gain is multiplied by
+        # 1.25 (extra 25%).
+        # TODO(fidelity: gold-gain multiplier hook) — needs a ShouldGainGold/
+        # AfterGoldGained interception. Documented no-op for now.
+        category="gold",
+    ),
+    "CHEMICAL_X": RelicDef(
+        id="CHEMICAL_X", name="Chemical X", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # ChemicalX.cs: Increase(2) -> X-cost cards behave as if their X is +2.
+        # TODO(fidelity: before-play X-value modifier) — needs a ModifyXValue
+        # hook before the X-cost card resolves. Documented no-op for now.
+        category="misc",
+    ),
+    "LIZARD_TAIL": RelicDef(
+        id="LIZARD_TAIL", name="Lizard Tail", rarity="rare", pool="shared",
+        # LizardTail.cs: once per run, when you would die, instead heal HealVar(50)
+        # percent of max HP and survive.
+        # TODO(fidelity: death-prevention primitive) — needs an OnWouldDie hook.
+        # Documented no-op for now.
+        category="misc",
+    ),
+    "VEXING_PUZZLEBOX": RelicDef(
+        id="VEXING_PUZZLEBOX", name="Vexing Puzzlebox", rarity="rare",
+        pool="shared",
+        # VexingPuzzlebox.cs: on turn 1, add a random free card to your hand.
+        # TODO(fidelity: random card generation into hand) — the sim has no
+        # card-into-hand generation primitive. Documented no-op for now.
+        category="misc",
+    ),
 }
 
 
@@ -1430,6 +1758,24 @@ def trigger_on_monster_death(rs: RunState, combat, monster) -> None:
             rd.on_monster_death(rs, combat, monster)
 
 
+def trigger_on_card_exhausted(rs: RunState, combat, card) -> None:
+    """Fired by combat._exhaust_card after a player-owned card is exhausted
+    (JossPaper: every 5th card exhausted -> draw 1)."""
+    for r in rs.relics:
+        rd = RELIC_REGISTRY.get(r.id)
+        if rd and rd.on_card_exhausted:
+            rd.on_card_exhausted(rs, combat, card)
+
+
+def trigger_on_potion_used(rs: RunState, combat, potion_id: str) -> None:
+    """Fired by potions.apply_potion after a potion resolves in combat
+    (ReptileTrinket: +3 Strength when a potion is used in combat)."""
+    for r in rs.relics:
+        rd = RELIC_REGISTRY.get(r.id)
+        if rd and rd.on_potion_used:
+            rd.on_potion_used(rs, combat, potion_id)
+
+
 def reset_combat_counters(rs: RunState) -> None:
     """Reset RelicInstance.counter to 0 for every owned relic flagged
     resets_per_combat (Kunai/Shuriken/Nunchaku/PenNib/HappyFlower/…). Called
@@ -1505,7 +1851,16 @@ _SHARED_POOL_IDS: frozenset[str] = frozenset({
     "STRIKE_DUMMY", "THE_ABACUS", "THE_COURIER", "TOOLBOX", "TOXIC_EGG",
     "TUNGSTEN_ROD", "TUNING_FORK", "UNCEASING_TOP", "UNSETTLING_LAMP", "VAJRA",
     "VAMBRACE", "VERY_HOT_COCOA", "WAR_PAINT", "WHETSTONE", "WHITE_BEAST_STATUE",
-    "WHITE_STAR", "TOUGH_BANDAGES",
+    "WHITE_STAR",
+    # Phase 8B.6 — SharedRelicPool completion (the remaining 34 ids).
+    "AMETHYST_AUBERGINE", "BEATING_REMNANT", "BOOK_OF_FIVE_RINGS", "BOWLER_HAT",
+    "BURNING_STICKS", "CAULDRON", "CHEMICAL_X", "DINGY_RUG", "DOLLYS_MIRROR",
+    "FRESNEL_LENS", "GAME_PIECE", "GHOST_SEED", "GNARLED_HAMMER", "JOSS_PAPER",
+    "KIFUDA", "LASTING_CANDY", "LAVA_LAMP", "LIZARD_TAIL", "LOOMING_FRUIT",
+    "LUCKY_FYSH", "MINIATURE_TENT", "MYSTIC_LIGHTER", "ORRERY", "PUNCH_DAGGER",
+    "RAZOR_TOOTH", "REPTILE_TRINKET", "RINGING_TRIANGLE", "ROYAL_STAMP",
+    "SPARKLING_ROUGE", "STURDY_CLAMP", "TINY_MAILBOX", "VENERABLE_TEA_SET",
+    "VEXING_PUZZLEBOX", "WING_CHARM",
 })
 _IRONCLAD_POOL_IDS: frozenset[str] = frozenset({
     "BRIMSTONE", "BURNING_BLOOD", "CHARONS_ASHES", "DEMON_TONGUE", "PAPER_PHROG",

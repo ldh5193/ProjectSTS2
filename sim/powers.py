@@ -114,6 +114,13 @@ class Power:
         """If True, the owner's block is NOT reset at turn start (Barricade)."""
         return False
 
+    def block_reset_cap(self) -> int | None:
+        """If not None, the owner's block at turn start is CAPPED to this value
+        instead of cleared to 0 (SturdyClamp.cs: retain up to 10 block). The
+        engine uses the smallest cap across the owner's powers. Barricade
+        (blocks_block_reset) takes precedence over any cap."""
+        return None
+
 
 @dataclass
 class StrengthPower(Power):
@@ -695,6 +702,46 @@ class IntangiblePower(Power):
         if target is not self._owner:
             return amount
         return min(amount, 1)
+
+
+@dataclass
+class SturdyClampPower(Power):
+    """Relic-power backing SturdyClamp.cs (ShouldClearBlock false + cap to 10):
+    the owner's Block is NOT cleared at turn start, but any Block above 10 is
+    lost (retain up to 10). `amount` is the retained cap (base 10). Applied to
+    the player at combat start by the STURDY_CLAMP relic."""
+    id: str = field(default="sturdy_clamp", init=False)
+    _owner: object = None
+
+    def blocks_block_reset(self) -> bool:
+        # We do not fully block the reset; we cap it (see block_reset_cap).
+        return False
+
+    def block_reset_cap(self) -> int | None:
+        return self.amount
+
+
+@dataclass
+class BeatingRemnantPower(Power):
+    """Relic-power backing BeatingRemnant.cs (ModifyHpLostAfterOsty): caps the
+    TOTAL unblocked HP loss the owner takes in a single turn to `amount` (base
+    20). `_taken_this_turn` accumulates per turn and resets at the owner's
+    turn start. Applied to the player at combat start by the BEATING_REMNANT
+    relic."""
+    id: str = field(default="beating_remnant", init=False)
+    _owner: object = None
+    _taken_this_turn: int = 0
+
+    def on_turn_start(self, cs, owner) -> None:
+        self._taken_this_turn = 0
+
+    def modify_hp_lost(self, dealer, target, amount: int) -> int:
+        if target is not self._owner:
+            return amount
+        remaining = self.amount - self._taken_this_turn
+        capped = max(0, min(amount, remaining))
+        self._taken_this_turn += capped
+        return capped
 
 
 @dataclass
@@ -1347,6 +1394,9 @@ POWER_REGISTRY: dict[str, type[Power]] = {
     "ginger": GingerPower,
     "turnip": TurnipPower,
     "charons_ashes": CharonsAshesPower,
+    # Phase 8B.6 — relic-completion powers (block-retention / hp-loss cap).
+    "sturdy_clamp": SturdyClampPower,
+    "beating_remnant": BeatingRemnantPower,
     # Phase 8B — relic-completion powers.
     "artifact": ArtifactPower,
     "intangible": IntangiblePower,
