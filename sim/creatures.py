@@ -73,6 +73,21 @@ class Creature:
         self.max_hp += amount
         self.hp += amount
 
+    def lose_max_hp(self, amount: int) -> int:
+        """Permanently reduce max HP (CreatureCmd.LoseMaxHp; PaperCuts). Current
+        HP is clamped to the new max. Returns the max-HP reduction applied (the
+        max cannot go below 1). Dropping current HP to 0 kills the creature."""
+        if amount <= 0:
+            return 0
+        reduced = min(amount, self.max_hp - 1)
+        self.max_hp -= reduced
+        if self.hp > self.max_hp:
+            self.hp = self.max_hp
+        if self.hp <= 0:
+            self.hp = 0
+            self.alive = False
+        return reduced
+
 
 @dataclass
 class Player(Creature):

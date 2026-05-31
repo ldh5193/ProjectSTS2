@@ -31,7 +31,13 @@ def compute_modified_damage(base_amount: int, dealer: Creature, target: Creature
     # TODO(faithful): real game keeps fractional damage through the block step
     # and only truncates at HP-loss. We floor here (before block). Matters only
     # for multi-hit fractional cases that don't exist in current content.
-    return max(0, floor(modified))
+    result = max(0, floor(modified))
+    # Damage-cap powers (ModifyDamageCap): Slippery (cap 1), Hard To Kill (cap
+    # `amount`). The cap clamps the computed damage instance for the TARGET.
+    # The smallest cap across the target's powers wins.
+    for p in target.powers:
+        result = p.modify_damage_cap(dealer, target, result)
+    return max(0, result)
 
 
 def deal_damage(base_amount: int, dealer: Creature, target: Creature) -> tuple[int, int]:

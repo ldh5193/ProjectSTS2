@@ -863,6 +863,10 @@ class Vantom(Monster):
         m = cls(name="Vantom", hp=hp, max_hp=hp, ascension=ascension)
         m.next_move = _VANTOM_CYCLE[0]
         m.cycle_index = 0
+        # Slippery 9 (Vantom.cs:73 Apply<SlipperyPower> amount=9): each of the
+        # first 9 damage instances Vantom takes is capped to 1 HP, then the
+        # counter decrements. A heavy defensive buff that must be chipped away.
+        m.add_or_stack_power(make_power("slippery", 9, m))
         return m
 
     def roll_next_move(self, rng: random.Random) -> VantomMove:
@@ -2062,9 +2066,12 @@ class SnappingJaxfruit(_TableMonster):
 class Inklet(_TableMonster):
     # Inklet.cs: HP 11-17 (A8 12-18). Small minion. JAB(3/4) w2 / WHIRLWIND
     # (2/3 x3) random attacker; PIERCING_GAZE(10/11) for the middle inklet.
+    # Slippery 1 (Inklet.cs:57 Apply<SlipperyPower> amount=1): the FIRST damage
+    # instance it takes is capped to 1 HP, then Slippery expires.
     MNAME = "Inklet"
     HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 11, 17, 12, 18
     START = "JAB"
+    SPAWN_POWERS = (("slippery", 1),)
     MOVES = {
         "JAB": _Move("JAB", dmg=(3, 4)),
         "WHIRLWIND": _Move("WHIRLWIND", dmg=(2, 3), hits=3),
@@ -2344,12 +2351,14 @@ class Chomper(_TableMonster):
 
 
 class Exoskeleton(_TableMonster):
-    # Exoskeleton.cs: HP 24-28 (A8 25-29). HardToKill (cosmetic). RAND
-    # SKITTER(1 x3) / MANDIBLES(8/9 -> ENRAGE +2 Str). MANDIBLES funnels into
-    # ENRAGE, then back to RAND.
+    # Exoskeleton.cs: HP 24-28 (A8 25-29). HardToKill 9 — caps the HP it loses
+    # to any single damage instance at 9 (Exoskeleton.cs:48 Apply<HardToKillPower>
+    # amount=9 at spawn). RAND SKITTER(1 x3) / MANDIBLES(8/9 -> ENRAGE +2 Str).
+    # MANDIBLES funnels into ENRAGE, then back to RAND.
     MNAME = "Exoskeleton"
     HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 24, 28, 25, 29
     START = "__ENTRY__"
+    SPAWN_POWERS = (("hard_to_kill", 9),)
     MOVES = {
         "SKITTER": _Move("SKITTER", dmg=(1, 1), hits=3),
         "MANDIBLES": _Move("MANDIBLES", dmg=(8, 9), next="ENRAGE"),
@@ -2606,11 +2615,14 @@ class DecimillipedeSegment(_TableMonster):
 
 class ScrollOfBiting(_TableMonster):
     # ScrollOfBiting.cs: HP 31-38 (A8 32-39). CHOMP(14/16) -> MORE_TEETH(+2
-    # Str) -> CHEW(5/6 x2) -> RAND{CHOMP CannotRepeat, CHEW w2}. PaperCuts is
-    # cosmetic. Different scrolls start at staggered indices.
+    # Str) -> CHEW(5/6 x2) -> RAND{CHOMP CannotRepeat, CHEW w2}. PaperCuts 2 —
+    # each powered attack that lands unblocked on the player costs the player 2
+    # MAX HP (ScrollOfBiting.cs:75 Apply<PaperCutsPower> amount=2 at spawn).
+    # Different scrolls start at staggered indices.
     MNAME = "Scroll of Biting"
     HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 31, 38, 32, 39
     START = "CHOMP"
+    SPAWN_POWERS = (("paper_cuts", 2),)
     MOVES = {
         "CHOMP": _Move("CHOMP", dmg=(14, 16), next="MORE_TEETH"),
         "MORE_TEETH": _Move("MORE_TEETH", self_strength=(2, 2), next="CHEW"),
@@ -2646,11 +2658,14 @@ class BygoneEffigy(_TableMonster):
 
 
 class Byrdonis(_TableMonster):
-    # Byrdonis.cs (Overgrowth elite): HP 81-84 (A8 90). Territorial cosmetic.
-    # SWOOP(17/19) -> PECK(3/4 x3) -> SWOOP (loop). Starts at SWOOP.
+    # Byrdonis.cs (Overgrowth elite): HP 81-84 (A8 90). Territorial — gains
+    # Strength 1 at the end of EVERY turn (Byrdonis.cs:36 Apply<TerritorialPower>
+    # amount=1 at spawn). SWOOP(17/19) -> PECK(3/4 x3) -> SWOOP (loop). Starts
+    # at SWOOP.
     MNAME = "Byrdonis"
     HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 81, 84, 90, 90
     START = "SWOOP"
+    SPAWN_POWERS = (("territorial", 1),)
     MOVES = {
         "SWOOP": _Move("SWOOP", dmg=(17, 19), next="PECK"),
         "PECK": _Move("PECK", dmg=(3, 4), hits=3, next="SWOOP"),

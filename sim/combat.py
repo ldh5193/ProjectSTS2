@@ -160,7 +160,12 @@ class CombatState:
         self._hp_lost_this_turn = False
         self._block_gains_this_turn = 0
         self._cards_exhausted_this_turn = 0
-        self.player.energy = self.player.max_energy
+        # Max-energy modifiers (Demesne +amount, WasteAway −amount). Applied to
+        # the base per-turn energy (ModifyMaxEnergy), floored at 0.
+        energy = self.player.max_energy
+        for p in self.player.powers:
+            energy = p.modify_max_energy(self.player, energy)
+        self.player.energy = max(0, energy)
         # Block resets at turn start unless a power (Barricade) blocks the reset.
         # SturdyClamp caps retained block instead of clearing it (block_reset_cap).
         if not any(p.blocks_block_reset() for p in self.player.powers):
@@ -172,7 +177,12 @@ class CombatState:
                 self.player.block = 0
         # Poison ticks at the START of the owner's turn (PoisonPower.cs).
         apply_poison_tick(self.player)
-        self.draw(HAND_SIZE)
+        # Hand-draw modifiers (ModifyHandDraw): Demesne/Tyranny (+amount),
+        # MindRot (−amount, floored at 0).
+        hand_draw = HAND_SIZE
+        for p in self.player.powers:
+            hand_draw = p.modify_hand_draw(self.player, hand_draw)
+        self.draw(max(0, hand_draw))
         # Turn-start triggers: DemonForm (Strength), Berserk (energy),
         # Brutality (lose HP + draw). Fire after the draw, per the .cs ordering
         # of AfterSideTurnStart (DemonForm) which runs once the turn is set up.
@@ -266,7 +276,22 @@ class CombatState:
             dup.amount -= 1
             if dup.amount <= 0:
                 self.player.powers.remove(dup)
+        # Burst (BurstPower.cs): the next N Skills play one extra time this turn.
+        # Consumes one stack per Skill (AfterModifyingCardPlayCount); removed at
+        # turn end (handled in end_player_turn).
+        burst = self.player.get_power("burst")
+        if (card.type is CardType.SKILL and burst is not None and burst.amount > 0):
+            extra_plays += 1
+            burst.amount -= 1
+            if burst.amount <= 0:
+                self.player.powers.remove(burst)
         alive_before = [m for m in self.monsters if m.alive]
+        # Accuracy (AccuracyPower.cs): the active card is read by the power's
+        # modify_damage_additive (Shiv-tagged attacks only). Latch it for the
+        # duration of this card's resolution.
+        acc = self.player.get_power("accuracy")
+        if acc is not None:
+            acc._active_card = card
         # Gigantification (GigantificationPower): the owner's next powered
         # Attack deals ×3 (applied via modify_damage_multiplicative). Snapshot
         # whether a stack was active so we consume exactly one after the Attack.
@@ -676,7 +701,8 @@ class CombatState:
     #   - Monster's Weak/Vulnerable decay at end of that monster's turn.
     _DURATION_DEBUFFS: tuple[str, ...] = ("weak", "vulnerable", "frail", "no_draw",
                                           "no_energy_gain", "blur", "double_damage",
-                                          "reflect", "soar", "shrink")
+                                          "reflect", "soar", "shrink",
+                                          "covered", "no_block", "knockdown")
 
     def end_player_turn(self) -> None:
         self.is_player_turn = False
@@ -694,6 +720,11 @@ class CombatState:
         otp = self.player.get_power("one_two_punch")
         if otp is not None:
             self.player.powers.remove(otp)
+        # Burst (BurstPower.cs AfterTurnEnd side==Owner): any unused charge is
+        # removed at the player's own turn end.
+        burst = self.player.get_power("burst")
+        if burst is not None:
+            self.player.powers.remove(burst)
         # Rage (RagePower.cs AfterTurnEnd side==Owner.Side): removed entirely at
         # the player's own turn end.
         rage = self.player.get_power("rage")

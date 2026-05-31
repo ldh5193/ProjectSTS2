@@ -115,6 +115,23 @@ class Power:
         (Corruption: skills cost 0)."""
         return None
 
+    def modify_hand_draw(self, owner, count: int) -> int:
+        """Modify the number of cards the owner draws at hand-draw
+        (ModifyHandDraw). Default: no change. Used by Demesne/Tyranny (+amount),
+        MindRot (−amount, floored at 0)."""
+        return count
+
+    def modify_max_energy(self, owner, amount: int) -> int:
+        """Modify the owner's per-turn max energy (ModifyMaxEnergy). Default: no
+        change. Used by Demesne (+amount) and WasteAway (−amount)."""
+        return amount
+
+    def modify_damage_cap(self, dealer, target, amount: int) -> int:
+        """Cap the damage `target` receives from a single instance to this
+        value (ModifyDamageCap). Default: no cap. Used by Slippery (cap 1) and
+        Hard To Kill (cap `amount`)."""
+        return amount
+
     def blocks_block_reset(self) -> bool:
         """If True, the owner's block is NOT reset at turn start (Barricade)."""
         return False
@@ -1385,6 +1402,359 @@ class ConfusedPower(Power):
         cs.cost_overrides[id(card)] = cost
 
 
+# ===========================================================================
+# Phase 8B.8 — powers tranche (faithful triggers from the decompile).
+# Cites: decompiled/MegaCrit.Sts2.Core.Models.Powers/{NoxiousFumes,Mayhem,
+#   Burst,Accuracy,Territorial,PaperCuts,Tracking,Knockdown,Guarded,Covered,
+#   NoBlock,Demesne,Tyranny,MindRot,WasteAway,Strangle,Slippery,HardToKill,
+#   DarkShackles,PiercingWail,Mangle,CrushUnder,FeedingFrenzy}Power.cs.
+# ===========================================================================
+
+
+@dataclass
+class NoxiousFumesPower(Power):
+    """NoxiousFumesPower.cs (AfterSideTurnStart, side == Owner.Side): at the
+    start of the owner's turn, apply `amount` Poison to ALL hittable enemies.
+    StackType Counter (the per-turn Poison application does not decay)."""
+    id: str = field(default="noxious_fumes", init=False)
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        for m in cs.alive_monsters():
+            if m.alive:
+                m.add_or_stack_power(make_power("poison", self.amount, m))
+
+
+@dataclass
+class MayhemPower(Power):
+    """MayhemPower.cs (AfterPlayerTurnStart): at the owner's turn start,
+    auto-play the top `amount` cards from the draw pile (CardPilePosition.Top,
+    forceExhaust=false). We resolve each top-of-draw card then send it to the
+    discard (its normal post-play pile)."""
+    id: str = field(default="mayhem", init=False)
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        for _ in range(self.amount):
+            if not cs.draw_pile:
+                break
+            card = cs.draw_pile.pop()
+            cs._resolve_effects(card)
+            cs.discard_pile.append(card)
+
+
+@dataclass
+class BurstPower(Power):
+    """BurstPower.cs (ModifyCardPlayCount, Skill only): the next `amount` Skill
+    cards the owner plays this turn are played one extra time (playCount + 1).
+    Decrements per Skill whose play count it modified (AfterModifyingCardPlayCount)
+    and is removed entirely at the owner's turn end. The engine consumes a stack
+    and doubles the resolve in play_card (Skills only, unlike Duplication)."""
+    id: str = field(default="burst", init=False)
+    _owner: object = None
+
+
+@dataclass
+class AccuracyPower(Power):
+    """AccuracyPower.cs (ModifyDamageAdditive): the owner's powered Shiv attacks
+    deal +`amount` additive damage. Only attacks tagged Shiv from the owner
+    benefit (card.Tags.Contains(CardTag.Shiv))."""
+    id: str = field(default="accuracy", init=False)
+    _owner: object = None
+
+    def modify_damage_additive(self, dealer, target, base_amount: int) -> int:
+        if dealer is not self._owner:
+            return 0
+        card = getattr(self, "_active_card", None)
+        if card is None or "shiv" not in getattr(card, "id", ""):
+            return 0
+        return self.amount
+
+    _active_card: object = None
+
+
+@dataclass
+class TerritorialPower(Power):
+    """TerritorialPower.cs (AfterTurnEnd, side == Owner.Side): at the owner's
+    turn end, gain Strength == `amount`. A monster buff (Counter — does not
+    decay; permanent per-turn Strength gain)."""
+    id: str = field(default="territorial", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        owner.add_or_stack_power(make_power("strength", self.amount, owner))
+
+
+@dataclass
+class PaperCutsPower(Power):
+    """PaperCutsPower.cs (AfterDamageGiven, powered attack with unblocked
+    damage, target is the player): when the owning monster lands a powered
+    attack on the player for >0 unblocked damage, the player loses `amount`
+    MAX HP (CreatureCmd.LoseMaxHp, not from a card). Fired on on_attacked where
+    the holder is the dealer and the victim took unblocked damage."""
+    id: str = field(default="paper_cuts", init=False)
+    _owner: object = None
+
+    def on_attacked(self, owner, other, blocked: int, unblocked: int) -> None:
+        # Holder (`owner`) is the attacking monster; `other` is the victim.
+        if owner is not self._owner or unblocked <= 0:
+            return
+        if hasattr(other, "lose_max_hp"):
+            other.lose_max_hp(self.amount)
+
+
+@dataclass
+class TrackingPower(Power):
+    """TrackingPower.cs (ModifyDamageMultiplicative): the owner's powered
+    attacks against a target that has Weak deal ×`amount` damage. (The .cs
+    returns base.Amount directly as the multiplier; STS2 base is 2 -> ×2.)"""
+    id: str = field(default="tracking", init=False)
+    _owner: object = None
+
+    def modify_damage_multiplicative(self, dealer, target, base_amount: int) -> float:
+        if dealer is not self._owner:
+            return 1.0
+        w = target.get_power("weak") if hasattr(target, "get_power") else None
+        if w is None or w.amount <= 0:
+            return 1.0
+        return float(self.amount)
+
+
+@dataclass
+class KnockdownPower(Power):
+    """KnockdownPower.cs (ModifyDamageMultiplicative): a debuff — powered
+    attacks targeting the owner deal ×`amount` damage (DamageIncrease), EXCEPT
+    from the applier. Removed at the owner's turn end (AfterTurnEnd side==Owner).
+    We apply the multiplier whenever the owner is the target (the applier guard
+    is dropped — the dominant case is the player applying it to a monster, and
+    the monster is the only dealer the player faces). Ticks via the engine's
+    duration decay."""
+    id: str = field(default="knockdown", init=False)
+    _owner: object = None
+
+    def modify_damage_multiplicative(self, dealer, target, base_amount: int) -> float:
+        if target is not self._owner:
+            return 1.0
+        return float(self.amount)
+
+
+@dataclass
+class GuardedPower(Power):
+    """GuardedPower.cs (ModifyDamageMultiplicative): powered attacks targeting
+    the owner deal ×0.5 damage (a halving buff applied by Tank to teammates).
+    StackType Single."""
+    id: str = field(default="guarded", init=False)
+    _owner: object = None
+
+    def modify_damage_multiplicative(self, dealer, target, base_amount: int) -> float:
+        if target is not self._owner:
+            return 1.0
+        return 0.5
+
+
+@dataclass
+class CoveredPower(Power):
+    """CoveredPower.cs (ModifyDamageMultiplicative): powered attacks targeting
+    the owner deal ×0 damage (fully negated). Removed at enemy turn end
+    (AfterTurnEnd side==Enemy). We model the full negation; the 1-turn duration
+    is handled by the engine's `covered` decay."""
+    id: str = field(default="covered", init=False)
+    _owner: object = None
+
+    def modify_damage_multiplicative(self, dealer, target, base_amount: int) -> float:
+        if target is not self._owner:
+            return 1.0
+        return 0.0
+
+
+@dataclass
+class NoBlockPower(Power):
+    """NoBlockPower.cs (ModifyBlockMultiplicative): a debuff — the owner gains
+    ×0 Block from powered card sources (Unpowered block, e.g. relics, is
+    unaffected). Decrements at enemy turn end (AfterTurnEnd side==Enemy). We
+    apply ×0 to the owner's card block-gains; the engine's `no_block` decay
+    ticks it down."""
+    id: str = field(default="no_block", init=False)
+    _owner: object = None
+
+    def modify_block_multiplicative(self, dealer, base_amount: int) -> float:
+        if dealer is not self._owner:
+            return 1.0
+        return 0.0
+
+
+@dataclass
+class DemesnePower(Power):
+    """DemesnePower.cs (ModifyHandDraw + ModifyMaxEnergy): while present, the
+    owner draws +`amount` cards at hand-draw and has +`amount` max energy. A
+    persistent buff (Counter)."""
+    id: str = field(default="demesne", init=False)
+    _owner: object = None
+
+    def modify_hand_draw(self, owner, count: int) -> int:
+        if owner is not self._owner:
+            return count
+        return count + self.amount
+
+    def modify_max_energy(self, owner, amount: int) -> int:
+        if owner is not self._owner:
+            return amount
+        return amount + self.amount
+
+
+@dataclass
+class TyrannyPower(Power):
+    """TyrannyPower.cs (ModifyHandDraw + AfterPlayerTurnStart): the owner draws
+    +`amount` cards at hand-draw, but at the start of the owner's turn must
+    exhaust `amount` cards from hand. We add the draw via modify_hand_draw and
+    exhaust `amount` hand cards at turn start (after the hand is drawn)."""
+    id: str = field(default="tyranny", init=False)
+    _owner: object = None
+
+    def modify_hand_draw(self, owner, count: int) -> int:
+        if owner is not self._owner:
+            return count
+        return count + self.amount
+
+    def on_turn_start(self, cs, owner) -> None:
+        for _ in range(self.amount):
+            if not cs.hand:
+                break
+            cs._exhaust_card(cs.hand.pop())
+
+
+@dataclass
+class MindRotPower(Power):
+    """MindRotPower.cs (ModifyHandDraw): a debuff — the owner draws `amount`
+    fewer cards at hand-draw (floored at 0)."""
+    id: str = field(default="mind_rot", init=False)
+    _owner: object = None
+
+    def modify_hand_draw(self, owner, count: int) -> int:
+        if owner is not self._owner:
+            return count
+        return max(0, count - self.amount)
+
+
+@dataclass
+class WasteAwayPower(Power):
+    """WasteAwayPower.cs (ModifyMaxEnergy): a debuff — the owner has `amount`
+    less max energy per turn."""
+    id: str = field(default="waste_away", init=False)
+    _owner: object = None
+
+    def modify_max_energy(self, owner, amount: int) -> int:
+        if owner is not self._owner:
+            return amount
+        return amount - self.amount
+
+
+@dataclass
+class StranglePower(Power):
+    """StranglePower.cs (AfterCardPlayed -> Unblockable Unpowered damage;
+    AfterTurnEnd -> remove): a debuff — each card the owner plays, the owner
+    takes `amount` unblockable damage. Removed at the owner's turn end."""
+    id: str = field(default="strangle", init=False)
+    _owner: object = None
+
+    def on_card_played(self, cs, owner, card) -> None:
+        owner.lose_hp(self.amount)
+
+    def on_turn_end(self, cs, owner) -> None:
+        if self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class SlipperyPower(Power):
+    """SlipperyPower.cs (ModifyDamageCap 1 + AfterDamageReceived decrement): a
+    buff — incoming damage to the owner is capped to 1 per instance, and the
+    counter decrements by 1 each time the owner actually takes damage. At 0 the
+    power is removed. We cap via modify_damage_cap and decrement on on_attacked
+    when the owner took damage (blocked + unblocked > 0)."""
+    id: str = field(default="slippery", init=False)
+    _owner: object = None
+
+    def modify_damage_cap(self, dealer, target, amount: int) -> int:
+        if target is not self._owner:
+            return amount
+        return min(amount, 1)
+
+    def on_attacked(self, owner, dealer, blocked: int, unblocked: int) -> None:
+        if (blocked + unblocked) <= 0:
+            return
+        self.amount -= 1
+        if self.amount <= 0 and self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class HardToKillPower(Power):
+    """HardToKillPower.cs (ModifyDamageCap): a monster buff — damage the owner
+    receives from a single instance is capped to `amount` (the monster can lose
+    at most `amount` HP per hit)."""
+    id: str = field(default="hard_to_kill", init=False)
+    _owner: object = None
+
+    def modify_damage_cap(self, dealer, target, amount: int) -> int:
+        if target is not self._owner:
+            return amount
+        return min(amount, self.amount)
+
+
+@dataclass
+class StrengthDownTurnEndPower(Power):
+    """Shared base for the TemporaryStrengthPower(IsPositive=false) debuffs:
+    DarkShacklesPower, PiercingWailPower, ManglePower, CrushUnderPower. Applies
+    −`amount` to the owner's outgoing powered-attack damage for the turn, then
+    the penalty is lifted at the owner's turn end (TemporaryStrengthPower removes
+    the silently-applied Strength in AfterTurnEnd). Distinct ids keep the source
+    card identifiable."""
+    id: str = field(default="strength_down_temp", init=False)
+    _owner: object = None
+
+    def modify_damage_additive(self, dealer, target, base_amount: int) -> int:
+        if dealer is not self._owner:
+            return 0
+        return -self.amount
+
+    def on_turn_end(self, cs, owner) -> None:
+        if self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class DarkShacklesPower(StrengthDownTurnEndPower):
+    """DarkShacklesPower.cs : TemporaryStrengthPower, IsPositive=false. Applies
+    −`amount` Strength to an enemy until that enemy's turn ends."""
+    id: str = field(default="dark_shackles", init=False)
+
+
+@dataclass
+class PiercingWailPower(StrengthDownTurnEndPower):
+    """PiercingWailPower.cs : TemporaryStrengthPower, IsPositive=false. −`amount`
+    Strength to ALL enemies until their turn ends."""
+    id: str = field(default="piercing_wail", init=False)
+
+
+@dataclass
+class FeedingFrenzyPower(Power):
+    """FeedingFrenzyPower.cs : TemporaryStrengthPower (IsPositive default true).
+    Applies +`amount` Strength to the owner until the owner's turn ends, then
+    the bonus is reversed (AfterTurnEnd). Same mechanic as TemporaryStrength."""
+    id: str = field(default="feeding_frenzy", init=False)
+    _owner: object = None
+
+    def modify_damage_additive(self, dealer, target, base_amount: int) -> int:
+        if dealer is not self._owner:
+            return 0
+        return self.amount
+
+    def on_turn_end(self, cs, owner) -> None:
+        if self in owner.powers:
+            owner.powers.remove(self)
+
+
 POWER_REGISTRY: dict[str, type[Power]] = {
     "confused": ConfusedPower,
     "no_draw": NoDrawPower,
@@ -1476,6 +1846,28 @@ POWER_REGISTRY: dict[str, type[Power]] = {
     "rage": RagePower,
     "afterimage": AfterimagePower,
     "envenom": EnvenomPower,
+    # Phase 8B.8 — powers tranche (faithful triggers from the decompile).
+    "noxious_fumes": NoxiousFumesPower,
+    "mayhem": MayhemPower,
+    "burst": BurstPower,
+    "accuracy": AccuracyPower,
+    "territorial": TerritorialPower,
+    "paper_cuts": PaperCutsPower,
+    "tracking": TrackingPower,
+    "knockdown": KnockdownPower,
+    "guarded": GuardedPower,
+    "covered": CoveredPower,
+    "no_block": NoBlockPower,
+    "demesne": DemesnePower,
+    "tyranny": TyrannyPower,
+    "mind_rot": MindRotPower,
+    "waste_away": WasteAwayPower,
+    "strangle": StranglePower,
+    "slippery": SlipperyPower,
+    "hard_to_kill": HardToKillPower,
+    "dark_shackles": DarkShacklesPower,
+    "piercing_wail": PiercingWailPower,
+    "feeding_frenzy": FeedingFrenzyPower,
 }
 
 
