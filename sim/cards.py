@@ -235,11 +235,11 @@ STONE_ARMOR = CardDef(
     ),
 )
 
-RAGE = CardDef(  # simplified: +3 strength (real Rage applies RagePower)
+RAGE = CardDef(  # Rage.cs: PowerCmd.Apply<RagePower>(Power=3) — block per Attack this turn
     id="rage", name="Rage", cost=0, type=CardType.SKILL, count=0,
     effects=(
         Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
-               power_id="strength", amount=3),
+               power_id="rage", amount=3),
     ),
 )
 

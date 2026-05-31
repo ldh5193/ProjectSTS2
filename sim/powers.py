@@ -325,7 +325,8 @@ class JuggernautPower(Power):
         if not enemies:
             return
         target = cs.rng.choice(enemies)
-        deal_damage(self.amount, owner, target)
+        # JuggernautPower.cs:26 — ValueProp.Unpowered (no Strength/Vulnerable).
+        deal_damage(self.amount, owner, target, powered=False)
 
 
 @dataclass
@@ -353,7 +354,8 @@ class CombustPower(Power):
         owner.lose_hp(self.multiplier)
         for m in cs.alive_monsters():
             if m.alive:
-                deal_damage(self.amount, owner, m)
+                # STS1 Combust is an Unpowered AoE (no Strength/Vulnerable).
+                deal_damage(self.amount, owner, m, powered=False)
 
 
 @dataclass
@@ -490,7 +492,8 @@ class InfernoPower(Power):
         from .damage import deal_damage
         for m in cs.alive_monsters():
             if m.alive:
-                deal_damage(self.amount, owner, m)
+                # InfernoPower.cs:48 — ValueProp.Unpowered AoE retaliation.
+                deal_damage(self.amount, owner, m, powered=False)
 
 
 @dataclass
@@ -674,7 +677,8 @@ class CharonsAshesPower(Power):
         from .damage import deal_damage
         for m in cs.alive_monsters():
             if m.alive:
-                deal_damage(self.amount, owner, m)
+                # CharonsAshes.cs — Unpowered AoE on each exhaust (no Strength).
+                deal_damage(self.amount, owner, m, powered=False)
 
 
 @dataclass

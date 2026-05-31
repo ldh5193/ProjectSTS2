@@ -1,15 +1,45 @@
 """Damage / block resolution pipeline.
 
-Mirrors Hook.ModifyDamageInternal (notes/05_mvp_combat_spec.md §D.3, §D.5):
+GROUND TRUTH (decompiled, exact):
+  - decompiled/MegaCrit.Sts2.Core.Commands/CreatureCmd.cs Damage() lines 134-154
+  - decompiled/MegaCrit.Sts2.Core.Hooks/Hook.cs ModifyDamage()/ModifyDamageInternal()
+    lines 1130-1213 / 1950-1994
+  - decompiled/MegaCrit.Sts2.Core.Entities.Creatures/Creature.cs
+    DamageBlockInternal() 367-372, LoseHpInternal() 374-386
 
-  modified = base
-  modified += sum(power.modify_damage_additive(...) for power in dealer.powers + target.powers)
-  for power in dealer.powers + target.powers:
-      modified *= power.modify_damage_multiplicative(...)
-  blocked = min(target.block, modified_floor)
-  target.block -= blocked
-  unblocked = modified_floor - blocked
-  target.lose_hp(unblocked)
+Real pipeline (all arithmetic is C# `decimal`, NOT float):
+  1. modified = base                                            (ModifyDamageInternal)
+     modified += Σ ModifyDamageAdditive   (Strength, Vigor, ...)   — additive pass
+     modified *= Π ModifyDamageMultiplicative (Vulnerable ×1.5,
+                  Weak ×0.75, DoubleDamage ×2, Soar/Colossus ×0.5) — mult pass
+     modified  = clamp to smallest ModifyDamageCap (Slippery=1, HardToKill)
+     modified  = Math.Max(0m, modified)                         (NOT floored yet)
+  2. blocked  = Unblockable ? 0 : Math.Min(Block, modified)     (DamageBlockInternal)
+     Block   -= (int)blocked                                    (block truncates here)
+  3. unblocked = Math.Max(modified - blocked, 0m)               (still decimal)
+     unblocked = ModifyHpLostBeforeOsty(...)  (The Boot, HardenedShell, Buffer)
+     unblocked = ModifyHpLostAfterOsty(...)   (Tungsten Rod, Intangible, BeatingRemnant)
+  4. hpLoss = (int)Math.Min(unblocked, 999999999m)              (LoseHpInternal — the
+     CurrentHp -= hpLoss                                         ONLY truncation of dmg)
+
+EXACTNESS NOTE (resolves the campaign's "floor-before-block vs truncate-at-HP-loss"):
+We floor the modified amount BEFORE the block step. For a SINGLE attack instance with
+an INTEGER Block (always true — Block is stored int), this is mathematically identical
+to the real game's truncate-at-HP-loss for both the final HP loss AND the residual
+Block, because for modified m>=0 and integer B:
+    floor(m) - min(B, floor(m)) == (int)( m - min(B, m) )   and
+    B - min(B, floor(m))        == B - (int) min(B, m).
+Verified exhaustively in tests/test_damage_exactness.py. The real game never carries a
+fractional damage instance across hits (each hit is an independent decimal), so there is
+no multi-hit accumulation case where this diverges. Hence the sim is bit-exact.
+
+`powered` mirrors ValueProp.IsPoweredAttack() == Move && !Unpowered
+(decompiled ValuePropExtensions.cs:5-12). Strength / Vulnerable / Weak / DoubleDamage /
+Shrink / Soar / Colossus / Cruelty / Vigor all `return base/1m` when
+`!props.IsPoweredAttack()`, so UNPOWERED damage (Thorns, Juggernaut, Combust,
+FlameBarrier, Reflect, Inferno, Charon's Ashes, relic/potion AoE bursts) ignores every
+additive AND multiplicative damage-power. The damage CAP and the HP-lost (Osty) hooks
+are NOT powered-gated and still apply.
 """
 from __future__ import annotations
 
@@ -18,31 +48,38 @@ from math import floor
 from .creatures import Creature
 
 
-def compute_modified_damage(base_amount: int, dealer: Creature, target: Creature) -> int:
-    additive = 0
-    for p in dealer.powers + target.powers:
-        additive += p.modify_damage_additive(dealer, target, base_amount)
+def compute_modified_damage(base_amount: int, dealer: Creature, target: Creature,
+                            powered: bool = True) -> int:
+    if powered:
+        additive = 0
+        for p in dealer.powers + target.powers:
+            additive += p.modify_damage_additive(dealer, target, base_amount)
 
-    modified = float(base_amount + additive)
-    for p in dealer.powers + target.powers:
-        modified *= p.modify_damage_multiplicative(dealer, target, base_amount)
+        modified = float(base_amount + additive)
+        for p in dealer.powers + target.powers:
+            modified *= p.modify_damage_multiplicative(dealer, target, base_amount)
+    else:
+        # Unpowered (ValueProp.Unpowered): no Strength/Vulnerable/Weak/etc.
+        modified = float(base_amount)
 
-    # Game uses decimal; we floor to int for simulator (matches §D.5 "13.5 → 13").
-    # TODO(faithful): real game keeps fractional damage through the block step
-    # and only truncates at HP-loss. We floor here (before block). Matters only
-    # for multi-hit fractional cases that don't exist in current content.
+    # See module docstring: flooring here before block is bit-exact vs the
+    # decompile's truncate-at-HP-loss for single integer-block attack instances.
     result = max(0, floor(modified))
     # Damage-cap powers (ModifyDamageCap): Slippery (cap 1), Hard To Kill (cap
-    # `amount`). The cap clamps the computed damage instance for the TARGET.
-    # The smallest cap across the target's powers wins.
+    # `amount`). Applied regardless of powered (not IsPoweredAttack-gated). The
+    # smallest cap across the target's powers wins.
     for p in target.powers:
         result = p.modify_damage_cap(dealer, target, result)
     return max(0, result)
 
 
-def deal_damage(base_amount: int, dealer: Creature, target: Creature) -> tuple[int, int]:
-    """Resolve a single attack. Returns (blocked_amount, hp_loss)."""
-    modified = compute_modified_damage(base_amount, dealer, target)
+def deal_damage(base_amount: int, dealer: Creature, target: Creature,
+                powered: bool = True) -> tuple[int, int]:
+    """Resolve a single attack. Returns (blocked_amount, hp_loss).
+
+    `powered=False` mirrors AttackCommand.Unpowered() / DamageProps.nonCardUnpowered:
+    the hit skips all Strength/Vulnerable/Weak/multiplier powers (see module docstring)."""
+    modified = compute_modified_damage(base_amount, dealer, target, powered=powered)
     blocked = min(target.block, modified)
     target.block -= blocked
     unblocked = modified - blocked
@@ -57,29 +94,32 @@ def deal_damage(base_amount: int, dealer: Creature, target: Creature) -> tuple[i
             unblocked = p.modify_hp_lost(dealer, target, unblocked)
         unblocked = max(0, unblocked)
     hp_loss = target.lose_hp(unblocked)
-    # Thorns: if target has thorns AND took unblocked damage from a powered
-    # attack (we approximate "powered" as "the attack went through deal_damage"
-    # rather than self-damage). Dealer takes thorns damage, unblockable.
+    # Thorns (ThornsPower.cs:17-24): triggers only on a POWERED attack
+    # (props.IsPoweredAttack()), NOT on unpowered damage (Juggernaut/Combust/
+    # potion/relic bursts). Dealer takes thorns damage, unblockable.
     thorns = target.get_power("thorns") if hasattr(target, "get_power") else None
-    if (thorns is not None and thorns.amount > 0 and unblocked > 0
+    if (powered and thorns is not None and thorns.amount > 0 and unblocked > 0
             and dealer is not target and dealer.alive):
         dealer.lose_hp(thorns.amount)
     # Attack-reaction hooks (Phase 8B): fire on_attacked for every power held by
     # the TARGET (Curl Up, Flame Barrier, Reflect, Slumber/Asleep, Flutter) and
-    # by the DEALER (Painful Stabs, Envenom react to landing an attack). Iterate
-    # snapshots so a hook that removes its own power is safe. Guarded on
+    # by the DEALER (Painful Stabs, Envenom react to landing an attack). These
+    # decompiled powers gate on props.IsPoweredAttack(), so an UNPOWERED hit
+    # triggers no reactions. Iterate snapshots so a hook that removes its own
+    # power is safe. Guarded on
     # dealer is not target (self-damage does not trigger reactions).
-    if dealer is not target:
+    if powered and dealer is not target:
         for p in list(target.powers):
             p.on_attacked(target, dealer, blocked, unblocked)
         for p in list(dealer.powers):
             p.on_attacked(dealer, target, blocked, unblocked)
-    # Vigor (VigorPower.cs): consumed after the powered attack it boosted.
-    # We treat any attack routed through deal_damage as a powered attack, so
-    # remove the dealer's Vigor entirely (ModifyAmount(-amountWhenStarted)).
-    vigor = dealer.get_power("vigor") if hasattr(dealer, "get_power") else None
-    if vigor is not None:
-        dealer.powers.remove(vigor)
+    # Vigor (VigorPower.cs): consumed after the POWERED attack it boosted (it
+    # is IsPoweredAttack-gated). An unpowered hit neither benefits from nor
+    # consumes Vigor. Remove the dealer's Vigor entirely after a powered hit.
+    if powered:
+        vigor = dealer.get_power("vigor") if hasattr(dealer, "get_power") else None
+        if vigor is not None:
+            dealer.powers.remove(vigor)
     return blocked, hp_loss
 
 

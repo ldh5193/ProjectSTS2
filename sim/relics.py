@@ -178,13 +178,15 @@ def _attack_counter_power(rs, cs, card, *, relic_id: str,
 
 
 def _deal_damage_all_monsters(cs, amount: int) -> None:
-    """Deal `amount` unblockable-by-block damage to every alive monster
-    (LetterOpener, Kusarigama). Uses the standard damage pipeline so Thorns/
-    block still apply, matching CreatureCmd.Damage(HittableEnemies, ...)."""
+    """Deal `amount` damage to every alive monster (LetterOpener, Kusarigama).
+    Uses the standard damage pipeline so Thorns/block still apply, matching
+    CreatureCmd.Damage(HittableEnemies, ...). LetterOpener.cs:40 / Kusarigama.cs:41
+    use DamageVar(..., ValueProp.Unpowered): the relic burst does NOT gain the
+    player's Strength nor apply Weak/Vulnerable, so powered=False."""
     from .damage import deal_damage
     for m in list(cs.alive_monsters()):
         if m.alive:
-            deal_damage(amount, cs.player, m)
+            deal_damage(amount, cs.player, m, powered=False)
 
 
 def _relic_inst(rs, relic_id: str):

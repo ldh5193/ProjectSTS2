@@ -125,7 +125,9 @@ def _damage_enemy(cs, target_idx: int, amount: int) -> None:
     from .damage import deal_damage
     t = _enemy(cs, target_idx)
     if t is not None and t.alive:
-        deal_damage(amount, cs.player, t)
+        # FirePotion.cs:24 / PotionShapedRock.cs:21 — DamageVar(..., Unpowered):
+        # potion damage ignores Strength/Weak/Vulnerable, so powered=False.
+        deal_damage(amount, cs.player, t, powered=False)
 
 
 def _damage_all_enemies(cs, amount: int) -> None:
@@ -134,7 +136,8 @@ def _damage_all_enemies(cs, amount: int) -> None:
     from .damage import deal_damage
     for t in list(_alive(cs)):
         if t.alive:
-            deal_damage(amount, cs.player, t)
+            # FoulPotion.cs:46 — DamageVar(..., Unpowered) AoE.
+            deal_damage(amount, cs.player, t, powered=False)
 
 
 def _draw(cs, n: int) -> None:
