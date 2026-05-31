@@ -259,6 +259,35 @@ def _has_removable_count(rs: RunState, n: int) -> bool:
     return sum(1 for c in rs.deck if c.id != "ascenders_bane") >= n
 
 
+def _upgrade_card_obj(c):
+    """Upgrade a single CardDef in-place-style (returns the upgraded copy)."""
+    from .cards import upgrade_card
+    return upgrade_card(c)
+
+
+def _remove_cards_by_predicate(rs: RunState, pred, n: int) -> int:
+    """Remove up to n cards matching pred (skipping curses). Returns count
+    removed. Used by Amalgamator (remove 2 Strikes / 2 Defends)."""
+    removed = 0
+    i = 0
+    while i < len(rs.deck) and removed < n:
+        c = rs.deck[i]
+        if c.id == "ascenders_bane":
+            i += 1
+            continue
+        if pred(c):
+            del rs.deck[i]
+            removed += 1
+        else:
+            i += 1
+    return removed
+
+
+def _count_cards_by_tag(rs: RunState, substr: str) -> int:
+    return sum(1 for c in rs.deck
+               if substr in c.id.lower() and c.id != "ascenders_bane")
+
+
 # --- per-event option generators ------------------------------------------
 
 # --- 1. BrainLeech (act 1-2) ---
@@ -751,6 +780,598 @@ def _field_of_holes_options(rs: RunState) -> list[EventOption]:
     ]
 
 
+# === Phase 8B: remaining decompiled events (toward full 68 coverage) ===
+#
+# Enchantment system note: the sim has no per-card enchantment layer
+# (Sharp/Nimble/Swift/Vigorous/Corrupted/PerfectFit/SoulsPower/Spiral/
+# Sown/Steady/Slither). Every event that "enchants" a card is modeled as
+# an upgrade of the affected card(s) — the nearest EV-aligned primitive
+# available. Flagged // TODO(fidelity: enchantments) on each.
+#
+# Transform note: the sim has no transform pool, so "transform" collapses
+# to remove-and-add-colorless (see _transform_first_removable) — already
+# used by WhisperingHollow/AromaOfChaos/Symbiote/MorphicGrove.
+#
+# Combat-event note: events that start a real fight cannot re-enter the
+# engine combat loop from inside apply_option (events resolve as a single
+# effect application). They are modeled as a faithful HP-cost + the real
+# reward the encounter grants. Flagged // TODO(fidelity: combat).
+
+
+# --- 25. Amalgamator (>=2 Strikes & >=2 Defends): combine into Ultimate ---
+def _amalgamator_options(rs: RunState) -> list[EventOption]:
+    def combine_strikes(rs: RunState) -> None:
+        # Remove 2 Strikes, add UltimateStrike.
+        _remove_cards_by_predicate(rs, lambda c: "strike" in c.id.lower(), 2)
+        _add_named_card(rs, "ultimate_strike", "Ultimate Strike", cost=2)
+    def combine_defends(rs: RunState) -> None:
+        from .dsl import CardType
+        _remove_cards_by_predicate(rs, lambda c: "defend" in c.id.lower(), 2)
+        _add_named_card(rs, "ultimate_defend", "Ultimate Defend", cost=2,
+                        ctype=CardType.SKILL)
+    return [
+        EventOption("combine_strikes", "Combine Strikes", combine_strikes,
+                    tag="CARD_REMOVE_CARD_ADD"),
+        EventOption("combine_defends", "Combine Defends", combine_defends,
+                    tag="CARD_REMOVE_CARD_ADD"),
+    ]
+
+
+# --- 26. AromaOfChaos (any act): transform vs upgrade ---
+def _aroma_of_chaos_options(rs: RunState) -> list[EventOption]:
+    def let_go(rs: RunState) -> None:
+        _transform_first_removable(rs)
+    def maintain_control(rs: RunState) -> None:
+        _upgrade_first_card(rs)
+    return [
+        EventOption("let_go", "Let Go (transform)", let_go,
+                    tag="CARD_REMOVE_CARD_ADD"),
+        EventOption("maintain_control", "Maintain Control (upgrade)",
+                    maintain_control, tag="UPGRADE"),
+    ]
+
+
+# --- 27. BattlewornDummy (shared, combat-event): 3 difficulty settings ---
+# Real: fight a timed dummy; reward scales with difficulty (potion / 2
+# upgrades / relic). // TODO(fidelity: combat). HP cost rises with setting.
+def _battleworn_dummy_options(rs: RunState) -> list[EventOption]:
+    def setting1(rs: RunState) -> None:
+        rs.lose_hp(6)  # TODO(fidelity: combat)
+        from .potions import roll_potion
+        rs.add_potion(roll_potion(_event_rng(rs, "dummy1")))
+    def setting2(rs: RunState) -> None:
+        rs.lose_hp(10)  # TODO(fidelity: combat)
+        _upgrade_n_unupgraded(rs, 2)
+    def setting3(rs: RunState) -> None:
+        rs.lose_hp(16)  # TODO(fidelity: combat)
+        _grant_event_relic(rs)
+    return [
+        EventOption("setting_1", "Setting 1 (potion)", setting1,
+                    tag="HP_LOSS_POTION_GAIN"),
+        EventOption("setting_2", "Setting 2 (2 upgrades)", setting2,
+                    tag="HP_LOSS_UPGRADE"),
+        EventOption("setting_3", "Setting 3 (relic)", setting3,
+                    tag="HP_LOSS_RELIC_GAIN"),
+    ]
+
+
+# --- 28. ByrdonisNest (no pet): +7 max HP vs take ByrdonisEgg card ---
+def _byrdonis_nest_options(rs: RunState) -> list[EventOption]:
+    def eat(rs: RunState) -> None:
+        rs.gain_max_hp(7)
+    def take(rs: RunState) -> None:
+        _add_named_card(rs, "byrdonis_egg", "Byrdonis Egg", cost=1)
+    return [
+        EventOption("eat", "Eat (+7 max HP)", eat, tag="MAX_HP_GAIN"),
+        EventOption("take", "Take (Byrdonis Egg)", take, tag="CARD_ADD"),
+    ]
+
+
+# --- 29. ColorfulPhilosophers (multi-character pools): off-class card reward ---
+# Real: pick another character's color, get 3 card-reward screens (common/
+# uncommon/rare). L1: add 3 colorless cards (sim has only Ironclad pool).
+def _colorful_philosophers_options(rs: RunState) -> list[EventOption]:
+    def offer(rs: RunState) -> None:
+        _add_colorless_reward(rs, 3)
+    # Real shows up to 3 color options; collapse to one (sim has 1 pool).
+    return [
+        EventOption("offer_rewards", "Study Another Color (3 cards)", offer,
+                    tag="CARD_ADD"),
+    ]
+
+
+# --- 30. CrystalSphere (act>=2, gold>=100): pay for prophecy vs Debt curse ---
+# Real: minigame revealing future rooms. L1: UncoverFuture pays 50-100 gold
+# (no mechanical reward — info only, modeled as gold loss); PaymentPlan adds
+# Debt curse but is free.
+def _crystal_sphere_options(rs: RunState) -> list[EventOption]:
+    def uncover(rs: RunState) -> None:
+        cost = 50 + _event_rng(rs, "sphere").next_int(1, 51)
+        rs.gain_gold(-cost)
+    def payment_plan(rs: RunState) -> None:
+        _add_curse(rs, "debt")
+    return [
+        EventOption("uncover_future", "Uncover Future (pay gold)", uncover,
+                    enabled=rs.gold >= 100, tag="GOLD_LOSS"),
+        EventOption("payment_plan", "Payment Plan (Debt curse)", payment_plan,
+                    tag="CURSE_ADD"),
+    ]
+
+
+# --- 31. DollRoom (act 1): pick a doll relic, the more HP you pay the more choice ---
+# Real: random doll free / pay 5 HP for 2 choices / pay 15 HP for all 3.
+# L1: collapse to the two endpoints — random (free) vs examine (-15 HP, relic).
+def _doll_room_options(rs: RunState) -> list[EventOption]:
+    def choose_random(rs: RunState) -> None:
+        _grant_event_relic(rs)
+    def examine(rs: RunState) -> None:
+        rs.lose_hp(15)
+        _grant_event_relic(rs)  # examine gives full choice → still 1 relic
+    return [
+        EventOption("random", "Random Doll (relic)", choose_random,
+                    tag="RELIC_GAIN"),
+        EventOption("examine", "Examine (-15 HP, choose relic)", examine,
+                    tag="HP_LOSS_RELIC_GAIN"),
+    ]
+
+
+# --- 32. DoorsOfLightAndDark (any act): upgrade 2 vs remove 1 ---
+def _doors_options(rs: RunState) -> list[EventOption]:
+    def light(rs: RunState) -> None:
+        _upgrade_n_unupgraded(rs, 2)
+    def dark(rs: RunState) -> None:
+        _remove_first_removable_card(rs)
+    return [
+        EventOption("light", "Light (upgrade 2)", light, tag="UPGRADE"),
+        EventOption("dark", "Dark (remove 1)", dark, tag="CARD_REMOVE"),
+    ]
+
+
+# --- 33. EndlessConveyor (gold>=120): conveyor-belt buffet ---
+# Real: pay 40/grab, looping random dish (heal/maxHP/potion/card/upgrade/
+# transform). L1: collapse to one grab (pay 40, gain random small benefit)
+# vs observe chef (free upgrade 1).
+def _endless_conveyor_options(rs: RunState) -> list[EventOption]:
+    def grab(rs: RunState) -> None:
+        rs.gain_gold(-40)
+        # Caviar (+4 max HP) is the most common dish.
+        rs.gain_max_hp(4)
+    def observe(rs: RunState) -> None:
+        _upgrade_first_card(rs)
+    return [
+        EventOption("grab_something", "Grab Off Belt (40 gold)", grab,
+                    enabled=rs.gold >= 40, tag="GOLD_LOSS_MAX_HP_GAIN"),
+        EventOption("observe_chef", "Observe Chef (upgrade)", observe,
+                    tag="UPGRADE"),
+    ]
+
+
+# --- 34. InfestedAutomaton (any act): gain a Power card vs a 0-cost card ---
+def _infested_automaton_options(rs: RunState) -> list[EventOption]:
+    from .dsl import CardType
+    def study(rs: RunState) -> None:
+        _add_named_card(rs, "automaton_power", "Power Card", cost=1,
+                        ctype=CardType.POWER)  # TODO(fidelity): real power pool
+    def touch_core(rs: RunState) -> None:
+        _add_named_card(rs, "automaton_zero", "Zero-Cost Card", cost=0)
+    return [
+        EventOption("study", "Study (Power card)", study, tag="CARD_ADD"),
+        EventOption("touch_core", "Touch Core (0-cost card)", touch_core,
+                    tag="CARD_ADD"),
+    ]
+
+
+# --- 35. JungleMazeAdventure (shared): solo big gold + HP loss vs safe gold ---
+def _jungle_maze_options(rs: RunState) -> list[EventOption]:
+    def solo(rs: RunState) -> None:
+        rs.lose_hp(18)
+        g = 150 + int(_event_rng(rs, "jungle").next_float(-15.0, 15.0))
+        rs.gain_gold(g)
+    def join(rs: RunState) -> None:
+        g = 50 + int(_event_rng(rs, "jungle2").next_float(-15.0, 15.0))
+        rs.gain_gold(g)
+    return [
+        EventOption("solo_quest", "Solo Quest (-18 HP, big gold)", solo,
+                    tag="HP_LOSS_GOLD_GAIN"),
+        EventOption("join_forces", "Join Forces (safe gold)", join,
+                    tag="GOLD_GAIN"),
+    ]
+
+
+# --- 36. LuminousChoir (gold>=~149, relics available): SporeMind vs pay-for-relic ---
+def _luminous_choir_options(rs: RunState) -> list[EventOption]:
+    cost = 149 - _event_rng(rs, "choir").next_int(0, 50)
+    def reach(rs: RunState) -> None:
+        _remove_first_removable_card(rs)
+        _remove_first_removable_card(rs)
+        _add_curse(rs, "spore_mind")
+    def tribute(rs: RunState) -> None:
+        rs.gain_gold(-cost)
+        _grant_event_relic(rs)
+    return [
+        EventOption("reach_into_flesh", "Reach Into Flesh (remove 2 + curse)",
+                    reach, tag="CARD_REMOVE_CURSE"),
+        EventOption("offer_tribute", "Offer Tribute (pay gold, relic)",
+                    tribute, enabled=rs.gold >= cost, tag="GOLD_LOSS_RELIC_GAIN"),
+    ]
+
+
+# --- 37. MorphicGrove (gold>=100, >=2 transformable): transform 2 (lose all gold) vs +5 maxHP ---
+def _morphic_grove_options(rs: RunState) -> list[EventOption]:
+    def group(rs: RunState) -> None:
+        rs.gain_gold(-rs.gold)  # lose ALL gold
+        _transform_first_removable(rs)
+        _transform_first_removable(rs)
+    def loner(rs: RunState) -> None:
+        rs.gain_max_hp(5)
+    return [
+        EventOption("group", "Group (lose all gold, transform 2)", group,
+                    tag="GOLD_LOSS_CARD_REMOVE_CARD_ADD"),
+        EventOption("loner", "Loner (+5 max HP)", loner, tag="MAX_HP_GAIN"),
+    ]
+
+
+# --- 38. PotionCourier (act>=2): 3 Foul potions vs 1 uncommon potion ---
+def _potion_courier_options(rs: RunState) -> list[EventOption]:
+    def grab(rs: RunState) -> None:
+        for _ in range(3):
+            rs.add_potion("FOUL_POTION")
+    def ransack(rs: RunState) -> None:
+        from .potions import roll_potion
+        rs.add_potion(roll_potion(_event_rng(rs, "ransack")))
+    return [
+        EventOption("grab_potions", "Grab Potions (3 Foul)", grab,
+                    tag="POTION_GAIN"),
+        EventOption("ransack", "Ransack (1 uncommon potion)", ransack,
+                    tag="POTION_GAIN"),
+    ]
+
+
+# --- 39. RanwidTheElder (act>=2, gold>=100, has potion+tradable relic):
+# trade potion/gold/relic for relic(s). L1: discard potion->relic;
+# pay 100 gold->relic; trade relic->2 relics.
+def _ranwid_options(rs: RunState) -> list[EventOption]:
+    def give_potion(rs: RunState) -> None:
+        for i, p in enumerate(rs.potions):
+            if p is not None:
+                rs.potions[i] = None
+                break
+        _grant_event_relic(rs)
+    def give_gold(rs: RunState) -> None:
+        rs.gain_gold(-100)
+        _grant_event_relic(rs)
+    def give_relic(rs: RunState) -> None:
+        # remove one (non-starter) relic, gain 2.
+        for i, r in enumerate(rs.relics):
+            if r.id != "BURNING_BLOOD":
+                del rs.relics[i]
+                break
+        _grant_event_relic(rs)
+        _grant_event_relic(rs)
+    has_potion = any(p is not None for p in rs.potions)
+    return [
+        EventOption("potion", "Trade Potion (relic)", give_potion,
+                    enabled=has_potion, tag="RELIC_GAIN"),
+        EventOption("gold", "Pay 100 Gold (relic)", give_gold,
+                    enabled=rs.gold >= 100, tag="GOLD_LOSS_RELIC_GAIN"),
+        EventOption("relic", "Trade Relic (2 relics)", give_relic,
+                    tag="RELIC_GAIN"),
+    ]
+
+
+# --- 40. RelicTrader (act>=2, >=5 tradable relics): swap a relic for a new one ---
+def _relic_trader_options(rs: RunState) -> list[EventOption]:
+    def trade(rs: RunState) -> None:
+        for i, r in enumerate(rs.relics):
+            if r.id != "BURNING_BLOOD":
+                del rs.relics[i]
+                break
+        _grant_event_relic(rs)
+    return [
+        EventOption("top", "Trade Relic (top)", trade, tag="RELIC_GAIN"),
+        EventOption("middle", "Trade Relic (middle)", trade, tag="RELIC_GAIN"),
+        EventOption("bottom", "Trade Relic (bottom)", trade, tag="RELIC_GAIN"),
+    ]
+
+
+# --- 41. RoundTeaParty (hp>=12): RoyalPoison + full heal vs fight for relic ---
+def _round_tea_party_options(rs: RunState) -> list[EventOption]:
+    def enjoy(rs: RunState) -> None:
+        _grant_event_relic(rs)  # RoyalPoison not in registry -> pooled
+        rs.heal(rs.max_hp - rs.hp)  # heal to full
+    def pick_fight(rs: RunState) -> None:
+        rs.lose_hp(11)  # TODO(fidelity: combat)
+        _grant_event_relic(rs)
+    return [
+        EventOption("enjoy_tea", "Enjoy Tea (relic + full heal)", enjoy,
+                    tag="RELIC_GAIN_HEAL"),
+        EventOption("pick_fight", "Pick Fight (-11 HP, relic)", pick_fight,
+                    tag="HP_LOSS_RELIC_GAIN"),
+    ]
+
+
+# --- 42. SapphireSeed (any act): heal 9 + upgrade vs enchant(Sown) ---
+def _sapphire_seed_options(rs: RunState) -> list[EventOption]:
+    def eat(rs: RunState) -> None:
+        rs.heal(9)
+        _upgrade_first_card(rs)
+    def plant(rs: RunState) -> None:
+        _upgrade_first_card(rs)  # TODO(fidelity: enchantments) Sown proxy
+    return [
+        EventOption("eat", "Eat (heal 9 + upgrade)", eat, tag="HEAL_UPGRADE"),
+        EventOption("plant", "Plant (enchant)", plant, tag="UPGRADE"),
+    ]
+
+
+# --- 43. SelfHelpBook (any act): enchant Attack/Skill/Power (proxy=upgrade) ---
+def _self_help_book_options(rs: RunState) -> list[EventOption]:
+    from .dsl import CardType
+    def mk(card_type):
+        def _apply(rs: RunState) -> None:
+            # Upgrade the first card of the matching type (enchant proxy).
+            for i, c in enumerate(rs.deck):
+                if c.id.endswith("+") or c.id == "ascenders_bane":
+                    continue
+                if c.type == card_type:
+                    rs.deck[i] = _upgrade_card_obj(c)
+                    return
+            _upgrade_first_card(rs)  # fallback
+        return _apply
+    return [
+        EventOption("read_the_back", "Read Back (enchant Attack)",
+                    mk(CardType.ATTACK), tag="UPGRADE"),
+        EventOption("read_passage", "Read Passage (enchant Skill)",
+                    mk(CardType.SKILL), tag="UPGRADE"),
+        EventOption("read_entire_book", "Read Book (enchant Power)",
+                    mk(CardType.POWER), tag="UPGRADE"),
+    ]
+
+
+# --- 44. SpiralingWhirlpool (enchantable card): enchant(Spiral) vs heal 33% ---
+def _spiraling_whirlpool_options(rs: RunState) -> list[EventOption]:
+    def observe(rs: RunState) -> None:
+        _upgrade_first_card(rs)  # TODO(fidelity: enchantments) Spiral proxy
+    def drink(rs: RunState) -> None:
+        rs.heal(int(rs.max_hp * 0.33))
+    return [
+        EventOption("observe", "Observe Spiral (enchant)", observe,
+                    tag="UPGRADE"),
+        EventOption("drink", "Drink (heal 33%)", drink, tag="HEAL"),
+    ]
+
+
+# --- 45. SpiritGrafter (any act): heal 25 + Metamorphosis curse vs upgrade + 10 HP loss ---
+def _spirit_grafter_options(rs: RunState) -> list[EventOption]:
+    def let_it_in(rs: RunState) -> None:
+        rs.heal(25)
+        _add_named_card(rs, "metamorphosis", "Metamorphosis", cost=1)
+    def rejection(rs: RunState) -> None:
+        _upgrade_first_card(rs)
+        rs.lose_hp(10)
+    return [
+        EventOption("let_it_in", "Let It In (heal 25 + card)", let_it_in,
+                    tag="HEAL_CARD_ADD"),
+        EventOption("rejection", "Rejection (upgrade, -10 HP)", rejection,
+                    tag="UPGRADE_HP_LOSS"),
+    ]
+
+
+# --- 46. StoneOfAllTime (act 2, has potion): discard potion +10 maxHP vs -6 HP enchant ---
+def _stone_of_all_time_options(rs: RunState) -> list[EventOption]:
+    has_potion = any(p is not None for p in rs.potions)
+    def lift(rs: RunState) -> None:
+        for i, p in enumerate(rs.potions):
+            if p is not None:
+                rs.potions[i] = None
+                break
+        rs.gain_max_hp(10)
+    def push(rs: RunState) -> None:
+        rs.lose_hp(6)
+        _upgrade_first_card(rs)  # TODO(fidelity: enchantments) Vigorous proxy
+    return [
+        EventOption("lift", "Lift (discard potion, +10 max HP)", lift,
+                    enabled=has_potion, tag="MAX_HP_GAIN"),
+        EventOption("push", "Push (-6 HP, enchant)", push,
+                    tag="HP_LOSS_UPGRADE"),
+    ]
+
+
+# --- 47. SunkenTreasury (any act): small gold vs large gold + Greed curse ---
+def _sunken_treasury_options(rs: RunState) -> list[EventOption]:
+    def first_chest(rs: RunState) -> None:
+        rs.gain_gold(60 + (_event_rng(rs, "treasury").next_int(0, 16) - 8))
+    def second_chest(rs: RunState) -> None:
+        rs.gain_gold(333 + (_event_rng(rs, "treasury2").next_int(0, 61) - 30))
+        _add_curse(rs, "greed")
+    return [
+        EventOption("first_chest", "First Chest (small gold)", first_chest,
+                    tag="GOLD_GAIN"),
+        EventOption("second_chest", "Second Chest (big gold + curse)",
+                    second_chest, tag="GOLD_GAIN_CURSE"),
+    ]
+
+
+# --- 48. Symbiote (act>=2, enchantable): enchant(Corrupted) vs transform 1 ---
+def _symbiote_options(rs: RunState) -> list[EventOption]:
+    def approach(rs: RunState) -> None:
+        _upgrade_first_card(rs)  # TODO(fidelity: enchantments) Corrupted proxy
+    def kill_with_fire(rs: RunState) -> None:
+        _transform_first_removable(rs)
+    return [
+        EventOption("approach", "Approach (enchant)", approach, tag="UPGRADE"),
+        EventOption("kill_with_fire", "Kill With Fire (transform)",
+                    kill_with_fire, tag="CARD_REMOVE_CARD_ADD"),
+    ]
+
+
+# --- 49. TeaMaster (act 1, gold>=150): buy BoneTea(50)/EmberTea(150)/free TeaOfDiscourtesy ---
+def _tea_master_options(rs: RunState) -> list[EventOption]:
+    def bone_tea(rs: RunState) -> None:
+        rs.gain_gold(-50)
+        _grant_event_relic(rs)  # BoneTea not in registry -> pooled
+    def ember_tea(rs: RunState) -> None:
+        rs.gain_gold(-150)
+        _grant_event_relic(rs)
+    def discourtesy(rs: RunState) -> None:
+        _grant_event_relic(rs)  # free, but a downside relic
+    return [
+        EventOption("bone_tea", "Bone Tea (50 gold, relic)", bone_tea,
+                    enabled=rs.gold >= 50, tag="GOLD_LOSS_RELIC_GAIN"),
+        EventOption("ember_tea", "Ember Tea (150 gold, relic)", ember_tea,
+                    enabled=rs.gold >= 150, tag="GOLD_LOSS_RELIC_GAIN"),
+        EventOption("tea_of_discourtesy", "Tea of Discourtesy (free relic)",
+                    discourtesy, tag="RELIC_GAIN"),
+    ]
+
+
+# --- 50. TheFutureOfPotions (>=2 potions): trade a potion for 3 upgraded cards ---
+def _future_of_potions_options(rs: RunState) -> list[EventOption]:
+    def trade(rs: RunState) -> None:
+        for i, p in enumerate(rs.potions):
+            if p is not None:
+                rs.potions[i] = None
+                break
+        # Real: choose 1 of 3 upgraded cards. L1: add 1 (upgraded) colorless.
+        from .dsl import CardDef, CardType
+        rs.deck.append(CardDef(id="colorless_swift_strike+",
+                               name="Swift Strike+", cost=0,
+                               type=CardType.ATTACK, effects=(), count=0))
+    return [
+        EventOption("potion", "Trade Potion (upgraded card)", trade,
+                    tag="CARD_ADD"),
+    ]
+
+
+# --- 51. TheLanternKey (combat-event): return key for 100 gold vs keep+fight ---
+def _lantern_key_options(rs: RunState) -> list[EventOption]:
+    def return_key(rs: RunState) -> None:
+        rs.gain_gold(100)
+    def keep_key(rs: RunState) -> None:
+        # Keep + fight MysteriousKnight for a SpecialCardReward (LanternKey).
+        rs.lose_hp(12)  # TODO(fidelity: combat)
+        _add_named_card(rs, "lantern_key", "Lantern Key", cost=0)
+    return [
+        EventOption("return_the_key", "Return Key (100 gold)", return_key,
+                    tag="GOLD_GAIN"),
+        EventOption("keep_the_key", "Keep Key (fight, card)", keep_key,
+                    tag="HP_LOSS_CARD_ADD"),
+    ]
+
+
+# --- 52. TheLegendsWereTrue (act 1, hp>=10): SpoilsMap card vs -8 HP + potion ---
+def _legends_options(rs: RunState) -> list[EventOption]:
+    def nab(rs: RunState) -> None:
+        _add_named_card(rs, "spoils_map", "Spoils Map", cost=0)
+    def find_exit(rs: RunState) -> None:
+        rs.lose_hp(8)
+        from .potions import roll_potion
+        rs.add_potion(roll_potion(_event_rng(rs, "legends")))
+    return [
+        EventOption("nab_the_map", "Nab the Map (card)", nab, tag="CARD_ADD"),
+        EventOption("slowly_find_an_exit", "Find Exit (-8 HP, potion)",
+                    find_exit, tag="HP_LOSS_POTION_GAIN"),
+    ]
+
+
+# --- 53. TinkerTime (any act): build a custom MadScience card ---
+# Real: choose card-type then rider effect → a tailored card. L1: collapse
+# to a single "build card" that adds a 1-cost colorless attack.
+def _tinker_time_options(rs: RunState) -> list[EventOption]:
+    def build(rs: RunState) -> None:
+        _add_named_card(rs, "mad_science", "Mad Science", cost=1)
+    return [
+        EventOption("choose_card_type", "Build a Card", build, tag="CARD_ADD"),
+    ]
+
+
+# --- 54. Trial (any act): courtroom — pick a verdict for curse + reward ---
+# Real: random scenario; each verdict pairs a curse with relics/gold/heal/
+# upgrades. L1: collapse to the representative Merchant case.
+def _trial_options(rs: RunState) -> list[EventOption]:
+    def guilty(rs: RunState) -> None:
+        _add_curse(rs, "regret")
+        _grant_event_relic(rs)
+        _grant_event_relic(rs)
+    def innocent(rs: RunState) -> None:
+        _add_curse(rs, "shame")
+        _upgrade_n_unupgraded(rs, 2)
+    return [
+        EventOption("guilty", "Guilty (curse + 2 relics)", guilty,
+                    tag="CURSE_RELIC_GAIN"),
+        EventOption("innocent", "Innocent (curse + 2 upgrades)", innocent,
+                    tag="CURSE_UPGRADE"),
+    ]
+
+
+# --- 55. UnrestSite (hp<=70% max): rest+PoorSleep curse vs -8 maxHP for relic ---
+def _unrest_site_options(rs: RunState) -> list[EventOption]:
+    def rest(rs: RunState) -> None:
+        rs.heal(rs.max_hp - rs.hp)  # heal to full
+        _add_curse(rs, "poor_sleep")
+    def kill(rs: RunState) -> None:
+        rs.lose_max_hp(8)
+        _grant_event_relic(rs)
+    return [
+        EventOption("rest", "Rest (full heal + curse)", rest,
+                    tag="HEAL_CURSE"),
+        EventOption("kill", "Kill (-8 max HP, relic)", kill,
+                    tag="MAX_HP_LOSS_RELIC_GAIN"),
+    ]
+
+
+# --- 56. ZenWeaver (gold>=125): cheap 2 cards vs paid card-removal ---
+def _zen_weaver_options(rs: RunState) -> list[EventOption]:
+    def breathing(rs: RunState) -> None:
+        rs.gain_gold(-50)
+        _add_named_card(rs, "enlightenment", "Enlightenment", cost=0)
+        _add_named_card(rs, "enlightenment", "Enlightenment", cost=0)
+    def emotional(rs: RunState) -> None:
+        rs.gain_gold(-125)
+        _remove_first_removable_card(rs)
+    def arachnid(rs: RunState) -> None:
+        rs.gain_gold(-250)
+        _remove_first_removable_card(rs)
+        _remove_first_removable_card(rs)
+    return [
+        EventOption("breathing_techniques", "Breathing (50 gold, 2 cards)",
+                    breathing, enabled=rs.gold >= 50, tag="GOLD_LOSS_CARD_ADD"),
+        EventOption("emotional_awareness", "Emotional (125 gold, remove 1)",
+                    emotional, enabled=rs.gold >= 125, tag="GOLD_LOSS_CARD_REMOVE"),
+        EventOption("arachnid_acupuncture", "Arachnid (250 gold, remove 2)",
+                    arachnid, enabled=rs.gold >= 250, tag="GOLD_LOSS_CARD_REMOVE"),
+    ]
+
+
+# --- Ancient events (relic-grant npcs: Darv/Nonupeipe/Orobas/Pael/Tanx/
+# Tezcatara/Vakuu). Each offers 3 relic picks from curated pools. The sim
+# has no ancient-room slot, so they're modeled as a generic "pick a relic"
+# triple. Darv/Pael/Vakuu can attach a maxHP downside on some options;
+# modeled where the decompiled option carries .ThatDecreasesMaxHp. ---
+def _ancient_three_relic_options(rs: RunState) -> list[EventOption]:
+    def pick(rs: RunState) -> None:
+        _grant_event_relic(rs)
+    return [
+        EventOption("option_1", "Relic Pool 1", pick, tag="RELIC_GAIN"),
+        EventOption("option_2", "Relic Pool 2", pick, tag="RELIC_GAIN"),
+        EventOption("option_3", "Relic Pool 3", pick, tag="RELIC_GAIN"),
+    ]
+
+
+def _vakuu_options(rs: RunState) -> list[EventOption]:
+    # Pool2's DistinguishedCape costs 9 max HP (decompiled .ThatDecreasesMaxHp).
+    def pick(rs: RunState) -> None:
+        _grant_event_relic(rs)
+    def pick_cape(rs: RunState) -> None:
+        rs.lose_max_hp(9)
+        _grant_event_relic(rs)
+    return [
+        EventOption("option_1", "Relic Pool 1", pick, tag="RELIC_GAIN"),
+        EventOption("option_2", "Distinguished Cape (-9 max HP, relic)",
+                    pick_cape, tag="MAX_HP_LOSS_RELIC_GAIN"),
+        EventOption("option_3", "Relic Pool 3", pick, tag="RELIC_GAIN"),
+    ]
+
+
 # --- registry --------------------------------------------------------------
 
 EVENT_REGISTRY: dict[str, Event] = {
@@ -813,21 +1434,199 @@ EVENT_REGISTRY: dict[str, Event] = {
         "field_of_man_sized_holes",
         lambda rs: _has_upgradable_card(rs) and _has_removable_count(rs, 2),
         _field_of_holes_options),
+    # --- Phase 8B expanded set (events 25..68) ---
+    "amalgamator": Event(
+        "amalgamator",
+        lambda rs: (_count_cards_by_tag(rs, "strike") >= 2
+                    and _count_cards_by_tag(rs, "defend") >= 2),
+        _amalgamator_options),
+    "aroma_of_chaos": Event(
+        "aroma_of_chaos",
+        lambda rs: _has_removable_count(rs, 1) and _has_upgradable_card(rs),
+        _aroma_of_chaos_options),
+    "battleworn_dummy": Event(
+        "battleworn_dummy", lambda rs: rs.hp > 16, _battleworn_dummy_options),
+    "byrdonis_nest": Event(
+        "byrdonis_nest", _always_allowed, _byrdonis_nest_options),
+    "colorful_philosophers": Event(
+        "colorful_philosophers", _always_allowed,
+        _colorful_philosophers_options),
+    "crystal_sphere": Event(
+        "crystal_sphere",
+        lambda rs: rs.act >= 2 and rs.gold >= 100, _crystal_sphere_options),
+    "doll_room": Event(
+        "doll_room", lambda rs: rs.act == 1 and rs.hp > 15, _doll_room_options),
+    "doors_of_light_and_dark": Event(
+        "doors_of_light_and_dark",
+        lambda rs: _has_upgradable_card(rs) and _has_removable_count(rs, 1),
+        _doors_options),
+    "endless_conveyor": Event(
+        "endless_conveyor", lambda rs: rs.gold >= 120, _endless_conveyor_options),
+    "infested_automaton": Event(
+        "infested_automaton", _always_allowed, _infested_automaton_options),
+    "jungle_maze_adventure": Event(
+        "jungle_maze_adventure", lambda rs: rs.hp > 18, _jungle_maze_options),
+    "luminous_choir": Event(
+        "luminous_choir", lambda rs: rs.gold >= 99, _luminous_choir_options),
+    "morphic_grove": Event(
+        "morphic_grove",
+        lambda rs: rs.gold >= 100 and _has_removable_count(rs, 2),
+        _morphic_grove_options),
+    "potion_courier": Event(
+        "potion_courier", lambda rs: rs.act >= 2, _potion_courier_options),
+    "ranwid_the_elder": Event(
+        "ranwid_the_elder",
+        lambda rs: (rs.act >= 2 and rs.gold >= 100
+                    and any(p is not None for p in rs.potions)
+                    and len(rs.relics) >= 1),
+        _ranwid_options),
+    "relic_trader": Event(
+        "relic_trader",
+        lambda rs: rs.act >= 2 and len(rs.relics) >= 5, _relic_trader_options),
+    "round_tea_party": Event(
+        "round_tea_party", lambda rs: rs.hp >= 12, _round_tea_party_options),
+    "sapphire_seed": Event(
+        "sapphire_seed", _has_upgradable_card, _sapphire_seed_options),
+    "self_help_book": Event(
+        "self_help_book", _has_upgradable_card, _self_help_book_options),
+    "spiraling_whirlpool": Event(
+        "spiraling_whirlpool", _has_upgradable_card,
+        _spiraling_whirlpool_options),
+    "spirit_grafter": Event(
+        "spirit_grafter", _has_upgradable_card, _spirit_grafter_options),
+    "stone_of_all_time": Event(
+        "stone_of_all_time",
+        lambda rs: rs.act == 2 and any(p is not None for p in rs.potions),
+        _stone_of_all_time_options),
+    "sunken_treasury": Event(
+        "sunken_treasury", _always_allowed, _sunken_treasury_options),
+    "symbiote": Event(
+        "symbiote",
+        lambda rs: rs.act >= 2 and _has_upgradable_card(rs), _symbiote_options),
+    "tea_master": Event(
+        "tea_master",
+        lambda rs: rs.act == 1 and rs.gold >= 150, _tea_master_options),
+    "the_future_of_potions": Event(
+        "the_future_of_potions",
+        lambda rs: sum(1 for p in rs.potions if p is not None) >= 2,
+        _future_of_potions_options),
+    "the_lantern_key": Event(
+        "the_lantern_key", lambda rs: rs.floor >= 6, _lantern_key_options),
+    "the_legends_were_true": Event(
+        "the_legends_were_true",
+        lambda rs: rs.act == 1 and rs.hp >= 10 and len(rs.deck) > 0,
+        _legends_options),
+    "tinker_time": Event(
+        "tinker_time", _always_allowed, _tinker_time_options),
+    "trial": Event("trial", _has_upgradable_card, _trial_options),
+    "unrest_site": Event(
+        "unrest_site",
+        lambda rs: rs.hp <= int(rs.max_hp * 0.70), _unrest_site_options),
+    "zen_weaver": Event(
+        "zen_weaver", lambda rs: rs.gold >= 125, _zen_weaver_options),
+    # --- Ancient relic-NPC events (3 relic picks) ---
+    "darv": Event("darv", lambda rs: rs.act <= 3, _ancient_three_relic_options),
+    "nonupeipe": Event(
+        "nonupeipe", _always_allowed, _ancient_three_relic_options),
+    "orobas": Event("orobas", _always_allowed, _ancient_three_relic_options),
+    "pael": Event("pael", _always_allowed, _ancient_three_relic_options),
+    "tanx": Event("tanx", _always_allowed, _ancient_three_relic_options),
+    "tezcatara": Event(
+        "tezcatara", _always_allowed, _ancient_three_relic_options),
+    "vakuu": Event("vakuu", _always_allowed, _vakuu_options),
 }
 
 
+# Per-act event pools (decompiled IsAllowed CurrentActIndex gates + the
+# Overgrowth/Underdocks/Hive/Glory epoch assignments). The shared pool is
+# eligible in any act; act-specific pools mirror the decompiled act gating.
+# Ancient NPCs (Darv/Neow/Orobas/Pael/Tanx/Tezcatara/Vakuu/Nonupeipe) live
+# in dedicated ancient rooms in the real game; here they're folded into the
+# act pools so the right relic-NPCs surface per act.
+#
+#   act 1 (Overgrowth/Underdocks): CurrentActIndex == 0 events + shared
+#   act 2 (Hive):                  CurrentActIndex == 1 events + shared
+#   act 3 (Glory):                 CurrentActIndex == 2 events + shared
+# "shared" = IsShared==true OR no CurrentActIndex restriction.
+_ACT1_EVENTS: tuple[str, ...] = (
+    "brain_leech", "bugslayer", "room_full_of_cheese", "doll_room",
+    "the_legends_were_true", "tea_master", "wood_carvings", "welcome_to_wongos",
+    "neow", "darv", "tanx",
+)
+_ACT2_EVENTS: tuple[str, ...] = (
+    "brain_leech", "bugslayer", "room_full_of_cheese",  # CurrentActIndex<2
+    "crystal_sphere", "stone_of_all_time", "potion_courier", "symbiote",
+    "ranwid_the_elder", "relic_trader", "endless_conveyor", "morphic_grove",
+    "luminous_choir", "orobas", "nonupeipe",
+)
+_ACT3_EVENTS: tuple[str, ...] = (
+    "crystal_sphere", "potion_courier", "symbiote", "ranwid_the_elder",
+    "relic_trader", "endless_conveyor", "morphic_grove", "luminous_choir",
+    "pael", "tezcatara", "vakuu",
+)
+# Always-eligible (shared / no act gate) events — appear in every act.
+_SHARED_EVENTS: tuple[str, ...] = (
+    "wellspring", "grave_of_the_forgotten", "trash_heap", "tablet_of_truth",
+    "abyssal_baths", "punch_off", "dense_vegetation", "colossal_flower",
+    "lost_wisp", "drowning_beacon", "slippery_bridge", "whispering_hollow",
+    "this_or_that", "sunken_statue", "hungry_for_mushrooms", "reflections",
+    "waterlogged_scriptorium", "field_of_man_sized_holes", "amalgamator",
+    "aroma_of_chaos", "battleworn_dummy", "byrdonis_nest",
+    "colorful_philosophers", "doors_of_light_and_dark", "infested_automaton",
+    "jungle_maze_adventure", "round_tea_party", "sapphire_seed",
+    "self_help_book", "spiraling_whirlpool", "spirit_grafter",
+    "sunken_treasury", "the_lantern_key", "tinker_time", "trial",
+    "unrest_site", "zen_weaver",
+)
+
+
+def _act_event_pool(rs: RunState) -> tuple[str, ...]:
+    """Return the ordered candidate event ids for the current act (act
+    pool + shared pool). Mirrors the decompiled per-act CurrentActIndex
+    gating; eligibility (HP/gold/deck) is still checked via is_allowed."""
+    act_specific = {1: _ACT1_EVENTS, 2: _ACT2_EVENTS}.get(rs.act, _ACT3_EVENTS)
+    # Preserve order, de-dup, act-specific first then shared.
+    seen: set[str] = set()
+    out: list[str] = []
+    for eid in (*act_specific, *_SHARED_EVENTS):
+        if eid not in seen and eid in EVENT_REGISTRY:
+            seen.add(eid)
+            out.append(eid)
+    return tuple(out)
+
+
 def pick_event(rs: RunState) -> Optional[Event]:
-    """Pick an eligible event for the current state, deterministic on
-    run_seed + floor. Returns None if nothing is allowed (shouldn't
-    happen in practice — the registry includes always-allowed events)."""
-    allowed = [e for e in EVENT_REGISTRY.values() if e.is_allowed(rs)]
+    """Pick an act-appropriate eligible event, deterministic on run_seed +
+    floor via the run RNG. Honors the real per-act event pools (the
+    decompiled CurrentActIndex gating) plus per-event eligibility
+    (IsAllowed: HP/gold/deck/act). Returns None if nothing qualifies.
+
+    Neow is special-cased: it only fires at act 1 floor 0 (run start), and
+    when eligible it is always chosen (mirrors the ancient run-start room).
+    """
+    # Neow run-start override.
+    neow = EVENT_REGISTRY.get("neow")
+    if neow is not None and neow.is_allowed(rs):
+        return neow
+
+    pool_ids = _act_event_pool(rs)
+    allowed = [
+        EVENT_REGISTRY[eid] for eid in pool_ids
+        if eid != "neow" and EVENT_REGISTRY[eid].is_allowed(rs)
+    ]
     if not allowed:
-        return None
-    # Skip events that were already visited this run.
+        # Fall back to any eligible event in the whole registry.
+        allowed = [e for e in EVENT_REGISTRY.values()
+                   if e.id != "neow" and e.is_allowed(rs)]
+        if not allowed:
+            return None
+    # Skip events already visited this run (anti-repeat, mirrors the real
+    # event GrabBag), falling back to the full allowed set if all seen.
     fresh = [e for e in allowed if e.id not in rs.history_events]
     pool = fresh if fresh else allowed
-    idx = (rs.run_seed + rs.floor) % len(pool)
-    return pool[idx]
+    from .rng import Rng
+    rng = Rng(rs.run_seed, f"event_pick_{rs.act}_{rs.floor}")
+    return pool[rng.next_int(0, len(pool))]
 
 
 def apply_option(rs: RunState, event_id: str, option_idx: int) -> bool:
