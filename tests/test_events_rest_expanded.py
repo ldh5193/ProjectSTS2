@@ -162,17 +162,27 @@ def _enter_rest(rs: RunState):
 
 
 def test_rest_site_exposes_more_than_two_enabled_options():
+    # Own all the rest-option-granting relics so the gated options appear,
+    # plus a Byrdonis Egg in the deck for HATCH (slot 2 is taken by CLONE
+    # when Pael's Growth is owned, so omit it here to surface HATCH).
     rs = _new_rs(hp=40, max_hp=80)
+    rs.relics.append(RelicInstance(id="SHOVEL"))
+    rs.relics.append(RelicInstance(id="MEAT_CLEAVER"))
+    rs.relics.append(RelicInstance(id="GIRYA"))
+    from sim.dsl import CardDef, CardType
+    rs.deck.append(CardDef(id="byrdonis_egg", name="Byrdonis Egg", cost=1,
+                           type=CardType.ATTACK, effects=(), count=0))
     opts = _enter_rest(rs)
     enabled = [o for o in opts if o["is_enabled"]]
-    # rest + smith + dig + cook (>=2 removable) => at least 3 enabled.
+    # rest + smith + hatch + dig + cook + lift => 6 enabled.
     assert len(enabled) > 2
     ids = {o["id"] for o in opts}
-    assert {"rest", "smith", "dig", "cook", "lift"} <= ids
+    assert {"rest", "smith", "hatch", "dig", "cook", "lift"} <= ids
 
 
 def test_rest_dig_grants_relic():
     rs = _new_rs()
+    rs.relics.append(RelicInstance(id="SHOVEL"))  # Shovel grants the DIG option
     _enter_rest(rs)
     pre = len(rs.relics)
     from sim.run_engine import _step_rest, StepResult
@@ -194,6 +204,7 @@ def test_rest_lift_increments_girya_buff():
 
 def test_rest_cook_removes_cards_and_raises_max_hp():
     rs = _new_rs(max_hp=80, hp=80)
+    rs.relics.append(RelicInstance(id="MEAT_CLEAVER"))  # grants the COOK option
     _enter_rest(rs)
     pre_deck = len(rs.deck)
     from sim.run_engine import _step_rest, StepResult

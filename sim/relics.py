@@ -140,7 +140,17 @@ def _gain_block(combat, amount: int) -> None:
 
 
 def _apply_power_to_self(combat, power_id: str, amount: int) -> None:
+    if amount <= 0:
+        return
     combat.player.add_or_stack_power(make_power(power_id, amount, combat.player))
+
+
+def _girya_lift_count(rs) -> int:
+    """Girya Strength = number of times lifted at rest sites (decompiled
+    Girya.TimesLifted), stored on the relic instance counter. An unlifted
+    Girya grants no Strength."""
+    g = next((r for r in rs.relics if r.id == "GIRYA"), None)
+    return (g.counter or 0) if g is not None else 0
 
 
 def _apply_power_to_monster(combat, power_id: str, amount: int) -> None:
@@ -516,7 +526,11 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     ),
     "GIRYA": RelicDef(
         id="GIRYA", name="Girya", rarity="uncommon", merchant_cost=250,
-        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "strength", 1),
+        # Girya.cs: AfterRoomEntered applies TimesLifted Strength on entering a
+        # CombatRoom (no Strength until lifted). The lift count is stored on the
+        # relic instance's counter and bumped by the LIFT rest-site option.
+        on_combat_start=lambda rs, cs: _apply_power_to_self(
+            cs, "strength", _girya_lift_count(rs)),
         category="strength",
     ),
     "BLESSED_ANTLER": RelicDef(
@@ -1212,6 +1226,13 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
         # Shovel.cs: dig at rest sites for a relic. Rest-site option; no-op combat.
         category="misc",
     ),
+    "BYRDPIP": RelicDef(
+        id="BYRDPIP", name="Byrdpip", rarity="special", pool="none",
+        # HatchRestSiteOption obtains Byrdpip when the Byrdonis Egg is hatched at
+        # a rest site (RelicCmd.Obtain<Byrdpip>). Quest-line relic, not in any
+        # random pool. Combat effect not modelled; documented no-op.
+        category="misc",
+    ),
     "WHITE_BEAST_STATUE": RelicDef(
         id="WHITE_BEAST_STATUE", name="White Beast Statue", rarity="rare",
         pool="shared",
@@ -1339,10 +1360,17 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     ),
     "MEAT_CLEAVER": RelicDef(
         id="MEAT_CLEAVER", name="Meat Cleaver", rarity="event", pool="event",
-        # MeatCleaver.cs: heal-on-pickup / combat reward. Approx: heal 8 on
-        # combat victory (steady sustain).
-        after_combat_victory=lambda rs: rs.heal(8),
-        category="heal_combat",
+        # MeatCleaver.cs: adds the COOK rest-site option
+        # (TryModifyRestSiteOptions -> CookRestSiteOption). No combat effect.
+        category="misc",
+    ),
+    "PAELS_GROWTH": RelicDef(
+        id="PAELS_GROWTH", name="Pael's Growth", rarity="ancient", pool="event",
+        # PaelsGrowth.cs: on pickup enchants 1 card with Clone; adds the CLONE
+        # rest-site option (TryModifyRestSiteOptions -> CloneRestSiteOption) that
+        # duplicates every Clone-enchanted card. Enchantments aren't modelled in
+        # the sim, so the option is exposed but its effect is a documented no-op.
+        category="misc",
     ),
     "WAR_HAMMER": RelicDef(
         id="WAR_HAMMER", name="War Hammer", rarity="event", pool="event",

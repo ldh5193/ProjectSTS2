@@ -451,32 +451,7 @@ def _enter_room(rs: RunState, node: MapNode) -> None:
         # returns to map.
         rs.state_type = StateType.REST
         trigger_after_room_entered(rs, rs.state_type)
-        # Expanded rest-site option set (decompiled Entities.RestSite.*).
-        # Slot indices MUST match action_space "rest" range doc:
-        #   0=rest(HEAL), 1=upgrade(SMITH), 2=shop, 3=dig(DIG), 4=key,
-        #   5=lift(LIFT). We model HEAL, SMITH, DIG, COOK, LIFT — wired to
-        #   the indices the action space already names. is_enabled honors
-        #   per-option prereqs (SmithRestSiteOption: UpgradableCardCount!=0;
-        #   CookRestSiteOption: >=2 removable cards; LiftRestSiteOption only
-        #   when the run owns Girya).
-        has_upgradable = any(
-            not (c.id.endswith("+") if isinstance(c.id, str) else False)
-            for c in rs.deck
-            if c.cost is not None and c.cost >= 0  # exclude curses
-        )
-        removable_count = sum(
-            1 for c in rs.deck if getattr(c, "id", None) != "ascenders_bane"
-        )
-        has_girya = rs.has_relic("GIRYA")
-        rs.pending_rest_options = [
-            {"id": "rest", "index": 0, "is_enabled": True},
-            {"id": "smith", "index": 1, "is_enabled": bool(has_upgradable)},
-            # index 2 (shop) and 4 (key) are not modeled at rest sites; the
-            # mask drops them since they're absent from the list.
-            {"id": "dig", "index": 3, "is_enabled": True},
-            {"id": "cook", "index": 4, "is_enabled": removable_count >= 2},
-            {"id": "lift", "index": 5, "is_enabled": bool(has_girya)},
-        ]
+        rs.pending_rest_options = _generate_rest_options(rs)
         return
     elif rt is StateType.TREASURE:
         # Treasure auto-grants one real relic from the reward pool (replaces
@@ -750,6 +725,82 @@ def _step_card_reward(rs: RunState, body: dict, res: StepResult) -> StepResult:
     return res
 
 
+# Per-run cap on Girya lifts (decompiled Girya.maxLifts = 3). Once a run has
+# lifted 3 times the LiftRestSiteOption is no longer offered (Girya
+# .TryModifyRestSiteOptions: returns false when TimesLifted >= 3).
+GIRYA_MAX_LIFTS = 3
+
+
+def _generate_rest_options(rs: RunState) -> list[dict]:
+    """Build the rest-site option list, faithful to the decompiled real game.
+
+    Base set (RestSiteOption.Generate): HEAL + SMITH always offered. MEND is
+    only added when ``RunState.Players.Count > 1`` (multiplayer) — N/A for the
+    single-player sim, so it is never emitted.
+
+    Relic/card-gated options (each relic/card's ``TryModifyRestSiteOptions``):
+      * DIG   — owns Shovel       (DigRestSiteOption: pull next relic).
+      * COOK  — owns MeatCleaver  (CookRestSiteOption: remove 2 cards, +9 max
+                HP; disabled when <2 removable cards).
+      * LIFT  — owns Girya AND TimesLifted < 3 (LiftRestSiteOption:
+                permanent +Strength; the relic stops adding the option at the
+                3-lift cap).
+      * HATCH — ByrdonisEgg card in deck (HatchRestSiteOption: obtain Byrdpip).
+      * CLONE — owns Pael's Growth (CloneRestSiteOption: duplicate every
+                Clone-enchanted card).
+
+    Midas modifier removes the SMITH option entirely (Midas
+    .TryModifyRestSiteOptions). The sim does not model the Midas modifier;
+    documented here for completeness.
+
+    Slot indices MUST match the action_space "rest" range (6 slots):
+        0=rest(HEAL) 1=upgrade(SMITH) 2=clone(CLONE)/hatch(HATCH)
+        3=dig(DIG) 4=cook(COOK) 5=lift(LIFT)
+    The slot-2 relic-gated options (CLONE, HATCH) are mutually exclusive in
+    practice (each needs a distinct, rare relic/card); CLONE takes priority if
+    both are somehow present so a single Discrete slot stays unambiguous.
+    """
+    has_upgradable = any(
+        not (c.id.endswith("+") if isinstance(c.id, str) else False)
+        for c in rs.deck
+        if c.cost is not None and c.cost >= 0  # exclude curses
+    )
+    removable_count = sum(
+        1 for c in rs.deck if getattr(c, "id", None) != "ascenders_bane"
+    )
+
+    # SmithRestSiteOption(owner): base.IsEnabled = Deck.UpgradableCardCount != 0.
+    opts: list[dict] = [
+        {"id": "rest", "index": 0, "is_enabled": True},
+        {"id": "smith", "index": 1, "is_enabled": bool(has_upgradable)},
+    ]
+
+    # Slot 2: relic/card-gated CLONE (Pael's Growth) or HATCH (Byrdonis Egg).
+    if rs.has_relic("PAELS_GROWTH"):
+        opts.append({"id": "clone", "index": 2, "is_enabled": True})
+    elif any(getattr(c, "id", None) == "byrdonis_egg" for c in rs.deck):
+        opts.append({"id": "hatch", "index": 2, "is_enabled": True})
+
+    # Slot 3: DIG only when the run owns Shovel.
+    if rs.has_relic("SHOVEL"):
+        opts.append({"id": "dig", "index": 3, "is_enabled": True})
+
+    # Slot 4: COOK only when the run owns Meat Cleaver; disabled <2 removable.
+    if rs.has_relic("MEAT_CLEAVER"):
+        opts.append(
+            {"id": "cook", "index": 4, "is_enabled": removable_count >= 2}
+        )
+
+    # Slot 5: LIFT only when the run owns Girya AND under the 3-lift cap.
+    if rs.has_relic("GIRYA"):
+        girya = next((r for r in rs.relics if r.id == "GIRYA"), None)
+        lifts = (girya.counter or 0) if girya is not None else 0
+        if lifts < GIRYA_MAX_LIFTS:
+            opts.append({"id": "lift", "index": 5, "is_enabled": True})
+
+    return opts
+
+
 def _step_rest(rs: RunState, body: dict, res: StepResult) -> StepResult:
     action = body.get("action")
     if action == "choose_rest_option":
@@ -794,15 +845,34 @@ def _step_rest(rs: RunState, body: dict, res: StepResult) -> StepResult:
                         break
             rs.gain_max_hp(9)
         elif option == "lift":
-            # LiftRestSiteOption: permanent +Strength buff (Girya). Modeled
-            # as a permanent strength relic-style buff: re-add Girya counter.
-            # The Girya relic itself grants +Strength on combat start; here
-            # we track the lift count on the relic instance so the buff is a
-            # real perm increase rather than a no-op.
+            # LiftRestSiteOption: permanent +Strength buff (Girya). The lift
+            # count is tracked on the Girya relic instance's counter
+            # (decompiled Girya.TimesLifted); Girya's on_combat_start hook
+            # reads it to apply that many Strength each combat. Capped at
+            # GIRYA_MAX_LIFTS (decompiled Girya.maxLifts = 3); the option is
+            # withheld at the cap by _generate_rest_options, but guard here too.
             for r in rs.relics:
                 if r.id == "GIRYA":
-                    r.counter = (r.counter or 0) + 1
+                    if (r.counter or 0) < GIRYA_MAX_LIFTS:
+                        r.counter = (r.counter or 0) + 1
                     break
+        elif option == "hatch":
+            # HatchRestSiteOption: hatch the Byrdonis Egg into the Byrdpip
+            # relic (RelicCmd.Obtain<Byrdpip>). Consume the egg card and grant
+            # the relic.
+            for i, c in enumerate(rs.deck):
+                if getattr(c, "id", None) == "byrdonis_egg":
+                    del rs.deck[i]
+                    break
+            rs.add_relic("BYRDPIP")
+        elif option == "clone":
+            # CloneRestSiteOption: duplicate every Clone-enchanted card in the
+            # deck (Pael's Growth). The sim has no per-card enchantment layer
+            # (see sim/events.py enchantment note), so there is no set of
+            # Clone-enchanted cards to duplicate — the effect is a faithful
+            # no-op until enchantments are modeled. The option is still exposed
+            # when Pael's Growth is owned so the action surface matches.
+            pass
         rs.pending_rest_options = None
         rs.state_type = StateType.MAP
         return res
