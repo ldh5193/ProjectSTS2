@@ -91,6 +91,16 @@ class Power:
         """A creature on the owner's side died (`dead` is the corpse). Used by
         Crab Rage (gain Strength + Block when an ally dies)."""
 
+    def on_self_death(self, cs, owner) -> None:
+        """The OWNER of this power just died (fired on the corpse). Used by
+        Infested (PhrogParasite) to spawn Wrigglers via the combat engine's
+        pending_spawns drain."""
+
+    def on_player_turn_start(self, cs, owner) -> None:
+        """A MONSTER-side power reacting to the start of the PLAYER's turn
+        (RampartPower.cs AfterSideTurnStart side==Player). Fired by the engine's
+        player-turn-start fan-out across living monster powers."""
+
     def on_player_card_played(self, cs, owner, card) -> None:
         """The PLAYER played `card` (monster-side reaction). Used by Enrage
         (monster gains Strength whenever the player plays a Skill)."""
@@ -1111,6 +1121,71 @@ class EnvenomPower(Power):
         other.add_or_stack_power(make_power("poison", self.amount, other))
 
 
+@dataclass
+class RampartPower(Power):
+    """RampartPower.cs (AfterSideTurnStart, side == Player): at the start of
+    every PLAYER turn, the LivingShield's allied TurretOperator(s) gain `amount`
+    Block (Unpowered). The shield wall keeps re-armoring the turret it guards.
+    The .cs grants block to `Enemies.Where(c.Monster is TurretOperator)`; we
+    grant block to every living teammate flagged as a turret-operator
+    (is_turret_operator). Fired from the engine's player-turn-start fan-out to
+    MONSTER powers (RampartPower holder is the LivingShield)."""
+    id: str = field(default="rampart", init=False)
+    _owner: object = None
+
+    def on_player_turn_start(self, cs, owner) -> None:
+        if cs is None or not owner.alive:
+            return
+        from .damage import gain_block
+        for m in cs.alive_monsters():
+            if m is owner:
+                continue
+            if getattr(m, "is_turret_operator", False):
+                gain_block(m, self.amount)
+
+
+@dataclass
+class InfestedPower(Power):
+    """InfestedPower.cs (AfterDeath, owner == target): when the owner (the
+    PhrogParasite) dies, spawn `amount` (4) Wrigglers on its side, each
+    StartStunned. Combat does not end while this power's owner has spawned
+    minions still alive (ShouldStopCombatFromEnding). We queue the Wriggler
+    spawns on the corpse's `pending_spawns`; the engine drains them into the
+    live monster list after the death is detected."""
+    id: str = field(default="infested", init=False)
+    _owner: object = None
+
+    def on_self_death(self, cs, owner) -> None:
+        if cs is None:
+            return
+        from .monsters import Wriggler
+        pending = getattr(owner, "pending_spawns", None)
+        if pending is None:
+            pending = []
+            owner.pending_spawns = pending  # type: ignore[attr-defined]
+        asc = getattr(owner, "ascension", 0)
+        from .monsters import WrigglerMove
+        for i in range(self.amount):
+            w = Wriggler.spawn(cs.rng, ascension=asc)
+            w.name = f"Wriggler ({i + 1})"
+            # StartStunned: first turn is a no-op SPAWNED_MOVE (StunIntent),
+            # then it begins its slot-keyed INIT cycle. Odd slots (1/3) open on
+            # Bite; even slots (2/4) on Wriggle (Wriggler.cs:55-59).
+            w.next_move = WrigglerMove.SPAWNED
+            w._slot_kind = "bite" if i % 2 == 0 else "wriggle"
+            pending.append(w)
+
+
+@dataclass
+class IllusionPower(Power):
+    """IllusionPower.cs: marks a creature as a summoned illusion (a minion).
+    In the real game it carries a one-time self-revive; we model the simpler,
+    combat-relevant fact that the creature is a minion (so the Fogmog's
+    illusions are distinguishable). No active per-turn effect."""
+    id: str = field(default="illusion", init=False)
+    _owner: object = None
+
+
 POWER_REGISTRY: dict[str, type[Power]] = {
     "no_draw": NoDrawPower,
     "strength": StrengthPower,
@@ -1175,6 +1250,10 @@ POWER_REGISTRY: dict[str, type[Power]] = {
     "painful_stabs": PainfulStabsPower,
     "hardened_shell": HardenedShellPower,
     "double_damage": DoubleDamagePower,
+    # Phase 8B.4 — monster fallback powers (Fogmog/PhrogParasite/TurretOperator).
+    "rampart": RampartPower,
+    "infested": InfestedPower,
+    "illusion": IllusionPower,
     # Phase 8B — player/relic powers.
     "buffer": BufferPower,
     "blur": BlurPower,

@@ -83,12 +83,22 @@ class CombatState:
             monsters = monsters_factory(rng)
             cs = cls(player=player, monster=monsters[0], monsters=monsters,
                      draw_pile=deck, rng=rng)
+            cs._attach_combat_refs()
             return cs
         if monster_factory is None:
             monster_factory = SludgeSpinnerWeak.spawn
         monster = monster_factory(rng)
-        return cls(player=player, monster=monster, monsters=[monster],
-                   draw_pile=deck, rng=rng)
+        cs = cls(player=player, monster=monster, monsters=[monster],
+                 draw_pile=deck, rng=rng)
+        cs._attach_combat_refs()
+        return cs
+
+    def _attach_combat_refs(self) -> None:
+        """Give monsters that need a combat back-reference one (LivingShield's
+        GetAllyCount). Harmless for monsters without the attribute."""
+        for m in self.monsters:
+            if hasattr(m, "_combat"):
+                m._combat = self
 
     # ---- pile management ----
 
@@ -145,6 +155,10 @@ class CombatState:
         # Brutality (lose HP + draw). Fire after the draw, per the .cs ordering
         # of AfterSideTurnStart (DemonForm) which runs once the turn is set up.
         self._fire_power_hook(self.player, "on_turn_start", self, self.player)
+        # Monster-side reactions to the player's turn starting (RampartPower:
+        # the Living Shield re-armors its Turret Operator each player turn).
+        for m in self.alive_monsters():
+            self._fire_power_hook(m, "on_player_turn_start", self, m)
 
     def effective_cost(self, card: CardDef) -> int:
         """Card's energy cost after player power overrides (Corruption: skills
@@ -228,6 +242,11 @@ class CombatState:
             for m in self.monsters:
                 if m is not dead and m.alive:
                     self._fire_power_hook(m, "on_monster_death", self, m, dead)
+            # The corpse's OWN powers react to its death (InfestedPower:
+            # PhrogParasite spawns Wrigglers). Then drain any monsters it
+            # queued into the live combat list (mid-combat spawn).
+            self._fire_power_hook(dead, "on_self_death", self, dead)
+        self._drain_pending_spawns()
         # On-monster-death relic hooks (GremlinHorn: +1 energy & draw on each
         # enemy death).
         if self.run_state is not None and newly_dead:
@@ -672,6 +691,9 @@ class CombatState:
             # FranticEscape, Vantom/MechaKnight/TestSubject Burn/Wound, ...)
             # into the player's piles. See monsters._queue_status.
             self._drain_status_cards(m)
+            # Drain any monsters this monster summoned during its turn (Fogmog
+            # IllusionMove -> EyeWithTeeth) into the live combat list.
+            self._drain_pending_spawns()
             # Turn-end triggers for the monster (Metallicize-likes).
             self._fire_power_hook(m, "on_turn_end", self, m)
             # End-of-owner-turn effects for the monster: Plating block-gain,
@@ -684,6 +706,21 @@ class CombatState:
         if alive and self.target_index >= len(alive):
             self.target_index = 0
         return events
+
+    def _drain_pending_spawns(self) -> None:
+        """Append monsters any creature queued on its `pending_spawns` (Fogmog
+        IllusionMove summons, PhrogParasite InfestedPower death spawns) into the
+        live `self.monsters` list so they participate in combat. Mirrors the
+        real game's CreatureCmd.Add. Idempotent — clears each source list."""
+        for src in list(self.monsters):
+            pending = getattr(src, "pending_spawns", None)
+            if not pending:
+                continue
+            for newcomer in pending:
+                if newcomer not in self.monsters:
+                    self.monsters.append(newcomer)
+            pending.clear()
+        self._attach_combat_refs()
 
     def _drain_status_cards(self, monster) -> None:
         """Insert status cards a monster queued during its turn into the

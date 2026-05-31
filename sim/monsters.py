@@ -103,6 +103,21 @@ FRANTIC_ESCAPE_CARD = CardDef(
     id="frantic_escape", name="Frantic Escape", cost=_STATUS_UNPLAYABLE,
     type=CardType.SKILL, effects=(), count=0, is_status=True,
 )
+# Dazed (EyeWithTeeth illusion DISTRACT): an Unplayable, Ethereal status with
+# no effect — pure deck-clog (Dazed.cs). Modeled like Wound.
+DAZED_CARD = CardDef(
+    id="dazed", name="Dazed", cost=_STATUS_UNPLAYABLE,
+    type=CardType.SKILL, effects=(), count=0, is_status=True,
+)
+# Infection (PhrogParasite INFECT / Wriggler WRIGGLE): an Unplayable Status
+# that deals 3 unblockable damage at end of turn while in hand (Infection.cs).
+# The sim's status-card system models it as a deck-clog (the turn-end tick is
+# the same TODO that BURN carries), which is its main faithful effect — it
+# occupies hand slots and bloats the deck.
+INFECTION_CARD = CardDef(
+    id="infection", name="Infection", cost=_STATUS_UNPLAYABLE,
+    type=CardType.SKILL, effects=(), count=0, is_status=True,
+)
 
 
 def _queue_status(monster: Monster, card: CardDef, pile: str, count: int) -> None:
@@ -1772,6 +1787,8 @@ class _Move:
 _STATUS_CARDS = {
     "wound": WOUND_CARD,
     "burn": BURN_CARD,
+    "dazed": DAZED_CARD,
+    "infection": INFECTION_CARD,
 }
 
 
@@ -3157,3 +3174,448 @@ def spawn_scrolls_normal(rng, ascension: int = 0) -> list[Monster]:
 def spawn_scrolls_weak(rng, ascension: int = 0) -> list[Monster]:
     """ScrollsOfBitingWeak: 3 Scrolls of Biting. ScrollsOfBitingWeak.cs."""
     return _spawn_scrolls(rng, ascension, 3)
+
+
+# ===========================================================================
+# PHASE 8B.4 — remaining played-path fallbacks (Fogmog / PhrogParasite /
+# TurretOperator) + their companion/illusion sub-entities.
+# Cites:
+#   Monsters/Fogmog.cs, Monsters/EyeWithTeeth.cs, Encounters/FogmogNormal.cs
+#   Monsters/PhrogParasite.cs, Monsters/Wriggler.cs, Powers/InfestedPower.cs
+#   Monsters/TurretOperator.cs, Monsters/LivingShield.cs, Powers/RampartPower.cs
+# ===========================================================================
+
+
+# --- EyeWithTeeth (Fogmog's summoned illusion) ----------------------------
+# EyeWithTeeth.cs: flat 6 HP. Gains IllusionPower at spawn. Single repeating
+# DISTRACT_MOVE: adds 3 Dazed status cards to the player's discard each turn
+# (StatusIntent(3), CardPileCmd.AddToCombatAndPreview<Dazed>). Deals no damage.
+
+class EyeWithTeethMove(str, Enum):
+    DISTRACT = "distract"  # 3 Dazed -> discard
+
+
+@dataclass
+class EyeWithTeeth(Monster):
+    next_move: EyeWithTeethMove | None = None
+    ascension: int = 0
+
+    @classmethod
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "EyeWithTeeth":
+        m = cls(name="Eye With Teeth", hp=6, max_hp=6, ascension=ascension)
+        m.add_or_stack_power(make_power("illusion", 1, m))
+        m.next_move = EyeWithTeethMove.DISTRACT
+        return m
+
+    def roll_next_move(self, rng: random.Random) -> EyeWithTeethMove:
+        return EyeWithTeethMove.DISTRACT  # FollowUpState = itself
+
+    def intent_damage(self) -> int:
+        return 0
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        event = {"move": EyeWithTeethMove.DISTRACT, "damage": 0,
+                 "blocked": 0, "hp_loss": 0}
+        _queue_status(self, DAZED_CARD, "discard", 3)
+        self.next_move = EyeWithTeethMove.DISTRACT
+        return event
+
+
+# --- Fogmog (FogmogNormal, summons EyeWithTeeth illusions) -----------------
+# Fogmog.cs: MinHp==MaxHp == 74 (A8 78). Swipe 8 (A9 9) + self Strength 1.
+# Headbutt 14 (A9 16). State machine (Fogmog.cs:33-53):
+#   ILLUSION_MOVE (summon EyeWithTeeth) -> SWIPE_MOVE
+#   SWIPE_MOVE -> BRANCH(0.4 SWIPE_RANDOM cannot-repeat, 0.6 HEADBUTT
+#                        cannot-repeat)
+#   SWIPE_RANDOM -> HEADBUTT
+#   HEADBUTT -> SWIPE_MOVE
+# Both SWIPE_MOVE and SWIPE_RANDOM are the same SwipeMove (dmg + Strength 1).
+
+class FogmogMove(str, Enum):
+    ILLUSION = "illusion"
+    SWIPE = "swipe"
+    SWIPE_RANDOM = "swipe_random"
+    HEADBUTT = "headbutt"
+
+
+FOGMOG_HP = 74
+FOGMOG_HP_A8 = 78
+
+
+@dataclass
+class Fogmog(Monster):
+    last_move: FogmogMove | None = None
+    next_move: FogmogMove | None = None
+    ascension: int = 0
+
+    @classmethod
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "Fogmog":
+        hp = _a8(ascension, FOGMOG_HP, FOGMOG_HP_A8)
+        m = cls(name="Fogmog", hp=hp, max_hp=hp, ascension=ascension)
+        m.next_move = FogmogMove.ILLUSION  # MoveStateMachine start
+        return m
+
+    def roll_next_move(self, rng: random.Random) -> FogmogMove:
+        last = self.last_move
+        if last is FogmogMove.ILLUSION:
+            return FogmogMove.SWIPE
+        if last is FogmogMove.SWIPE:
+            # RandomBranchState: 0.4 SWIPE_RANDOM, 0.6 HEADBUTT (CannotRepeat).
+            names = [FogmogMove.SWIPE_RANDOM, FogmogMove.HEADBUTT]
+            weights = [0.4, 0.6]
+            pool = [(n, w) for n, w in zip(names, weights) if n != last]
+            return _rng_choices(rng, [n for n, _ in pool], [w for _, w in pool])
+        if last is FogmogMove.SWIPE_RANDOM:
+            return FogmogMove.HEADBUTT
+        if last is FogmogMove.HEADBUTT:
+            return FogmogMove.SWIPE
+        return FogmogMove.SWIPE
+
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        if self.next_move in (FogmogMove.SWIPE, FogmogMove.SWIPE_RANDOM):
+            return _a9(self.ascension, 8, 9) + str_amt
+        if self.next_move is FogmogMove.HEADBUTT:
+            return _a9(self.ascension, 14, 16) + str_amt
+        # ILLUSION is a summon, no damage.
+        return 0
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        move = self.next_move or self.roll_next_move(rng)
+        event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
+
+        if move is FogmogMove.ILLUSION:
+            # Summon one EyeWithTeeth illusion. Queued on pending_spawns; the
+            # combat engine drains it into the live monster list after the turn.
+            eye = EyeWithTeeth.spawn(rng, ascension=self.ascension)
+            pending = getattr(self, "pending_spawns", None)
+            if pending is None:
+                pending = []
+                self.pending_spawns = pending  # type: ignore[attr-defined]
+            pending.append(eye)
+        elif move in (FogmogMove.SWIPE, FogmogMove.SWIPE_RANDOM):
+            dmg = _a9(self.ascension, 8, 9)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
+            strength = StrengthPower(amount=1)
+            strength._owner = self
+            self.add_or_stack_power(strength)
+        elif move is FogmogMove.HEADBUTT:
+            dmg = _a9(self.ascension, 14, 16)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
+
+        self.last_move = move
+        self.next_move = self.roll_next_move(rng)
+        return event
+
+
+def spawn_fogmog_normal(rng, ascension: int = 0) -> list[Monster]:
+    """FogmogNormal: solo Fogmog. The EyeWithTeeth illusions are summoned
+    mid-combat by the Fogmog's ILLUSION_MOVE (FogmogNormal.cs GenerateMonsters
+    returns only the Fogmog; the illusion slot is filled during combat)."""
+    return [Fogmog.spawn(rng, ascension=ascension)]
+
+
+# --- Wriggler (spawned by PhrogParasite's InfestedPower on death) ----------
+# Wriggler.cs: HP 17-21 (A8 18-22). Bite 6 (A9 7). Wriggle: 1 Infection ->
+# discard + self Strength 2. When spawned via InfestedPower it StartStunned:
+# a one-time no-op SPAWNED_MOVE (StunIntent), then a slot-keyed INIT branch.
+# Odd slots (wriggler1/3) open on Bite; even slots (wriggler2/4) on Wriggle.
+# After that the two moves alternate (Bite <-> Wriggle).
+
+class WrigglerMove(str, Enum):
+    SPAWNED = "spawned"  # stunned no-op (first turn after death-spawn)
+    BITE = "bite"
+    WRIGGLE = "wriggle"
+
+
+WRIGGLER_HP_MIN, WRIGGLER_HP_MAX = 17, 21
+WRIGGLER_HP_MIN_A8, WRIGGLER_HP_MAX_A8 = 18, 22
+
+
+@dataclass
+class Wriggler(Monster):
+    last_move: str | None = None
+    next_move: str | None = None
+    ascension: int = 0
+    _slot_kind: str = "bite"  # "bite" (odd slots) or "wriggle" (even slots)
+
+    @classmethod
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "Wriggler":
+        lo = _a8(ascension, WRIGGLER_HP_MIN, WRIGGLER_HP_MIN_A8)
+        hi = _a8(ascension, WRIGGLER_HP_MAX, WRIGGLER_HP_MAX_A8)
+        hp = rng.randint(lo, hi)
+        m = cls(name="Wriggler", hp=hp, max_hp=hp, ascension=ascension)
+        # Default (non-stunned) start = its slot-keyed INIT move.
+        m.next_move = WrigglerMove.BITE
+        return m
+
+    def _init_move(self) -> str:
+        return WrigglerMove.BITE if self._slot_kind == "bite" else WrigglerMove.WRIGGLE
+
+    def roll_next_move(self, rng: random.Random) -> str:
+        last = self.last_move
+        if last == WrigglerMove.SPAWNED:
+            return self._init_move()  # FollowUp = INIT branch (slot-keyed)
+        if last == WrigglerMove.BITE:
+            return WrigglerMove.WRIGGLE
+        if last == WrigglerMove.WRIGGLE:
+            return WrigglerMove.BITE
+        return self._init_move()
+
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        if self.next_move == WrigglerMove.BITE:
+            return _a9(self.ascension, 6, 7) + str_amt
+        return 0  # SPAWNED (stun) and WRIGGLE deal no damage.
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        move = self.next_move or self.roll_next_move(rng)
+        event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
+        if move == WrigglerMove.SPAWNED:
+            pass  # stunned: no-op
+        elif move == WrigglerMove.BITE:
+            dmg = _a9(self.ascension, 6, 7)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
+        elif move == WrigglerMove.WRIGGLE:
+            _queue_status(self, INFECTION_CARD, "discard", 1)
+            strength = StrengthPower(amount=2)
+            strength._owner = self
+            self.add_or_stack_power(strength)
+        self.last_move = move
+        self.next_move = self.roll_next_move(rng)
+        return event
+
+
+# --- PhrogParasite (PhrogParasiteElite, solo; spawns 4 Wrigglers on death) -
+# PhrogParasite.cs: HP 61-64 (A8 66-68). Lash 4 (A9 5) x4. Infect: 3 Infection
+# status cards -> discard (StatusIntent(3)). Gains InfestedPower 4 at spawn
+# (AfterAddedToRoom) which spawns 4 stunned Wrigglers when the Phrog dies.
+# State machine (PhrogParasite.cs:39-53): start INFECT_MOVE; INFECT <-> LASH
+# deterministic FollowUp (the RandomBranchState is unreachable from the start
+# chain — the wired FollowUps form a simple INFECT <-> LASH alternation).
+
+class PhrogMove(str, Enum):
+    INFECT = "infect"  # 3 Infection -> discard
+    LASH = "lash"      # 4 (A9 5) x4
+
+
+PHROG_HP_MIN, PHROG_HP_MAX = 61, 64
+PHROG_HP_MIN_A8, PHROG_HP_MAX_A8 = 66, 68
+
+
+@dataclass
+class PhrogParasite(Monster):
+    last_move: PhrogMove | None = None
+    next_move: PhrogMove | None = None
+    ascension: int = 0
+
+    @classmethod
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "PhrogParasite":
+        lo = _a8(ascension, PHROG_HP_MIN, PHROG_HP_MIN_A8)
+        hi = _a8(ascension, PHROG_HP_MAX, PHROG_HP_MAX_A8)
+        hp = rng.randint(lo, hi)
+        m = cls(name="Phrog Parasite", hp=hp, max_hp=hp, ascension=ascension)
+        # AfterAddedToRoom: InfestedPower 4 (-> 4 Wrigglers on death).
+        m.add_or_stack_power(make_power("infested", 4, m))
+        m.next_move = PhrogMove.INFECT  # MoveStateMachine start
+        return m
+
+    def roll_next_move(self, rng: random.Random) -> PhrogMove:
+        # INFECT <-> LASH alternation (FollowUpState wiring).
+        if self.last_move is PhrogMove.INFECT:
+            return PhrogMove.LASH
+        return PhrogMove.INFECT
+
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        if self.next_move is PhrogMove.LASH:
+            return (_a9(self.ascension, 4, 5) + str_amt) * 4
+        return 0  # INFECT is a status-card add, no damage.
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        move = self.next_move or self.roll_next_move(rng)
+        event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
+        if move is PhrogMove.LASH:
+            per = _a9(self.ascension, 4, 5)
+            for _ in range(4):
+                blocked, hp_loss = deal_damage(per, self, player)
+                event["damage"] += per
+                event["blocked"] += blocked
+                event["hp_loss"] += hp_loss
+        elif move is PhrogMove.INFECT:
+            _queue_status(self, INFECTION_CARD, "discard", 3)
+        self.last_move = move
+        self.next_move = self.roll_next_move(rng)
+        return event
+
+
+# --- LivingShield (guards the TurretOperator in TurretOperatorWeak) --------
+# LivingShield.cs: HP 55 (A8 65). Gains RampartPower 25 at spawn (re-armors its
+# Turret Operator ally 25 Block at the start of every player turn). ShieldSlam
+# 6 while it still has allies; once alone, switches to Smash 18 (A9 16... note:
+# the .cs base is 16, A9 18) + self Strength 3, repeating Smash thereafter.
+
+class LivingShieldMove(str, Enum):
+    SHIELD_SLAM = "shield_slam"  # 6 dmg (allies alive)
+    SMASH = "smash"              # 16 (A9 18) + Strength 3 (alone)
+
+
+LIVING_SHIELD_HP = 55
+LIVING_SHIELD_HP_A8 = 65
+
+
+@dataclass
+class LivingShield(Monster):
+    last_move: LivingShieldMove | None = None
+    next_move: LivingShieldMove | None = None
+    ascension: int = 0
+    # Set by the spawn factory so GetAllyCount can be evaluated in-combat: the
+    # combat engine is the source of truth, but for standalone tests we fall
+    # back to this flag (True while the Turret Operator is presumed alive).
+    _combat: object = None
+
+    @classmethod
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "LivingShield":
+        hp = _a8(ascension, LIVING_SHIELD_HP, LIVING_SHIELD_HP_A8)
+        m = cls(name="Living Shield", hp=hp, max_hp=hp, ascension=ascension)
+        # AfterAddedToRoom: RampartPower 25 (block to the Turret Operator each
+        # player turn). The combat engine fires RampartPower.on_player_turn_start.
+        m.add_or_stack_power(make_power("rampart", 25, m))
+        m.next_move = LivingShieldMove.SHIELD_SLAM  # start
+        return m
+
+    def _has_allies(self) -> bool:
+        cs = getattr(self, "_combat", None)
+        if cs is None:
+            return False  # standalone: behave as if alone (Smash branch)
+        return any(m is not self and m.alive for m in cs.alive_monsters())
+
+    def roll_next_move(self, rng: random.Random) -> LivingShieldMove:
+        # ConditionalBranchState after ShieldSlam: ShieldSlam while allies > 0,
+        # else Smash (and Smash self-loops forever once alone).
+        if self.last_move is LivingShieldMove.SMASH:
+            return LivingShieldMove.SMASH
+        if self._has_allies():
+            return LivingShieldMove.SHIELD_SLAM
+        return LivingShieldMove.SMASH
+
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        if self.next_move is LivingShieldMove.SHIELD_SLAM:
+            return 6 + str_amt
+        if self.next_move is LivingShieldMove.SMASH:
+            return _a9(self.ascension, 16, 18) + str_amt
+        return 0
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        move = self.next_move or self.roll_next_move(rng)
+        event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
+        if move is LivingShieldMove.SHIELD_SLAM:
+            blocked, hp_loss = deal_damage(6, self, player)
+            event.update(damage=6, blocked=blocked, hp_loss=hp_loss)
+        elif move is LivingShieldMove.SMASH:
+            dmg = _a9(self.ascension, 16, 18)
+            blocked, hp_loss = deal_damage(dmg, self, player)
+            event.update(damage=dmg, blocked=blocked, hp_loss=hp_loss)
+            strength = StrengthPower(amount=3)
+            strength._owner = self
+            self.add_or_stack_power(strength)
+        self.last_move = move
+        self.next_move = self.roll_next_move(rng)
+        return event
+
+
+# --- TurretOperator (TurretOperatorWeak, guarded by the Living Shield) -----
+# TurretOperator.cs: MinHp==MaxHp == 41 (A8 51). Fire 3 (A9 4) x5. State
+# machine: UNLOAD_1 -> UNLOAD_2 -> RELOAD(+1 Strength) -> UNLOAD_1 (loop).
+# Flagged is_turret_operator so RampartPower (on the Living Shield) grants it
+# Block at each player turn start.
+
+class TurretMove(str, Enum):
+    UNLOAD_1 = "unload_1"
+    UNLOAD_2 = "unload_2"
+    RELOAD = "reload"
+
+
+TURRET_HP = 41
+TURRET_HP_A8 = 51
+
+
+@dataclass
+class TurretOperator(Monster):
+    last_move: TurretMove | None = None
+    next_move: TurretMove | None = None
+    ascension: int = 0
+    is_turret_operator: bool = True  # RampartPower targets this flag
+
+    @classmethod
+    def spawn(cls, rng: random.Random, ascension: int = 0) -> "TurretOperator":
+        hp = _a8(ascension, TURRET_HP, TURRET_HP_A8)
+        m = cls(name="Turret Operator", hp=hp, max_hp=hp, ascension=ascension)
+        m.next_move = TurretMove.UNLOAD_1  # start
+        return m
+
+    _CYCLE_NEXT = {
+        TurretMove.UNLOAD_1: TurretMove.UNLOAD_2,
+        TurretMove.UNLOAD_2: TurretMove.RELOAD,
+        TurretMove.RELOAD: TurretMove.UNLOAD_1,
+    }
+
+    def roll_next_move(self, rng: random.Random) -> TurretMove:
+        if self.last_move is None:
+            return TurretMove.UNLOAD_1
+        return self._CYCLE_NEXT[self.last_move]
+
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        if self.next_move in (TurretMove.UNLOAD_1, TurretMove.UNLOAD_2):
+            return (_a9(self.ascension, 3, 4) + str_amt) * 5
+        return 0  # RELOAD is a self-buff (Strength), no damage.
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        move = self.next_move or self.roll_next_move(rng)
+        event = {"move": move, "damage": 0, "blocked": 0, "hp_loss": 0}
+        if move in (TurretMove.UNLOAD_1, TurretMove.UNLOAD_2):
+            per = _a9(self.ascension, 3, 4)
+            for _ in range(5):
+                blocked, hp_loss = deal_damage(per, self, player)
+                event["damage"] += per
+                event["blocked"] += blocked
+                event["hp_loss"] += hp_loss
+        elif move is TurretMove.RELOAD:
+            strength = StrengthPower(amount=1)
+            strength._owner = self
+            self.add_or_stack_power(strength)
+        self.last_move = move
+        self.next_move = self.roll_next_move(rng)
+        return event
+
+
+def spawn_phrog_parasite_elite(rng, ascension: int = 0) -> list[Monster]:
+    """PhrogParasiteElite: solo Phrog Parasite. Its 4 Wrigglers are NOT present
+    at the start — they are spawned by InfestedPower when the Phrog dies
+    (PhrogParasiteElite.cs GenerateMonsters returns only the phrog)."""
+    return [PhrogParasite.spawn(rng, ascension=ascension)]
+
+
+def spawn_turret_operator_weak(rng, ascension: int = 0) -> list[Monster]:
+    """TurretOperatorWeak: 1 Living Shield (front) + 1 Turret Operator
+    (TurretOperatorWeak.cs GenerateMonsters). The shield guards the turret,
+    granting it 25 Block each player turn (RampartPower) and tanking until it
+    dies, at which point it switches to its Smash attack."""
+    shield = LivingShield.spawn(rng, ascension=ascension)
+    turret = TurretOperator.spawn(rng, ascension=ascension)
+    return [shield, turret]

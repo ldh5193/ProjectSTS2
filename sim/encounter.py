@@ -19,9 +19,11 @@ from .monsters import (
     CubexConstruct,
     DevotedSculptor,
     Doormaker,
+    EyeWithTeeth,
     Fabricator,
     Entomancer,
     Flyconid,
+    Fogmog,
     FossilStalker,
     FrogKnight,
     FuzzyWurmCrawler,
@@ -38,7 +40,9 @@ from .monsters import (
     Myte,
     NibbitWeak,
     Ovicopter,
+    LivingShield,
     OwlMagistrate,
+    PhrogParasite,
     PunchConstruct,
     Queen,
     Seapunk,
@@ -72,12 +76,14 @@ from .monsters import (
     spawn_exoskeletons_normal,
     spawn_exoskeletons_weak,
     spawn_flyconid_normal,
+    spawn_fogmog_normal,
     spawn_inklets_normal,
     spawn_knights_elite,
     spawn_living_fog_normal,
     spawn_lost_and_forgotten_normal,
     spawn_nibbits_normal,
     spawn_phantasmal_gardeners_elite,
+    spawn_phrog_parasite_elite,
     spawn_ruby_raiders_normal,
     spawn_scrolls_normal,
     spawn_scrolls_weak,
@@ -88,6 +94,7 @@ from .monsters import (
     spawn_snapping_jaxfruit_normal,
     spawn_toadpoles_weak,
     spawn_tunneler_normal,
+    spawn_turret_operator_weak,
     spawn_two_tailed_rats_normal,
 )
 from .rng import Rng
@@ -370,6 +377,10 @@ _MULTI_FACTORY_BY_ID = {
     "SnappingJaxfruitNormal": spawn_snapping_jaxfruit_normal,
     "FlyconidNormal": spawn_flyconid_normal,
     "SlitheringStranglerNormal": spawn_slithering_strangler_normal,
+    # FogmogNormal: solo Fogmog that summons EyeWithTeeth illusions mid-combat.
+    "FogmogNormal": spawn_fogmog_normal,
+    # PhrogParasiteElite: solo Phrog that spawns 4 Wrigglers on death.
+    "PhrogParasiteElite": spawn_phrog_parasite_elite,
     # Hive groups.
     "ChompersNormal": spawn_chompers_normal,
     "ExoskeletonsNormal": spawn_exoskeletons_normal,
@@ -379,6 +390,8 @@ _MULTI_FACTORY_BY_ID = {
     "DecimillipedeElite": spawn_decimillipede_elite,
     # Glory groups.
     "AxebotsNormal": spawn_axebots_normal,
+    # TurretOperatorWeak: Living Shield (front) + Turret Operator (Rampart wall).
+    "TurretOperatorWeak": spawn_turret_operator_weak,
     "ConstructMenagerieNormal": spawn_construct_menagerie_normal,
     "TheLostAndForgottenNormal": spawn_lost_and_forgotten_normal,
     "TunnelerNormal": spawn_tunneler_normal,
