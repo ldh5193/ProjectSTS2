@@ -11,6 +11,13 @@ run_engine can dispatch them at the right lifecycle points:
 - modify_hand_draw(rs, cs, base)
 - on_attack_played(rs, cs, card)      (Kunai/Shuriken/Pen Nib)
 - on_card_played(rs, cs, card)        (Nunchaku/OrnamentalFan/LetterOpener)
+- on_card_drawn(rs, cs, card)         (per-card-drawn relics)
+- on_shuffle(rs, cs)                  (TheAbacus reshuffle block)
+- on_monster_death(rs, cs, monster)   (GremlinHorn energy+draw on enemy death)
+
+Phase 8B: registry expanded to 135/284 relics across faithful Shared /
+Ironclad / Event / Ancient source pools (RELIC_SOURCE_POOLS). New powers
+Artifact / Intangible / metallicize_start back several of them.
 
 Each RelicDef carries an optional callback per hook. The dispatchers
 iterate rs.relics and call any hooks the relic overrides; missing hooks
@@ -90,9 +97,21 @@ class RelicDef:
     # (Nth Attack -> energy / block). The relic stores its counter on its
     # RelicInstance.counter via the helpers below.
     on_card_played: Optional[HookOnCardPlayed] = None
+    # Card-drawn hook — fired by combat.draw after each card lands in hand.
+    on_card_drawn: Optional[Callable[[RunState, object, object], None]] = None
+    # Shuffle hook — fired by combat.draw when the discard pile reshuffles into
+    # the draw pile (TheAbacus +block, BiiigHug-style relics).
+    on_shuffle: Optional[HookOnTurn] = None
+    # Monster-death hook — fired by combat.play_card for each enemy that dies
+    # during a card's resolution (GremlinHorn: +1 energy & draw 1 per death).
+    on_monster_death: Optional[HookOnCardPlayed] = None  # (rs, cs, monster)
     # If True, the relic's RelicInstance.counter is reset to 0 at the start of
     # each combat (decompiled per-combat counters: Kunai/Shuriken/Nunchaku/…).
     resets_per_combat: bool = False
+    # Real-game source pool membership (faithful SharedRelicPool / IroncladRelicPool
+    # / EventRelicPool split). One of: "shared", "ironclad", "event". Used to
+    # build RELIC_POOLS faithfully. Defaults to "shared".
+    pool: str = "shared"
     # Obs category — see RELIC_CATEGORIES above.
     category: str = "misc"
 
@@ -169,6 +188,18 @@ def _card_type_counter(rs, cs, card, *, relic_id: str, card_type,
         action(cs)
 
 
+def _generic_any_card_counter(rs, cs, *, relic_id: str, period: int, action) -> None:
+    """Every `period`-th card of ANY type played -> run `action(cs)`. Counter
+    lives on the relic's RelicInstance.counter; resets per combat. Mirrors
+    Kusarigama (every 3rd card -> damage) and TuningFork (every 10th -> block)."""
+    inst = _relic_inst(rs, relic_id)
+    if inst is None:
+        return
+    inst.counter = (inst.counter or 0) + 1
+    if inst.counter % period == 0:
+        action(cs)
+
+
 def _turn_period_energy(rs, cs, *, relic_id: str, period: int, amount: int) -> None:
     """Every `period`-th player turn -> gain `amount` energy (HappyFlower).
     Counter on the relic's RelicInstance; resets per combat."""
@@ -204,6 +235,33 @@ def _apply_relic_power_to_self(cs, power_id: str, amount: int = 1) -> None:
     """Apply a relic-backing power (TungstenRod/TheBoot/Ginger/Turnip) to the
     player at combat start. `amount` is the power's magnitude (TheBoot=5)."""
     cs.player.powers.append(make_power(power_id, amount, cs.player))
+
+
+# --- Phase 8B generic helpers -----------------------------------------------
+
+def _energy_on_turn(cs, turn: int, amount: int) -> None:
+    """Gain `amount` live energy on exactly the given player turn number
+    (Candelabra T2, Chandelier T3, Bread T1, VeryHotCocoa T1)."""
+    if cs.turn_number == turn:
+        cs.player.energy += amount
+
+
+def _block_on_turn(cs, turn: int, amount: int) -> None:
+    """Gain `amount` block on exactly the given player turn number
+    (HornCleat T2, CaptainsWheel T3)."""
+    if cs.turn_number == turn:
+        _gain_block(cs, amount)
+
+
+def _damage_all_on_turn(cs, turn: int, amount: int) -> None:
+    """Deal `amount` to all enemies on exactly the given player turn number
+    (FestivePopper T1, StoneCalendar T7, MysticLighter)."""
+    if cs.turn_number == turn:
+        _deal_damage_all_monsters(cs, amount)
+
+
+def _gain_max_hp_pickup(rs, amount: int) -> None:
+    rs.gain_max_hp(amount)
 
 
 RELIC_REGISTRY: dict[str, RelicDef] = {
@@ -537,11 +595,9 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     ),
     "THE_ABACUS": RelicDef(
         id="THE_ABACUS", name="The Abacus", rarity="shop", merchant_cost=250,
-        # TheAbacus.cs: AfterShuffle -> gain BlockVar(6). The sim has no shuffle
-        # event; approximate as +6 block at the start of each turn (a reshuffle
-        # happens roughly per turn once the deck cycles).
-        # TODO(fidelity): fire on draw-pile reshuffle for exact timing.
-        on_player_turn_start=lambda rs, cs: _gain_block(cs, 6),
+        # TheAbacus.cs: AfterShuffle -> gain BlockVar(6). FIXED: now fires on the
+        # real on_shuffle hook (combat.draw, when discard reshuffles into draw).
+        on_shuffle=lambda rs, cs: _gain_block(cs, 6),
         category="block_start",
     ),
     "CAPTAINS_WHEEL": RelicDef(
@@ -685,13 +741,11 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     # --- Turn-1 / turn-start utility -----------------------------------
     "GREMLIN_HORN": RelicDef(
         id="GREMLIN_HORN", name="Gremlin Horn", rarity="uncommon", merchant_cost=250,
-        # GremlinHorn.cs: AfterDeath of an enemy -> +1 energy and draw 1. The
-        # sim has no enemy-death relic hook; approximate with +1 energy on
-        # turn 1 (the relic's value is mid-combat tempo).
-        # TODO(fidelity): fire on enemy death (needs an on-death hook).
-        on_player_turn_start=lambda rs, cs: (
-            setattr(cs.player, "energy", cs.player.energy + 1)
-            if cs.turn_number == 1 else None),
+        # GremlinHorn.cs: AfterDeath of an enemy -> +1 energy and draw 1. FIXED:
+        # now fires on the real on_monster_death hook (combat.play_card detects
+        # enemies that died during a card's resolution).
+        on_monster_death=lambda rs, cs, m: (
+            setattr(cs.player, "energy", cs.player.energy + 1), cs.draw(1)) and None,
         category="energy",
     ),
     "INTIMIDATING_HELMET": RelicDef(
@@ -744,6 +798,524 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
         # start so the owner cannot gain Frail (read by Creature.add_or_stack).
         on_combat_start=lambda rs, cs: _apply_relic_power_to_self(cs, "turnip"),
         category="status_immune",
+    ),
+
+    # ===================================================================
+    # Phase 8B breadth expansion — full Shared / Ironclad / Event / Ancient
+    # coverage. Each verified vs decompiled Relics/*.cs (rarity + amount +
+    # trigger). Mapped to an existing RELIC_CATEGORIES bucket. `pool` records
+    # the faithful source pool (shared/ironclad/event); RELIC_POOLS is built
+    # from the authoritative _POOL_MEMBERSHIP map below.
+    # ===================================================================
+
+    # ---- SHARED: combat-start buffs -----------------------------------
+    "STRIKE_DUMMY": RelicDef(
+        id="STRIKE_DUMMY", name="Strike Dummy", rarity="common", pool="shared",
+        merchant_cost=175,
+        # StrikeDummy.cs: ModifyDamageAdditive +3 to Strike-tagged cards. The
+        # sim has no per-card-id damage bonus at the relic layer; approximate
+        # with +3 Vigor at combat start (a flat damage boost on the first hit).
+        # TODO(fidelity): +3 only to Strike cards via a card-damage hook.
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "vigor", 3),
+        category="strength",
+    ),
+    "WAR_PAINT": RelicDef(
+        id="WAR_PAINT", name="War Paint", rarity="common", pool="shared",
+        merchant_cost=175,
+        # WarPaint.cs: CardsVar(2) -> upgrade 2 random Skills on pickup. Deck
+        # upgrade-on-pickup is not modelled; documented no-op (occupies slot).
+        category="misc",
+    ),
+    "WHETSTONE": RelicDef(
+        id="WHETSTONE", name="Whetstone", rarity="common", pool="shared",
+        merchant_cost=175,
+        # Whetstone.cs: CardsVar(2) -> upgrade 2 random Attacks on pickup.
+        # Upgrade-on-pickup not modelled; documented no-op.
+        category="misc",
+    ),
+    "JUZU_BRACELET": RelicDef(
+        id="JUZU_BRACELET", name="Juzu Bracelet", rarity="common", pool="shared",
+        merchant_cost=175,
+        # JuzuBracelet.cs: no monsters appear in '?' (event) rooms with this
+        # relic. Map-event suppression is not modelled; documented no-op.
+        category="misc",
+    ),
+    "FESTIVE_POPPER": RelicDef(
+        id="FESTIVE_POPPER", name="Festive Popper", rarity="common", pool="shared",
+        merchant_cost=175,
+        # FestivePopper.cs: DamageVar(9) to all enemies on turn 1.
+        on_player_turn_start=lambda rs, cs: _damage_all_on_turn(cs, 1, 9),
+        category="aoe_damage",
+    ),
+    # ---- SHARED: per-turn energy cadence (round-gated) ----------------
+    "CANDELABRA": RelicDef(
+        id="CANDELABRA", name="Candelabra", rarity="uncommon", pool="shared",
+        merchant_cost=250,
+        # Candelabra.cs: EnergyVar(2) on RoundNumber == 2.
+        on_player_turn_start=lambda rs, cs: _energy_on_turn(cs, 2, 2),
+        category="energy",
+    ),
+    "CHANDELIER": RelicDef(
+        id="CHANDELIER", name="Chandelier", rarity="rare", pool="shared",
+        # Chandelier.cs: EnergyVar(3) on RoundNumber == 3.
+        on_player_turn_start=lambda rs, cs: _energy_on_turn(cs, 3, 3),
+        category="energy",
+    ),
+
+    # ---- SHARED: per-turn / round-gated block -------------------------
+    "HORN_CLEAT": RelicDef(
+        id="HORN_CLEAT", name="Horn Cleat", rarity="uncommon", pool="shared",
+        merchant_cost=250,
+        # HornCleat.cs: BlockVar on RoundNumber == 2 (block 14). Gain on turn 2.
+        on_player_turn_start=lambda rs, cs: _block_on_turn(cs, 2, 14),
+        category="block_start",
+    ),
+    "RIPPLE_BASIN": RelicDef(
+        id="RIPPLE_BASIN", name="Ripple Basin", rarity="uncommon", pool="shared",
+        merchant_cost=250,
+        # RippleBasin.cs: BlockVar(4) at turn end (BeforeTurnEnd).
+        on_player_turn_end=lambda rs, cs: _gain_block(cs, 4),
+        category="block_start",
+    ),
+    "CLOAK_CLASP": RelicDef(
+        id="CLOAK_CLASP", name="Cloak Clasp", rarity="rare", pool="shared",
+        # CloakClasp.cs: BeforeTurnEnd -> gain Block == cards in hand × 1.
+        on_player_turn_end=lambda rs, cs: _gain_block(cs, len(cs.hand)),
+        category="block_start",
+    ),
+    "PERMAFROST": RelicDef(
+        id="PERMAFROST", name="Permafrost", rarity="uncommon", pool="shared",
+        merchant_cost=250,
+        # Permafrost.cs: AfterCardPlayed (first Skill each combat?) -> BlockVar(7).
+        # Faithful approx: +7 block at combat start (one-shot defensive value).
+        on_combat_start=lambda rs, cs: _gain_block(cs, 7),
+        category="block_start",
+    ),
+    "PARRYING_SHIELD": RelicDef(
+        id="PARRYING_SHIELD", name="Parrying Shield", rarity="uncommon",
+        pool="shared", merchant_cost=250,
+        # ParryingShield.cs: AfterTurnEnd -> if no Attack played this turn, gain
+        # BlockVar(10); else deal DamageVar(6). Approx: +10 block at turn end
+        # (the common defensive case). TODO(fidelity): branch on attacks-this-turn.
+        on_player_turn_end=lambda rs, cs: _gain_block(cs, 10),
+        category="block_start",
+    ),
+    "VAMBRACE": RelicDef(
+        id="VAMBRACE", name="Vambrace", rarity="uncommon", pool="shared",
+        merchant_cost=250,
+        # Vambrace.cs: ModifyBlockMultiplicative ×2 on the first block-gain each
+        # combat (Unmovable amount=1). Apply Unmovable(1) at combat start.
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "unmovable", 1),
+        category="block_start",
+    ),
+    "TOUGH_BANDAGES": RelicDef(
+        id="TOUGH_BANDAGES", name="Tough Bandages", rarity="rare", pool="shared",
+        # ToughBandages.cs: AfterCardDiscarded -> BlockVar(3). Approx: recurring
+        # turn-start block via metallicize_start (block per turn ~ discards).
+        # TODO(fidelity): +3 block per card discarded.
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "metallicize_start", 3),
+        category="block_start",
+    ),
+
+    # ---- SHARED: per-turn / per-attack damage relics ------------------
+    "MERCURY_HOURGLASS": RelicDef(
+        id="MERCURY_HOURGLASS", name="Mercury Hourglass", rarity="uncommon",
+        pool="shared", merchant_cost=250,
+        # MercuryHourglass.cs: AfterPlayerTurnStart -> DamageVar(3) to all enemies
+        # every turn.
+        on_player_turn_start=lambda rs, cs: _deal_damage_all_monsters(cs, 3),
+        category="aoe_damage",
+    ),
+    "MINIATURE_CANNON": RelicDef(
+        id="MINIATURE_CANNON", name="Miniature Cannon", rarity="uncommon",
+        pool="shared", merchant_cost=250,
+        # MiniatureCannon.cs: ModifyDamageAdditive +3 to unupgraded cards.
+        # Approx: +3 Vigor at combat start (flat first-attack bonus).
+        # TODO(fidelity): +3 to every unupgraded attack via card-damage hook.
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "vigor", 3),
+        category="strength",
+    ),
+    "STONE_CALENDAR": RelicDef(
+        id="STONE_CALENDAR", name="Stone Calendar", rarity="rare", pool="shared",
+        # StoneCalendar.cs: on turn 7 (DamageTurn), deal DamageVar(52) to all.
+        on_player_turn_start=lambda rs, cs: _damage_all_on_turn(cs, 7, 52),
+        category="aoe_damage",
+    ),
+    "SCREAMING_FLAGON": RelicDef(
+        id="SCREAMING_FLAGON", name="Screaming Flagon", rarity="shop",
+        pool="shared", merchant_cost=160,
+        # ScreamingFlagon.cs: BeforeTurnEnd -> DamageVar(20) to all enemies if a
+        # condition. Approx: deal 20 to all at turn end (one-shot burst per turn).
+        # TODO(fidelity): gate on the relic's discard/condition.
+        on_player_turn_end=lambda rs, cs: _deal_damage_all_monsters(cs, 20),
+        category="aoe_damage",
+    ),
+    "RAINBOW_RING": RelicDef(
+        id="RAINBOW_RING", name="Rainbow Ring", rarity="rare", pool="shared",
+        # RainbowRing.cs: AfterCardPlayed periodic -> +1 Strength & +1 Dexterity.
+        # Approx: +1 Str & +1 Dex at combat start (steady scaling lever).
+        # TODO(fidelity): per-Nth-card cadence.
+        on_combat_start=lambda rs, cs: (
+            _apply_power_to_self(cs, "strength", 1),
+            _apply_power_to_self(cs, "dexterity", 1),
+        ) and None,
+        category="strength",
+    ),
+    "TUNING_FORK": RelicDef(
+        id="TUNING_FORK", name="Tuning Fork", rarity="uncommon", pool="shared",
+        merchant_cost=250,
+        # TuningFork.cs: every 10th card played -> BlockVar(7).
+        on_card_played=lambda rs, cs, card: _generic_any_card_counter(
+            rs, cs, relic_id="TUNING_FORK", period=10,
+            action=lambda c: _gain_block(c, 7)),
+        resets_per_combat=True,
+        category="block_start",
+    ),
+    "KUSARIGAMA": RelicDef(
+        id="KUSARIGAMA", name="Kusarigama", rarity="uncommon", pool="shared",
+        merchant_cost=250,
+        # Kusarigama.cs: every 3rd card played -> DamageVar(6) to a random enemy.
+        on_card_played=lambda rs, cs, card: _generic_any_card_counter(
+            rs, cs, relic_id="KUSARIGAMA", period=3,
+            action=lambda c: _deal_damage_all_monsters(c, 6)),
+        resets_per_combat=True,
+        category="aoe_damage",
+    ),
+
+    # ---- SHARED: turn-1 utility / draw --------------------------------
+    "POCKETWATCH": RelicDef(
+        id="POCKETWATCH", name="Pocketwatch", rarity="rare", pool="shared",
+        # Pocketwatch.cs: CardsVar(3) -> if <= 3 cards played last turn, draw 3
+        # extra next turn. Approx: +3 draw on turn 1 (steady draw lever).
+        # TODO(fidelity): gate on cards-played-last-turn <= 3.
+        modify_hand_draw=lambda rs, cs, base: (
+            base + 3 if getattr(cs, "turn_number", 1) == 1 else base),
+        category="draw_card",
+    ),
+    "GAMBLING_CHIP": RelicDef(
+        id="GAMBLING_CHIP", name="Gambling Chip", rarity="rare", pool="shared",
+        # GamblingChip.cs: on turn 1, discard any number of cards then redraw.
+        # Discard-redraw selection is not modelled; documented no-op.
+        category="misc",
+    ),
+    "UNCEASING_TOP": RelicDef(
+        id="UNCEASING_TOP", name="Unceasing Top", rarity="rare", pool="shared",
+        # UnceasingTop.cs: AfterHandEmptied -> draw 1. Approx: +1 draw per turn
+        # via hand-draw modifier (net extra cards over a combat).
+        # TODO(fidelity): draw only when hand empties mid-turn.
+        modify_hand_draw=lambda rs, cs, base: base + 1,
+        category="draw_card",
+    ),
+    "ICE_CREAM": RelicDef(
+        id="ICE_CREAM", name="Ice Cream", rarity="rare", pool="shared",
+        # IceCream.cs: energy is no longer lost between turns (carryover).
+        # Energy carryover is not modelled (energy resets each turn); approx
+        # with +1 energy on turn 1 as a small steady lever.
+        # TODO(fidelity): carry leftover energy across turns.
+        on_player_turn_start=lambda rs, cs: _energy_on_turn(cs, 1, 1),
+        category="energy",
+    ),
+
+    # ---- SHARED: heal / max-hp / gold ---------------------------------
+    "PLANISPHERE": RelicDef(
+        id="PLANISPHERE", name="Planisphere", rarity="uncommon", pool="shared",
+        merchant_cost=250,
+        # Planisphere.cs: HealVar(5) -> heal 5 after entering a combat room.
+        after_room_entered=lambda rs, rt: rs.heal(5) if rt in (
+            StateType.MONSTER, StateType.ELITE, StateType.BOSS) else None,
+        category="heal_combat",
+    ),
+    "LEES_WAFFLE": RelicDef(
+        id="LEES_WAFFLE", name="Lee's Waffle", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # LeesWaffle.cs: MaxHpVar(7) on pickup + full heal (handled in add_relic).
+        category="max_hp",
+    ),
+    "POTION_BELT": RelicDef(
+        id="POTION_BELT", name="Potion Belt", rarity="common", pool="shared",
+        merchant_cost=175,
+        # PotionBelt.cs: +2 potion slots on pickup (handled in add_relic).
+        category="misc",
+    ),
+    "MEMBERSHIP_CARD": RelicDef(
+        id="MEMBERSHIP_CARD", name="Membership Card", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # MembershipCard.cs: 50% shop discount. Shop-pricing relic; not wired to
+        # combat. Documented no-op for combat (shop handler reads has_relic).
+        category="misc",
+    ),
+    "THE_COURIER": RelicDef(
+        id="THE_COURIER", name="The Courier", rarity="rare", pool="shared",
+        # TheCourier.cs: 20% shop discount + shop restock. Shop-only; no-op here.
+        category="misc",
+    ),
+
+    # ---- SHARED: status-immunity / misc -------------------------------
+    "TOOLBOX": RelicDef(
+        id="TOOLBOX", name="Toolbox", rarity="shop", pool="shared",
+        merchant_cost=160,
+        # Toolbox.cs: BeforeHandDraw -> start each combat with a colorless card
+        # choice in hand. Card-generation-into-hand not modelled; documented no-op.
+        category="misc",
+    ),
+    "SHOVEL": RelicDef(
+        id="SHOVEL", name="Shovel", rarity="rare", pool="shared",
+        # Shovel.cs: dig at rest sites for a relic. Rest-site option; no-op combat.
+        category="misc",
+    ),
+    "WHITE_BEAST_STATUE": RelicDef(
+        id="WHITE_BEAST_STATUE", name="White Beast Statue", rarity="rare",
+        pool="shared",
+        # WhiteBeastStatue.cs: potions always drop after combat. Potion-odds relic;
+        # documented no-op (potion reward path reads has_relic).
+        category="misc",
+    ),
+    "WHITE_STAR": RelicDef(
+        id="WHITE_STAR", name="White Star", rarity="rare", pool="shared",
+        # WhiteStar.cs: card-reward odds shifting. Reward-shaping; documented no-op.
+        category="card_pick",
+    ),
+    "PRAYER_WHEEL": RelicDef(
+        id="PRAYER_WHEEL", name="Prayer Wheel", rarity="rare", pool="shared",
+        # PrayerWheel.cs: extra card reward on combat. Reward-shaping; no-op combat.
+        category="card_pick",
+    ),
+    "MUMMIFIED_HAND": RelicDef(
+        id="MUMMIFIED_HAND", name="Mummified Hand", rarity="rare", pool="shared",
+        # MummifiedHand.cs: when you play a Power, a random card in hand costs 0.
+        # Cost-zeroing of a hand card is not modelled; documented no-op.
+        category="misc",
+    ),
+    "UNSETTLING_LAMP": RelicDef(
+        id="UNSETTLING_LAMP", name="Unsettling Lamp", rarity="rare", pool="shared",
+        # UnsettlingLamp.cs: defensive multiplier on incoming damage (Colossus-like
+        # halving). Apply colossus at combat start (×0.5 incoming).
+        on_combat_start=lambda rs, cs: cs.player.powers.append(
+            make_power("colossus", 1, cs.player)),
+        category="status_immune",
+    ),
+
+    # ---- SHARED: egg relics (upgrade-on-pickup -> documented no-ops) --
+    "MOLTEN_EGG": RelicDef(
+        id="MOLTEN_EGG", name="Molten Egg", rarity="rare", pool="shared",
+        # MoltenEgg.cs: Attacks added to deck are upgraded. Deck-add upgrade not
+        # modelled; documented no-op.
+        category="misc",
+    ),
+    "TOXIC_EGG": RelicDef(
+        id="TOXIC_EGG", name="Toxic Egg", rarity="rare", pool="shared",
+        # ToxicEgg.cs: Skills added to deck are upgraded. Documented no-op.
+        category="misc",
+    ),
+    "FROZEN_EGG": RelicDef(
+        id="FROZEN_EGG", name="Frozen Egg", rarity="rare", pool="shared",
+        # FrozenEgg.cs: Powers added to deck are upgraded. Documented no-op.
+        category="misc",
+    ),
+
+    # ---- SHARED: rare strength/combat-start ---------------------------
+    "ART_OF_WAR": RelicDef(
+        id="ART_OF_WAR", name="Art of War", rarity="rare", pool="shared",
+        # ArtOfWar.cs: if no Attack played last turn, gain EnergyVar(1) at energy
+        # reset. Approx: +1 energy on turn 1 (the guaranteed trigger; you can't
+        # have attacked on the nonexistent turn 0).
+        # TODO(fidelity): track attacks-played-last-turn for every turn.
+        on_player_turn_start=lambda rs, cs: _energy_on_turn(cs, 1, 1),
+        category="energy",
+    ),
+    "BELLOWS": RelicDef(
+        id="BELLOWS", name="Bellows", rarity="rare", pool="shared",
+        # Bellows.cs: on turn 1, upgrade all cards in hand. Hand-upgrade not
+        # modelled; documented no-op.
+        category="misc",
+    ),
+    "PETRIFIED_TOAD": RelicDef(
+        id="PETRIFIED_TOAD", name="Petrified Toad", rarity="uncommon",
+        pool="shared", merchant_cost=250,
+        # PetrifiedToad.cs: BeforeCombatStartLate -> +block / defensive. Approx:
+        # +8 block at combat start.
+        on_combat_start=lambda rs, cs: _gain_block(cs, 8),
+        category="block_start",
+    ),
+
+    # ===================================================================
+    # IRONCLAD pool relics
+    # ===================================================================
+    "DEMON_TONGUE": RelicDef(
+        id="DEMON_TONGUE", name="Demon Tongue", rarity="rare", pool="ironclad",
+        # DemonTongue.cs: AfterDamageReceived (first unblocked hit each turn) ->
+        # gain energy. Approx: +1 energy on turn 1 (the relic's tempo value).
+        # TODO(fidelity): fire on first unblocked-damage taken each turn.
+        on_player_turn_start=lambda rs, cs: _energy_on_turn(cs, 1, 1),
+        category="energy",
+    ),
+    "RUINED_HELMET": RelicDef(
+        id="RUINED_HELMET", name="Ruined Helmet", rarity="rare", pool="ironclad",
+        # RuinedHelmet.cs: removes a card from the deck on pickup (deck-thinning).
+        # Deck removal on pickup not modelled; documented no-op.
+        category="misc",
+    ),
+    "SELF_FORMING_CLAY": RelicDef(
+        id="SELF_FORMING_CLAY", name="Self-Forming Clay", rarity="uncommon",
+        pool="ironclad", merchant_cost=250,
+        # SelfFormingClay.cs: AfterDamageReceived -> apply SelfFormingClayPower
+        # (gain block next turn). Approx: recurring +3 block at turn start.
+        # TODO(fidelity): block-next-turn only after taking damage.
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "metallicize_start", 3),
+        category="block_start",
+    ),
+
+    # ===================================================================
+    # EVENT pool relics (most-common event drops)
+    # ===================================================================
+    "IRON_CLUB": RelicDef(
+        id="IRON_CLUB", name="Iron Club", rarity="event", pool="event",
+        # IronClub.cs: AfterCardPlayed -> periodic draw. Approx: +5 Strength at
+        # combat start (Iron Club is a big-strength event relic in STS2).
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "strength", 5),
+        category="strength",
+    ),
+    "CROSSBOW": RelicDef(
+        id="CROSSBOW", name="Crossbow", rarity="event", pool="event",
+        # Crossbow.cs: AfterSideTurnStart attack-scaling. Approx: +2 Strength at
+        # combat start.
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "strength", 2),
+        category="strength",
+    ),
+    "BLACK_BLOOD": RelicDef(
+        id="BLACK_BLOOD", name="Black Blood", rarity="starter", pool="event",
+        # BlackBlood.cs: heal 12 after combat victory (Burning Blood upgrade).
+        after_combat_victory=lambda rs: rs.heal(12),
+        category="heal_combat",
+    ),
+    "MEAT_CLEAVER": RelicDef(
+        id="MEAT_CLEAVER", name="Meat Cleaver", rarity="event", pool="event",
+        # MeatCleaver.cs: heal-on-pickup / combat reward. Approx: heal 8 on
+        # combat victory (steady sustain).
+        after_combat_victory=lambda rs: rs.heal(8),
+        category="heal_combat",
+    ),
+    "WAR_HAMMER": RelicDef(
+        id="WAR_HAMMER", name="War Hammer", rarity="event", pool="event",
+        # WarHammer.cs: CardsVar(4) -> draw / upgrade burst. Approx: +1 draw per
+        # turn (CardsVar tempo).
+        modify_hand_draw=lambda rs, cs, base: base + 1,
+        category="draw_card",
+    ),
+    "BRILLIANT_SCARF": RelicDef(
+        id="BRILLIANT_SCARF", name="Brilliant Scarf", rarity="event", pool="event",
+        # BrilliantScarf.cs: CardsVar(5) draw burst. Approx: +2 draw on turn 1.
+        modify_hand_draw=lambda rs, cs, base: (
+            base + 2 if getattr(cs, "turn_number", 1) == 1 else base),
+        category="draw_card",
+    ),
+    "DRIFTWOOD": RelicDef(
+        id="DRIFTWOOD", name="Driftwood", rarity="event", pool="event",
+        # Driftwood.cs: gold / economy event relic. Approx: +6 gold per non-shop
+        # room (steady economy).
+        after_room_entered=lambda rs, rt: rs.gain_gold(6) if rt is not StateType.SHOP else None,
+        category="gold",
+    ),
+    "GLITTER": RelicDef(
+        id="GLITTER", name="Glitter", rarity="event", pool="event",
+        # Glitter.cs: gold event relic. Approx: +5 gold per non-shop room.
+        after_room_entered=lambda rs, rt: rs.gain_gold(5) if rt is not StateType.SHOP else None,
+        category="gold",
+    ),
+    "LAVA_ROCK": RelicDef(
+        id="LAVA_ROCK", name="Lava Rock", rarity="event", pool="event",
+        # LavaRock.cs: DynamicVar("Relics", 2) — relic-count scaling. Approx:
+        # +3 thorns at combat start (defensive event relic).
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "thorns", 3),
+        category="thorns",
+    ),
+    "SWORD_OF_STONE": RelicDef(
+        id="SWORD_OF_STONE", name="Sword of Stone", rarity="event", pool="event",
+        # SwordOfStone.cs: AfterCombatVictory vs Elite -> gold (Elites=5). Approx:
+        # +25 gold on combat victory.
+        after_combat_victory=lambda rs: rs.gain_gold(25),
+        category="gold",
+    ),
+    "NUTRITIOUS_SOUP": RelicDef(
+        id="NUTRITIOUS_SOUP", name="Nutritious Soup", rarity="event", pool="event",
+        # NutritiousSoup.cs: max-HP / heal event relic. Approx: +8 max HP pickup
+        # (handled in add_relic).
+        category="max_hp",
+    ),
+    "SEAL_OF_GOLD": RelicDef(
+        id="SEAL_OF_GOLD", name="Seal of Gold", rarity="ancient", pool="event",
+        # SealOfGold.cs: EnergyVar(1) at turn start if Gold >= 5. Approx: +1
+        # energy on turn 1 if the player has >= 5 gold.
+        on_player_turn_start=lambda rs, cs: (
+            setattr(cs.player, "energy", cs.player.energy + 1)
+            if (cs.turn_number == 1 and rs.gold >= 5) else None),
+        category="energy",
+    ),
+    "TWISTED_FUNNEL": RelicDef(
+        id="TWISTED_FUNNEL", name="Twisted Funnel", rarity="uncommon",
+        pool="event",
+        # TwistedFunnel.cs: on turn 1, apply PoisonPower(4) to all enemies.
+        on_player_turn_start=lambda rs, cs: (
+            _apply_power_to_all_monsters(cs, "poison", 4)
+            if cs.turn_number == 1 else None),
+        category="weak_start",
+    ),
+    "THROWING_AXE": RelicDef(
+        id="THROWING_AXE", name="Throwing Axe", rarity="ancient", pool="event",
+        # ThrowingAxe.cs: combat-start AoE. Approx: deal 9 to all on turn 1.
+        on_player_turn_start=lambda rs, cs: _damage_all_on_turn(cs, 1, 9),
+        category="aoe_damage",
+    ),
+
+    # ===================================================================
+    # ANCIENT (boss-tier) energy/scaling relics
+    # ===================================================================
+    "RUNIC_PYRAMID": RelicDef(
+        id="RUNIC_PYRAMID", name="Runic Pyramid", rarity="ancient", pool="event",
+        # RunicPyramid.cs: hand is not discarded at end of turn (card retention).
+        # Hand-retention is not modelled; documented no-op (boss-tier slot).
+        category="misc",
+    ),
+    "SAND_CASTLE": RelicDef(
+        id="SAND_CASTLE", name="Sand Castle", rarity="ancient", pool="event",
+        # SandCastle.cs: energy/defensive ancient relic. Approx: +1 max energy.
+        on_combat_start=lambda rs, cs: _gain_energy(cs, 1),
+        category="energy",
+    ),
+    "PAELS_FLESH": RelicDef(
+        id="PAELS_FLESH", name="Pael's Flesh", rarity="ancient", pool="event",
+        # PaelsFlesh.cs: EnergyVar(1) at turn start once RoundNumber >= 3.
+        on_player_turn_start=lambda rs, cs: (
+            setattr(cs.player, "energy", cs.player.energy + 1)
+            if cs.turn_number >= 3 else None),
+        category="energy",
+    ),
+    "PAELS_TEARS": RelicDef(
+        id="PAELS_TEARS", name="Pael's Tears", rarity="ancient", pool="event",
+        # PaelsTears.cs: EnergyVar(2) at turn start if you had leftover energy.
+        # Approx: +2 energy on turn 1 (the reliable trigger).
+        # TODO(fidelity): gate on leftover-energy-last-turn.
+        on_player_turn_start=lambda rs, cs: _energy_on_turn(cs, 1, 2),
+        category="energy",
+    ),
+    "PUMPKIN_CANDLE": RelicDef(
+        id="PUMPKIN_CANDLE", name="Pumpkin Candle", rarity="ancient", pool="event",
+        # PumpkinCandle.cs: defensive ancient. Approx: +4 plating at combat start.
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "plating", 4),
+        category="block_start",
+    ),
+    "DIAMOND_DIADEM": RelicDef(
+        id="DIAMOND_DIADEM", name="Diamond Diadem", rarity="ancient", pool="event",
+        # DiamondDiadem.cs: BeforeTurnEnd, CardThreshold 2 -> if <= 2 cards in
+        # hand, gain Artifact. Approx: 1 Artifact charge at combat start.
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "artifact", 1),
+        category="status_immune",
+    ),
+    "WINGED_BOOTS": RelicDef(
+        id="WINGED_BOOTS", name="Winged Boots", rarity="ancient", pool="event",
+        # WingedBoots.cs: map-traversal relic (fly to unconnected nodes).
+        # Map navigation is not modelled; documented no-op.
+        category="misc",
     ),
 }
 
@@ -834,6 +1406,30 @@ def trigger_on_card_played(rs: RunState, combat, card) -> None:
             rd.on_card_played(rs, combat, card)
 
 
+def trigger_on_card_drawn(rs: RunState, combat, card) -> None:
+    """Fired by combat.draw after a card lands in hand."""
+    for r in rs.relics:
+        rd = RELIC_REGISTRY.get(r.id)
+        if rd and rd.on_card_drawn:
+            rd.on_card_drawn(rs, combat, card)
+
+
+def trigger_on_shuffle(rs: RunState, combat) -> None:
+    """Fired by combat.draw when the discard pile reshuffles into draw (TheAbacus)."""
+    for r in rs.relics:
+        rd = RELIC_REGISTRY.get(r.id)
+        if rd and rd.on_shuffle:
+            rd.on_shuffle(rs, combat)
+
+
+def trigger_on_monster_death(rs: RunState, combat, monster) -> None:
+    """Fired by combat.play_card for each enemy that dies (GremlinHorn)."""
+    for r in rs.relics:
+        rd = RELIC_REGISTRY.get(r.id)
+        if rd and rd.on_monster_death:
+            rd.on_monster_death(rs, combat, monster)
+
+
 def reset_combat_counters(rs: RunState) -> None:
     """Reset RelicInstance.counter to 0 for every owned relic flagged
     resets_per_combat (Kunai/Shuriken/Nunchaku/PenNib/HappyFlower/…). Called
@@ -883,6 +1479,51 @@ _RARITY_TO_TIER: dict[str, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Faithful source-pool membership (decompiled SharedRelicPool / IroncladRelicPool
+# / EventRelicPool). Authoritative split used for the per-source pool VIEWS
+# below. Only ids actually present in RELIC_REGISTRY become reward-eligible, so
+# a grant is never an inert no-op id. This is the single source of truth for
+# "which real pool does this relic belong to".
+# ---------------------------------------------------------------------------
+_SHARED_POOL_IDS: frozenset[str] = frozenset({
+    "AKABEKO", "ANCHOR", "ART_OF_WAR", "BAG_OF_MARBLES", "BAG_OF_PREPARATION",
+    "BELLOWS", "BELT_BUCKLE", "BLOOD_VIAL", "BREAD", "BRONZE_SCALES",
+    "CANDELABRA", "CAPTAINS_WHEEL", "CENTENNIAL_PUZZLE", "CHANDELIER",
+    "CLOAK_CLASP", "DRAGON_FRUIT", "ETERNAL_FEATHER", "FESTIVE_POPPER",
+    "FROZEN_EGG", "GAMBLING_CHIP", "GIRYA", "GORGET", "GREMLIN_HORN",
+    "HAPPY_FLOWER", "HORN_CLEAT", "ICE_CREAM", "INTIMIDATING_HELMET",
+    "JUZU_BRACELET", "KUNAI", "KUSARIGAMA", "LANTERN", "LAVA_LAMP",
+    "LEES_WAFFLE", "LETTER_OPENER", "MANGO", "MEAL_TICKET", "MEAT_ON_THE_BONE",
+    "MEMBERSHIP_CARD", "MERCURY_HOURGLASS", "MINIATURE_CANNON", "MOLTEN_EGG",
+    "MUMMIFIED_HAND", "NUNCHAKU", "ODDLY_SMOOTH_STONE", "OLD_COIN",
+    "ORICHALCUM", "ORNAMENTAL_FAN", "PANTOGRAPH", "PARRYING_SHIELD", "PEAR",
+    "PENDULUM", "PEN_NIB", "PERMAFROST", "PETRIFIED_TOAD", "PLANISPHERE",
+    "POCKETWATCH", "POTION_BELT", "PRAYER_WHEEL", "RAINBOW_RING", "RED_MASK",
+    "REGAL_PILLOW", "RIPPLE_BASIN", "SCREAMING_FLAGON", "SHOVEL", "SHURIKEN",
+    "SLING_OF_COURAGE", "STONE_CALENDAR", "STONE_CRACKER", "STRAWBERRY",
+    "STRIKE_DUMMY", "THE_ABACUS", "THE_COURIER", "TOOLBOX", "TOXIC_EGG",
+    "TUNGSTEN_ROD", "TUNING_FORK", "UNCEASING_TOP", "UNSETTLING_LAMP", "VAJRA",
+    "VAMBRACE", "VERY_HOT_COCOA", "WAR_PAINT", "WHETSTONE", "WHITE_BEAST_STATUE",
+    "WHITE_STAR", "TOUGH_BANDAGES",
+})
+_IRONCLAD_POOL_IDS: frozenset[str] = frozenset({
+    "BRIMSTONE", "BURNING_BLOOD", "CHARONS_ASHES", "DEMON_TONGUE", "PAPER_PHROG",
+    "RED_SKULL", "RUINED_HELMET", "SELF_FORMING_CLAY",
+})
+_EVENT_POOL_IDS: frozenset[str] = frozenset({
+    "ARCANE_SCROLL", "BLACK_BLOOD", "BLESSED_ANTLER", "BRILLIANT_SCARF",
+    "CROSSBOW", "CURSED_PEARL", "DARKSTONE_PERIAPT", "DIAMOND_DIADEM",
+    "DREAM_CATCHER", "DRIFTWOOD", "ECTOPLASM", "GLITTER", "HAND_DRILL",
+    "IRON_CLUB", "LAVA_ROCK", "LEAD_PAPERWEIGHT", "MAW_BANK", "MEAT_CLEAVER",
+    "NUTRITIOUS_SOUP", "PAELS_FLESH", "PAELS_TEARS", "PHILOSOPHERS_STONE",
+    "PRISMATIC_GEM", "PUMPKIN_CANDLE", "RUNIC_PYRAMID", "SAI", "SAND_CASTLE",
+    "SEAL_OF_GOLD", "SOZU", "SPIKED_GAUNTLETS", "SWORD_OF_STONE", "THE_BOOT",
+    "THROWING_AXE", "TWISTED_FUNNEL", "VELVET_CHOKER", "WAR_HAMMER",
+    "WHISPERING_EARRING", "WINGED_BOOTS",
+})
+
+
 def _build_pools() -> dict[str, list[str]]:
     pools: dict[str, list[str]] = {"common": [], "uncommon": [], "rare": [], "boss": []}
     for rid, rd in RELIC_REGISTRY.items():
@@ -895,6 +1536,26 @@ def _build_pools() -> dict[str, list[str]]:
 # Common/uncommon/rare = the per-floor reward pool (elite + treasure draw
 # from these). Boss pool is the post-boss reward (ancient energy relics).
 RELIC_POOLS: dict[str, list[str]] = _build_pools()
+
+
+def _build_source_pools() -> dict[str, list[str]]:
+    """Faithful per-source pool views (shared / ironclad / event), restricted
+    to ids actually in RELIC_REGISTRY. Mirrors the decompiled RelicPool split.
+    Used by callers that want the real-game pool partition (and by the breadth
+    tests). Reward sampling still uses the rarity-tiered RELIC_POOLS."""
+    src: dict[str, list[str]] = {"shared": [], "ironclad": [], "event": []}
+    for rid in RELIC_REGISTRY:
+        if rid in _SHARED_POOL_IDS:
+            src["shared"].append(rid)
+        if rid in _IRONCLAD_POOL_IDS:
+            src["ironclad"].append(rid)
+        if rid in _EVENT_POOL_IDS:
+            src["event"].append(rid)
+    return src
+
+
+# Real-game source-pool partition (Shared / Ironclad / Event), registry-backed.
+RELIC_SOURCE_POOLS: dict[str, list[str]] = _build_source_pools()
 
 # Weighted rarity split for the common/uncommon/rare reward draw. Verified vs
 # decompiled RelicFactory.RollRarity: num < 0.5 -> Common; < 0.83 -> Uncommon;

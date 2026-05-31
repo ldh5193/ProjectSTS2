@@ -643,6 +643,57 @@ class TurnipPower(Power):
 
 
 @dataclass
+class ArtifactPower(Power):
+    """ArtifactPower (STS): negates the next `amount` debuffs applied to the
+    owner (one charge per debuff). The Creature.add_or_stack guard consumes a
+    charge and drops the incoming debuff while charges remain. Backs the
+    DiamondDiadem / various Ancient relics that grant Artifact at combat start."""
+    id: str = field(default="artifact", init=False)
+    _owner: object = None
+
+
+@dataclass
+class IntangiblePower(Power):
+    """IntangiblePower (STS): all incoming damage to the owner is reduced to 1
+    (ModifyDamageMultiplicative clamps via the damage pipeline). We model the
+    canonical 'reduce all incoming HP loss to at most 1' via modify_hp_lost.
+    Duration counter ticks at the owner's turn end."""
+    id: str = field(default="intangible", init=False)
+    _owner: object = None
+
+    def modify_hp_lost(self, dealer, target, amount: int) -> int:
+        if target is not self._owner:
+            return amount
+        return min(amount, 1)
+
+
+@dataclass
+class MetallicizeStartPower(Power):
+    """FurnacePower.cs analog (AfterSideTurnStart): gain `amount` Block at the
+    START of the owner's turn. STS2 ships turn-start block as Furnace; relics
+    like RippleBasin/ToughBandages grant recurring start-of-turn block. We model
+    it as turn-start block-gain (distinct from MetallicizePower's turn-end)."""
+    id: str = field(default="metallicize_start", init=False)
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        from .damage import gain_block
+        gain_block(owner, self.amount)
+
+
+@dataclass
+class MonsterBarricadePower(Power):
+    """Barricade-for-monsters: the owner's block is NOT reset at its turn start.
+    Same mechanic as BarricadePower but applied to a monster (e.g. when a relic
+    grants block that should persist). Kept distinct only for clarity."""
+    id: str = field(default="monster_barricade", init=False)
+    _owner: object = None
+
+    def blocks_block_reset(self) -> bool:
+        return True
+
+
+@dataclass
 class NoDrawPower(Power):
     """NoDrawPower.cs: the owner cannot draw cards for the rest of the turn.
     Applied by Battle Trance after its draw. Ticked off at the owner's turn
@@ -694,6 +745,11 @@ POWER_REGISTRY: dict[str, type[Power]] = {
     "ginger": GingerPower,
     "turnip": TurnipPower,
     "charons_ashes": CharonsAshesPower,
+    # Phase 8B — relic-completion powers.
+    "artifact": ArtifactPower,
+    "intangible": IntangiblePower,
+    "metallicize_start": MetallicizeStartPower,
+    "monster_barricade": MonsterBarricadePower,
 }
 
 

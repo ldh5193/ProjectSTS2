@@ -24,6 +24,11 @@ class Creature:
                 return p
         return None
 
+    # Powers that count as "debuffs" for Artifact negation (STS: a debuff is a
+    # power applied by an enemy that the owner does not want). The owner-applied
+    # buffs (strength/dexterity/etc.) are NOT negated.
+    _DEBUFF_IDS = frozenset({"weak", "frail", "vulnerable", "poison"})
+
     def add_or_stack_power(self, new_power: Power) -> None:
         # Status-immunity relics (Ginger -> Weak, Turnip -> Frail). If the
         # owner carries an immunity power, the matching debuff is ignored.
@@ -31,6 +36,14 @@ class Creature:
             return
         if new_power.id == "frail" and any(p.blocks_frail() for p in self.powers):
             return
+        # Artifact: consume one charge to negate an incoming debuff.
+        if new_power.id in self._DEBUFF_IDS:
+            art = self.get_power("artifact")
+            if art is not None and art.amount > 0:
+                art.amount -= 1
+                if art.amount <= 0:
+                    self.powers.remove(art)
+                return
         existing = self.get_power(new_power.id)
         if existing is None:
             self.powers.append(new_power)

@@ -103,7 +103,18 @@ class CombatState:
                 self.draw_pile = self.discard_pile
                 self.discard_pile = []
                 self.rng.shuffle(self.draw_pile)
-            self.hand.append(self.draw_pile.pop())
+                # Reshuffle event: TheAbacus (+block), BiiigHug-style on_shuffle
+                # relic hooks fire when the discard pile is reshuffled into draw.
+                if self.run_state is not None:
+                    from .relics import trigger_on_shuffle
+                    trigger_on_shuffle(self.run_state, self)
+            card = self.draw_pile.pop()
+            self.hand.append(card)
+            # Per-card-drawn relic hooks (e.g. Necronomicon-style). Fired after
+            # the card lands in hand so the relic can read it.
+            if self.run_state is not None:
+                from .relics import trigger_on_card_drawn
+                trigger_on_card_drawn(self.run_state, self, card)
 
     # ---- turn lifecycle ----
 
@@ -205,9 +216,18 @@ class CombatState:
             otp.amount -= 1
             if otp.amount <= 0:
                 self.player.powers.remove(otp)
+        alive_before = [m for m in self.monsters if m.alive]
         for _ in range(1 + extra_plays):
             self._resolve_effects(card)
         self._x_value = 0
+        # On-monster-death relic hooks (GremlinHorn: +1 energy & draw on each
+        # enemy death). Detect monsters that died during this card's resolution.
+        if self.run_state is not None:
+            newly_dead = [m for m in alive_before if not m.alive]
+            if newly_dead:
+                from .relics import trigger_on_monster_death
+                for m in newly_dead:
+                    trigger_on_monster_death(self.run_state, self, m)
         # Juggling: count this card toward the player's attacks-this-turn and
         # clone it on the 3rd Attack (AfterCardPlayed).
         self._fire_power_hook(self.player, "on_card_played", self, self.player, card)

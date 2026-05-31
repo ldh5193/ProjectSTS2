@@ -324,6 +324,16 @@ class RunState:
             self.gain_max_hp(1)
         elif relic_id == "OLD_COIN":
             self.gain_gold(300)
+        elif relic_id == "NUTRITIOUS_SOUP":
+            self.gain_max_hp(8)
+        elif relic_id == "LEES_WAFFLE":
+            # LeesWaffle.cs: +7 max HP then full heal.
+            self.gain_max_hp(7)
+            self.hp = self.max_hp
+        elif relic_id == "POTION_BELT":
+            # PotionBelt.cs: +2 potion slots.
+            self.max_potion_slots += 2
+            self.potions.extend([None, None])
 
     def add_potion(self, potion_id: str) -> bool:
         """Place a potion in the first empty slot. Returns False if all
