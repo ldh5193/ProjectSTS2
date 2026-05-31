@@ -14,10 +14,29 @@ from __future__ import annotations
 from enum import Enum
 
 from .cards import (
+    AGGRESSION,
     ANGER,
     ARMAMENTS,
     ASHEN_STRIKE,
     BARRICADE,
+    COLOSSUS,
+    CRIMSON_MANTLE,
+    CRUELTY,
+    DRUM_OF_BATTLE,
+    EVIL_EYE,
+    EXPECT_A_FIGHT,
+    FORGOTTEN_RITUAL,
+    GIANT_ROCK,
+    HELLRAISER,
+    INFERNO,
+    JUGGLING,
+    ONE_TWO_PUNCH,
+    PRIMAL_FORCE,
+    STAMPEDE,
+    STOKE,
+    THRASH,
+    UNMOVABLE,
+    VICIOUS,
     BASH,
     BATTLE_TRANCE,
     BERSERK,
@@ -156,13 +175,13 @@ _META: list[tuple[str, str, int, CardType, CardRarity]] = [
     ("bludgeon", "Bludgeon", 3, CardType.ATTACK, CardRarity.UNCOMMON),
     ("bully", "Bully", 0, CardType.ATTACK, CardRarity.UNCOMMON),
     ("burning_pact", "Burning Pact", 1, CardType.SKILL, CardRarity.UNCOMMON),
-    ("colossus", "Colossus", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("colossus", "Colossus", 1, CardType.SKILL, CardRarity.UNCOMMON),
     ("demonic_shield", "Demonic Shield", 1, CardType.SKILL, CardRarity.UNCOMMON),
     ("dismantle", "Dismantle", 1, CardType.SKILL, CardRarity.UNCOMMON),
     ("dominate", "Dominate", 1, CardType.SKILL, CardRarity.UNCOMMON),
-    ("drum_of_battle", "Drum of Battle", 1, CardType.SKILL, CardRarity.UNCOMMON),
-    ("evil_eye", "Evil Eye", 1, CardType.ATTACK, CardRarity.UNCOMMON),
-    ("expect_a_fight", "Expect a Fight", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("drum_of_battle", "Drum of Battle", 0, CardType.POWER, CardRarity.UNCOMMON),
+    ("evil_eye", "Evil Eye", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("expect_a_fight", "Expect a Fight", 2, CardType.SKILL, CardRarity.UNCOMMON),
     ("feel_no_pain", "Feel No Pain", 1, CardType.POWER, CardRarity.UNCOMMON),
     ("fight_me", "Fight Me", 2, CardType.ATTACK, CardRarity.UNCOMMON),
     ("flame_barrier", "Flame Barrier", 2, CardType.SKILL, CardRarity.UNCOMMON),
@@ -170,22 +189,22 @@ _META: list[tuple[str, str, int, CardType, CardRarity]] = [
     ("hemokinesis", "Hemokinesis", 1, CardType.ATTACK, CardRarity.UNCOMMON),
     ("howl_from_beyond", "Howl from Beyond", 1, CardType.SKILL, CardRarity.UNCOMMON),
     ("infernal_blade", "Infernal Blade", 1, CardType.SKILL, CardRarity.UNCOMMON),
-    ("inferno", "Inferno", 2, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("inferno", "Inferno", 1, CardType.POWER, CardRarity.UNCOMMON),
     ("inflame", "Inflame", 1, CardType.POWER, CardRarity.UNCOMMON),
-    ("juggling", "Juggling", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("juggling", "Juggling", 1, CardType.POWER, CardRarity.UNCOMMON),
     ("pillage", "Pillage", 1, CardType.ATTACK, CardRarity.UNCOMMON),
     ("rage", "Rage", 0, CardType.SKILL, CardRarity.UNCOMMON),
     ("rampage", "Rampage", 1, CardType.ATTACK, CardRarity.UNCOMMON),
     ("rupture", "Rupture", 1, CardType.POWER, CardRarity.UNCOMMON),
     ("second_wind", "Second Wind", 1, CardType.SKILL, CardRarity.UNCOMMON),
     ("spite", "Spite", 1, CardType.ATTACK, CardRarity.UNCOMMON),
-    ("stampede", "Stampede", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("stampede", "Stampede", 2, CardType.POWER, CardRarity.UNCOMMON),
     ("stomp", "Stomp", 1, CardType.ATTACK, CardRarity.UNCOMMON),
     ("stone_armor", "Stone Armor", 1, CardType.POWER, CardRarity.UNCOMMON),
     ("taunt", "Taunt", 0, CardType.SKILL, CardRarity.UNCOMMON),
     ("unrelenting", "Unrelenting", 1, CardType.ATTACK, CardRarity.UNCOMMON),
     ("uppercut", "Uppercut", 2, CardType.ATTACK, CardRarity.UNCOMMON),
-    ("vicious", "Vicious", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("vicious", "Vicious", 1, CardType.POWER, CardRarity.UNCOMMON),
     ("whirlwind", "Whirlwind", -1, CardType.ATTACK, CardRarity.UNCOMMON),  # X-cost
     # Engine powers without an STS2 card model (faithful STS1 semantics).
     ("metallicize", "Metallicize", 1, CardType.POWER, CardRarity.UNCOMMON),
@@ -193,28 +212,28 @@ _META: list[tuple[str, str, int, CardType, CardRarity]] = [
     ("berserk", "Berserk", 0, CardType.POWER, CardRarity.UNCOMMON),
     ("brutality", "Brutality", 0, CardType.POWER, CardRarity.UNCOMMON),
     # --- Rare (25) ---
-    ("aggression", "Aggression", 1, CardType.SKILL, CardRarity.RARE),
+    ("aggression", "Aggression", 1, CardType.POWER, CardRarity.RARE),
     ("barricade", "Barricade", 3, CardType.POWER, CardRarity.RARE),
     ("brand", "Brand", 1, CardType.SKILL, CardRarity.RARE),
     ("conflagration", "Conflagration", 2, CardType.ATTACK, CardRarity.RARE),
-    ("crimson_mantle", "Crimson Mantle", 1, CardType.SKILL, CardRarity.RARE),
+    ("crimson_mantle", "Crimson Mantle", 1, CardType.POWER, CardRarity.RARE),
     ("cruelty", "Cruelty", 1, CardType.POWER, CardRarity.RARE),
     ("dark_embrace", "Dark Embrace", 2, CardType.POWER, CardRarity.RARE),
     ("demon_form", "Demon Form", 3, CardType.POWER, CardRarity.RARE),
     ("feed", "Feed", 1, CardType.ATTACK, CardRarity.RARE),
     ("fiend_fire", "Fiend Fire", 2, CardType.ATTACK, CardRarity.RARE),
-    ("hellraiser", "Hellraiser", 2, CardType.ATTACK, CardRarity.RARE),
+    ("hellraiser", "Hellraiser", 2, CardType.POWER, CardRarity.RARE),
     ("impervious", "Impervious", 2, CardType.SKILL, CardRarity.RARE),
     ("juggernaut", "Juggernaut", 2, CardType.POWER, CardRarity.RARE),
     ("mangle", "Mangle", 1, CardType.ATTACK, CardRarity.RARE),
     ("not_yet", "Not Yet", 1, CardType.SKILL, CardRarity.RARE),
     ("offering", "Offering", 0, CardType.SKILL, CardRarity.RARE),
-    ("one_two_punch", "One-Two Punch", 1, CardType.ATTACK, CardRarity.RARE),
+    ("one_two_punch", "One-Two Punch", 1, CardType.SKILL, CardRarity.RARE),
     ("pacts_end", "Pact's End", 0, CardType.ATTACK, CardRarity.RARE),
-    ("primal_force", "Primal Force", 2, CardType.POWER, CardRarity.RARE),
+    ("primal_force", "Primal Force", 0, CardType.SKILL, CardRarity.RARE),
     ("pyre", "Pyre", 2, CardType.ATTACK, CardRarity.RARE),
-    ("stoke", "Stoke", 2, CardType.SKILL, CardRarity.RARE),
-    ("tank", "Tank", 2, CardType.SKILL, CardRarity.RARE),
+    ("stoke", "Stoke", 1, CardType.SKILL, CardRarity.RARE),
+    ("tank", "Tank", 1, CardType.POWER, CardRarity.RARE),
     ("tear_asunder", "Tear Asunder", 2, CardType.ATTACK, CardRarity.RARE),
     ("thrash", "Thrash", 1, CardType.ATTACK, CardRarity.RARE),
     ("unmovable", "Unmovable", 2, CardType.POWER, CardRarity.RARE),
@@ -299,6 +318,26 @@ _IMPLEMENTED: dict[str, CardDef] = {
     BREAK_CARD.id: BREAK_CARD,
     FIGHT_ME.id: FIGHT_ME,
     DOMINATE.id: DOMINATE,
+    # Phase 8 Track A — history-conditional + persistent-power cards
+    COLOSSUS.id: COLOSSUS,
+    DRUM_OF_BATTLE.id: DRUM_OF_BATTLE,
+    EVIL_EYE.id: EVIL_EYE,
+    EXPECT_A_FIGHT.id: EXPECT_A_FIGHT,
+    FORGOTTEN_RITUAL.id: FORGOTTEN_RITUAL,
+    INFERNO.id: INFERNO,
+    JUGGLING.id: JUGGLING,
+    STAMPEDE.id: STAMPEDE,
+    VICIOUS.id: VICIOUS,
+    AGGRESSION.id: AGGRESSION,
+    CRIMSON_MANTLE.id: CRIMSON_MANTLE,
+    CRUELTY.id: CRUELTY,
+    HELLRAISER.id: HELLRAISER,
+    ONE_TWO_PUNCH.id: ONE_TWO_PUNCH,
+    PRIMAL_FORCE.id: PRIMAL_FORCE,
+    STOKE.id: STOKE,
+    THRASH.id: THRASH,
+    UNMOVABLE.id: UNMOVABLE,
+    GIANT_ROCK.id: GIANT_ROCK,
 }
 
 
@@ -311,6 +350,12 @@ def _build_registry() -> tuple[dict[str, CardDef], dict[str, CardRarity]]:
             by_id[card_id] = _IMPLEMENTED[card_id]
         else:
             by_id[card_id] = _placeholder(card_id, name, cost, ctype, rarity)
+    # Token cards (generated mid-combat, e.g. GiantRock) are implemented but
+    # are not part of the reward pool (_META / RARITY_OF), so they're added to
+    # the lookup without a rarity. Card-generation ops resolve them via CARDS.
+    for card_id, card in _IMPLEMENTED.items():
+        if card_id not in by_id:
+            by_id[card_id] = card
     return by_id, rarity_by_id
 
 
@@ -344,7 +389,12 @@ _SELF_BUFF_IDS = frozenset({"strength", "dexterity", "intangible", "ritual",
                              # Phase 7B engine powers
                              "demon_form", "feel_no_pain", "dark_embrace",
                              "juggernaut", "rupture", "combust", "barricade",
-                             "berserk", "brutality", "corruption", "plating"})
+                             "berserk", "brutality", "corruption", "plating",
+                             # Phase 8 Track A persistent powers
+                             "colossus", "cruelty", "crimson_mantle", "inferno",
+                             "drum_of_battle", "stampede", "one_two_punch",
+                             "juggling", "aggression", "hellraiser", "unmovable",
+                             "vicious"})
 
 
 def card_features(card_id: str) -> list[float]:

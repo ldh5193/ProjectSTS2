@@ -44,6 +44,13 @@ class EffectOp(str, Enum):
     MOVE_DISCARD_TO_DRAW_TOP = "move_discard_to_draw_top"  # Headbutt
     DRAW_UNTIL_NONATTACK = "draw_until_nonattack"  # Pillage: draw while attacks
     NO_DRAW = "no_draw"                    # BattleTrance: NoDraw debuff (no more draws)
+    # Phase 8 Track A additions (STS2 pool completion):
+    THRASH_EXHAUST_ATTACK = "thrash_exhaust_attack"  # Thrash: exhaust a hand Attack, add its dmg
+    TRANSFORM_ATTACKS_IN_HAND = "transform_attacks_in_hand"  # PrimalForce: hand Attacks -> card_id
+    EXHAUST_HAND_GENERATE_RANDOM = "exhaust_hand_generate_random"  # Stoke: exhaust hand, add random cards
+    GAIN_ENERGY_PER_HAND_ATTACK = "gain_energy_per_hand_attack"  # ExpectAFight: +1 energy per hand Attack
+    GAIN_BLOCK_IF_EXHAUSTED = "gain_block_if_exhausted"  # EvilEye: block ×2 if exhausted this turn
+    GAIN_ENERGY_IF_EXHAUSTED = "gain_energy_if_exhausted"  # ForgottenRitual: energy iff exhausted this turn
 
 
 class ScalingKind(str, Enum):

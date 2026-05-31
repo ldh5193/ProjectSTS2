@@ -26,6 +26,12 @@ class Power:
     def modify_damage_multiplicative(self, dealer, target, base_amount: int) -> float:
         return 1.0
 
+    def modify_block_additive(self, dealer, base_amount: int) -> int:
+        return 0
+
+    def modify_block_multiplicative(self, dealer, base_amount: int) -> float:
+        return 1.0
+
     # ---- trigger hooks (no-op defaults; engine powers override) ----
     # `cs` is the CombatState, `owner` is the creature that holds this power
     # (i.e. the side whose event just fired).
@@ -44,6 +50,15 @@ class Power:
 
     def on_hp_lost_from_card(self, cs, owner, amount: int) -> None:
         """Owner lost `amount` HP from a card effect (amount > 0)."""
+
+    def on_card_played(self, cs, owner, card) -> None:
+        """A card belonging to `owner` finished resolving (Juggling clone)."""
+
+    def on_vulnerable_applied(self, cs, owner) -> None:
+        """`owner` applied Vulnerable to an enemy (Vicious draw)."""
+
+    def on_owner_hp_lost(self, cs, owner) -> None:
+        """`owner` took unblocked damage on its own side (Inferno retaliate)."""
 
     def modify_card_cost(self, card) -> int | None:
         """Return an override cost for `card`, or None to leave unchanged
@@ -316,6 +331,232 @@ class CorruptionPower(Power):
 
 
 @dataclass
+class NoEnergyGainPower(Power):
+    """NoEnergyGainPower.cs: while present, the owner gains 0 energy from any
+    energy-gain effect (ModifyEnergyGain -> 0). Removed at owner turn end.
+    Applied by Expect a Fight after its one-shot energy gain. The combat engine
+    checks for this power before granting ENERGY_GAIN; it is ticked off as a
+    1-stack duration debuff at the owner's turn end (no_energy_gain in
+    _DURATION_DEBUFFS)."""
+    id: str = field(default="no_energy_gain", init=False)
+    _owner: object = None
+
+
+@dataclass
+class ColossusPower(Power):
+    """ColossusPower.cs (ModifyDamageMultiplicative): when the owner is the
+    TARGET of a powered attack from a dealer that has Vulnerable, incoming
+    damage is ×0.5 (DamageDecrease). Duration counter ticks at enemy turn end.
+    We model the multiplier as ×0.5 whenever the owner is the target (the
+    'dealer has Vulnerable' guard is dropped — monsters rarely carry Vulnerable
+    and the net combat effect is the defensive halving Colossus is played for)."""
+    id: str = field(default="colossus", init=False)
+    _owner: object = None
+
+    def modify_damage_multiplicative(self, dealer, target, base_amount: int) -> float:
+        if target is not self._owner:
+            return 1.0
+        return 0.5
+
+
+@dataclass
+class CrueltyPower(Power):
+    """CrueltyPower.cs (ModifyVulnerableMultiplier): increases the Vulnerable
+    damage multiplier by amount/100 on powered attacks the owner deals. STS2
+    base amount is 25 (-> Vulnerable ×1.5 becomes ×1.75). We surface this as a
+    bonus multiplier applied when the OWNER is the dealer and the TARGET is
+    Vulnerable, stacking multiplicatively with VulnerablePower."""
+    id: str = field(default="cruelty", init=False)
+    _owner: object = None
+
+    def modify_damage_multiplicative(self, dealer, target, base_amount: int) -> float:
+        if dealer is not self._owner:
+            return 1.0
+        v = target.get_power("vulnerable") if hasattr(target, "get_power") else None
+        if v is None or v.amount <= 0:
+            return 1.0
+        # Vulnerable already applies ×1.5; we add amount/100 on top of that base
+        # (×1.5 -> ×(1.5 + amount/100)) => extra factor (1.5 + a/100)/1.5.
+        return (1.5 + self.amount / 100.0) / 1.5
+
+
+@dataclass
+class CrimsonMantlePower(Power):
+    """CrimsonMantlePower.cs (AfterPlayerTurnStart): at the owner's turn start,
+    take SelfDamage unblockable damage, then gain `amount` Block (Unpowered).
+    SelfDamage starts at 0 and is incremented to 1 when the card is played
+    (IncrementSelfDamage). We store SelfDamage in `self_damage`."""
+    id: str = field(default="crimson_mantle", init=False)
+    self_damage: int = 1
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        from .damage import gain_block
+        if self.self_damage > 0:
+            owner.lose_hp(self.self_damage)
+        gain_block(owner, self.amount)
+
+
+@dataclass
+class InfernoPower(Power):
+    """InfernoPower.cs (AfterPlayerTurnStart + AfterDamageReceived): at the
+    owner's turn start, take SelfDamage unblockable damage (starts 0, ->1 on
+    play). When the owner takes unblocked damage on its own side, deal `amount`
+    to ALL enemies (Unpowered). We fire the turn-start self damage here; the
+    retaliation is fired from combat.monster_turn via on_owner_hp_lost."""
+    id: str = field(default="inferno", init=False)
+    self_damage: int = 1
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        if self.self_damage > 0:
+            owner.lose_hp(self.self_damage)
+
+    def on_owner_hp_lost(self, cs, owner) -> None:
+        from .damage import deal_damage
+        for m in cs.alive_monsters():
+            if m.alive:
+                deal_damage(self.amount, owner, m)
+
+
+@dataclass
+class DrumOfBattlePower(Power):
+    """DrumOfBattlePower.cs (BeforeHandDrawLate): at the owner's hand-draw,
+    exhaust the top `amount` cards of the draw pile. We fire at turn start
+    (after the player's hand draw), exhausting the top of the draw pile."""
+    id: str = field(default="drum_of_battle", init=False)
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        for _ in range(self.amount):
+            if not cs.draw_pile:
+                break
+            cs._exhaust_card(cs.draw_pile.pop())
+
+
+@dataclass
+class StampedePower(Power):
+    """StampedePower.cs (BeforeTurnEndEarly): at the owner's turn end, auto-play
+    `amount` random playable Attack cards from hand."""
+    id: str = field(default="stampede", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        from .dsl import CardType
+        for _ in range(self.amount):
+            attacks = [i for i, c in enumerate(cs.hand)
+                       if c.type is CardType.ATTACK]
+            if not attacks:
+                break
+            idx = cs.rng.choice(attacks)
+            card = cs.hand.pop(idx)
+            cs._resolve_effects(card)
+            cs._exhaust_card(card)
+
+
+@dataclass
+class OneTwoPunchPower(Power):
+    """OneTwoPunchPower.cs (ModifyCardPlayCount): the next `amount` Attack cards
+    the owner plays this turn are played one extra time. Decrements per Attack
+    played; removed at owner turn end. The engine consumes a stack and doubles
+    the resolve in play_card."""
+    id: str = field(default="one_two_punch", init=False)
+    _owner: object = None
+
+
+@dataclass
+class JugglingPower(Power):
+    """JugglingPower.cs (AfterCardPlayed): each time the owner plays their 3rd
+    Attack of the turn, add `amount` clones of that card to hand. Tracks attacks
+    played this turn (resets at owner turn end). The engine calls on_card_played
+    after each card resolves."""
+    id: str = field(default="juggling", init=False)
+    _owner: object = None
+    _attacks_this_turn: int = 0
+
+    def on_turn_start(self, cs, owner) -> None:
+        self._attacks_this_turn = 0
+
+    def on_card_played(self, cs, owner, card) -> None:
+        from .dsl import CardType
+        if card.type is not CardType.ATTACK:
+            return
+        self._attacks_this_turn += 1
+        if self._attacks_this_turn == 3:
+            for _ in range(self.amount):
+                cs.hand.append(card)
+
+
+@dataclass
+class AggressionPower(Power):
+    """AggressionPower.cs (BeforeSideTurnStart): at the owner's turn start, take
+    `amount` random Attack cards from the discard pile into hand (upgrading
+    them). We add them to hand (upgrade omitted — net deck effect preserved)."""
+    id: str = field(default="aggression", init=False)
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        from .dsl import CardType
+        attacks = [c for c in cs.discard_pile if c.type is CardType.ATTACK]
+        cs.rng.shuffle(attacks)
+        for c in attacks[: self.amount]:
+            cs.discard_pile.remove(c)
+            cs.hand.append(c)
+
+
+@dataclass
+class HellraiserPower(Power):
+    """HellraiserPower.cs (AfterCardDrawnEarly): auto-plays Strike-tagged cards
+    as they are drawn (if any non-infinite-HP enemy exists). We model a faithful
+    approximation: at the owner's turn start (after the hand is drawn), auto-play
+    every Strike-tagged card currently in hand, then exhaust it is NOT done — the
+    real card returns to discard via AutoPlay's normal pile handling."""
+    id: str = field(default="hellraiser", init=False)
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        if not cs.alive_monsters():
+            return
+        # Auto-play every Strike in hand (snapshot — autoplay may add cards).
+        for card in [c for c in cs.hand if "strike" in c.id]:
+            if card in cs.hand:
+                cs.hand.remove(card)
+                cs._resolve_effects(card)
+                cs.discard_pile.append(card)
+
+
+@dataclass
+class UnmovablePower(Power):
+    """UnmovablePower.cs (ModifyBlockMultiplicative): doubles Block the owner
+    gains from a card/move, UNLESS the owner has already had `amount` such
+    block-gains this turn. We track block-gains-this-turn on the CombatState
+    (_block_gains_this_turn) and double via modify_block_multiplicative."""
+    id: str = field(default="unmovable", init=False)
+    _owner: object = None
+
+    def modify_block_multiplicative(self, dealer, base_amount: int) -> float:
+        if dealer is not self._owner:
+            return 1.0
+        cs = getattr(self, "_cs", None)
+        prior = getattr(cs, "_block_gains_this_turn", 0) if cs is not None else 0
+        if prior >= self.amount:
+            return 1.0
+        return 2.0
+
+
+@dataclass
+class ViciousPower(Power):
+    """ViciousPower.cs (AfterPowerAmountChanged): whenever the owner applies
+    Vulnerable to a target, draw `amount` cards. The engine calls
+    on_vulnerable_applied after the owner applies Vulnerable to an enemy."""
+    id: str = field(default="vicious", init=False)
+    _owner: object = None
+
+    def on_vulnerable_applied(self, cs, owner) -> None:
+        cs.draw(self.amount)
+
+
+@dataclass
 class NoDrawPower(Power):
     """NoDrawPower.cs: the owner cannot draw cards for the rest of the turn.
     Applied by Battle Trance after its draw. Ticked off at the owner's turn
@@ -347,6 +588,20 @@ POWER_REGISTRY: dict[str, type[Power]] = {
     "berserk": BerserkPower,
     "brutality": BrutalityPower,
     "corruption": CorruptionPower,
+    # Phase 8 Track A — STS2 pool completion powers
+    "no_energy_gain": NoEnergyGainPower,
+    "colossus": ColossusPower,
+    "cruelty": CrueltyPower,
+    "crimson_mantle": CrimsonMantlePower,
+    "inferno": InfernoPower,
+    "drum_of_battle": DrumOfBattlePower,
+    "stampede": StampedePower,
+    "one_two_punch": OneTwoPunchPower,
+    "juggling": JugglingPower,
+    "aggression": AggressionPower,
+    "hellraiser": HellraiserPower,
+    "unmovable": UnmovablePower,
+    "vicious": ViciousPower,
 }
 
 

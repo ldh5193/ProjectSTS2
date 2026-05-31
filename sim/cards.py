@@ -643,6 +643,179 @@ DOMINATE = CardDef(  # Dominate.cs: Vulnerable 1, then Strength == target Vulner
     ),
 )
 
+# ===========================================================================
+# Phase 8 Track A: remaining STS2 Ironclad pool (history-conditional + powers).
+# Each CardDef verified against decompiled/MegaCrit.Sts2.Core.Models.Cards/*.cs
+# (and the matching Models.Powers/*.cs). Costs/types/amounts are .cs-exact.
+# ===========================================================================
+
+# GiantRock token (GiantRock.cs): 1-cost Attack, 16 damage. Primal Force target.
+GIANT_ROCK = CardDef(
+    id="giant_rock", name="Giant Rock", cost=1, type=CardType.ATTACK, count=0,
+    effects=(
+        Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY, amount=16,
+               scaling=STRIKE_SCALING),
+    ),
+)
+
+# --- Uncommon ---------------------------------------------------------------
+
+COLOSSUS = CardDef(  # Colossus.cs: Block 5, then ColossusPower(1) (×0.5 incoming)
+    id="colossus", name="Colossus", cost=1, type=CardType.SKILL, count=0,
+    effects=(
+        Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=5),
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="colossus", amount=1),
+    ),
+)
+
+DRUM_OF_BATTLE = CardDef(  # DrumOfBattle.cs: cost 0, draw 2, DrumOfBattlePower(1)
+    id="drum_of_battle", name="Drum of Battle", cost=0, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=2),
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="drum_of_battle", amount=1),
+    ),
+)
+
+EVIL_EYE = CardDef(  # EvilEye.cs: Block 8 (×2 if a card was exhausted this turn); exhaust
+    id="evil_eye", name="Evil Eye", cost=1, type=CardType.SKILL, count=0,
+    exhaust=True,
+    effects=(
+        Effect(op=EffectOp.GAIN_BLOCK_IF_EXHAUSTED, target=Target.SELF, amount=8),
+    ),
+)
+
+EXPECT_A_FIGHT = CardDef(  # ExpectAFight.cs: gain 1 energy per Attack in hand, NoEnergyGain
+    id="expect_a_fight", name="Expect a Fight", cost=2, type=CardType.SKILL, count=0,
+    effects=(
+        Effect(op=EffectOp.GAIN_ENERGY_PER_HAND_ATTACK, target=Target.SELF),
+    ),
+)
+
+FORGOTTEN_RITUAL = CardDef(  # ForgottenRitual.cs: gain 3 energy iff exhausted this turn; exhaust
+    id="forgotten_ritual", name="Forgotten Ritual", cost=1, type=CardType.SKILL,
+    count=0, exhaust=True,
+    effects=(
+        Effect(op=EffectOp.GAIN_ENERGY_IF_EXHAUSTED, target=Target.SELF, amount=3),
+    ),
+)
+
+INFERNO = CardDef(  # Inferno.cs: InfernoPower(6) — turn-start self-dmg + AoE retaliate
+    id="inferno", name="Inferno", cost=1, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="inferno", amount=6),
+    ),
+)
+
+JUGGLING = CardDef(  # Juggling.cs: JugglingPower(1) — clone 3rd attack/turn
+    id="juggling", name="Juggling", cost=1, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="juggling", amount=1),
+    ),
+)
+
+STAMPEDE = CardDef(  # Stampede.cs: cost 2, StampedePower(1) — turn-end auto-play attack
+    id="stampede", name="Stampede", cost=2, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="stampede", amount=1),
+    ),
+)
+
+VICIOUS = CardDef(  # Vicious.cs: ViciousPower(1) — draw on Vulnerable applied
+    id="vicious", name="Vicious", cost=1, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="vicious", amount=1),
+    ),
+)
+
+# --- Rare -------------------------------------------------------------------
+
+AGGRESSION = CardDef(  # Aggression.cs: AggressionPower(1) — turn-start grab attacks
+    id="aggression", name="Aggression", cost=1, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="aggression", amount=1),
+    ),
+)
+
+CRIMSON_MANTLE = CardDef(  # CrimsonMantle.cs: CrimsonMantlePower(8) — turn-start self-dmg + block
+    id="crimson_mantle", name="Crimson Mantle", cost=1, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="crimson_mantle", amount=8),
+    ),
+)
+
+CRUELTY = CardDef(  # Cruelty.cs: CrueltyPower(25) — +0.25 Vulnerable multiplier
+    id="cruelty", name="Cruelty", cost=1, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="cruelty", amount=25),
+    ),
+)
+
+HELLRAISER = CardDef(  # Hellraiser.cs: HellraiserPower(1) — auto-play drawn Strikes
+    id="hellraiser", name="Hellraiser", cost=2, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="hellraiser", amount=1),
+    ),
+)
+
+ONE_TWO_PUNCH = CardDef(  # OneTwoPunch.cs: OneTwoPunchPower(1) — next attack plays twice
+    id="one_two_punch", name="One-Two Punch", cost=1, type=CardType.SKILL, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="one_two_punch", amount=1),
+    ),
+)
+
+PRIMAL_FORCE = CardDef(  # PrimalForce.cs: cost 0, transform hand Attacks -> GiantRock
+    id="primal_force", name="Primal Force", cost=0, type=CardType.SKILL, count=0,
+    effects=(
+        Effect(op=EffectOp.TRANSFORM_ATTACKS_IN_HAND, target=Target.SELF,
+               card_id="giant_rock"),
+    ),
+)
+
+STOKE = CardDef(  # Stoke.cs: cost 1, exhaust hand, add that many random cards
+    id="stoke", name="Stoke", cost=1, type=CardType.SKILL, count=0,
+    effects=(
+        Effect(op=EffectOp.EXHAUST_HAND_GENERATE_RANDOM, target=Target.SELF),
+    ),
+)
+
+THRASH = CardDef(  # Thrash.cs: 4 dmg ×2, then exhaust a hand Attack + add its dmg; exhaust
+    id="thrash", name="Thrash", cost=1, type=CardType.ATTACK, count=0,
+    exhaust=True,
+    effects=(
+        Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY, amount=4,
+               scaling=STRIKE_SCALING, hit_count=2),
+        Effect(op=EffectOp.THRASH_EXHAUST_ATTACK, target=Target.SELECTED_ENEMY),
+    ),
+)
+
+UNMOVABLE = CardDef(  # Unmovable.cs: cost 2, UnmovablePower(1) — double first block/turn
+    id="unmovable", name="Unmovable", cost=2, type=CardType.POWER, count=0,
+    effects=(
+        Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+               power_id="unmovable", amount=1),
+    ),
+)
+
+PHASE8_CARDS = (
+    COLOSSUS, DRUM_OF_BATTLE, EVIL_EYE, EXPECT_A_FIGHT, FORGOTTEN_RITUAL,
+    INFERNO, JUGGLING, STAMPEDE, VICIOUS,
+    AGGRESSION, CRIMSON_MANTLE, CRUELTY, HELLRAISER, ONE_TWO_PUNCH,
+    PRIMAL_FORCE, STOKE, THRASH, UNMOVABLE, GIANT_ROCK,
+)
+
+
 PHASE7C_CARDS = (
     FIGHT_ME, DOMINATE,
     ARMAMENTS, BLOOD_WALL, BODY_SLAM, BREAKTHROUGH, HAVOC, MOLTEN_FIST,
@@ -917,6 +1090,26 @@ _UPGRADE_DELTAS: dict[str, tuple[tuple, ...]] = {
     "break": (("dmg", 10), ("power", "vulnerable", 2)),  # 20/5 -> 30/7
     "fight_me": (("dmg", 1), ("power", "strength", 1)),  # 5/3 -> 6/4
     "dominate": (("power", "vulnerable", 1),),           # 1 -> 2
+    # --- Phase 8 Track A STS2 pool (decompiled OnUpgrade values) ---
+    "colossus": (("block", 3),),                  # Colossus.cs Block 5 -> 8
+    "drum_of_battle": (("draw", 1),),             # DrumOfBattle.cs Cards 2 -> 3
+    "evil_eye": (("block", 3),),                  # EvilEye.cs Block 8 -> 11
+    "expect_a_fight": (("cost", -1),),            # ExpectAFight.cs cost 2 -> 1
+    "forgotten_ritual": (("energy", 1),),         # ForgottenRitual.cs Energy 3 -> 4
+    "inferno": (("power", "inferno", 3),),        # Inferno.cs InfernoPower 6 -> 9
+    "juggling": (),                               # Juggling.cs upgrade = Innate
+    "stampede": (("cost", -1),),                  # Stampede.cs cost 2 -> 1
+    "vicious": (("power", "vicious", 1),),        # Vicious.cs Cards 1 -> 2
+    "aggression": (),                             # Aggression.cs upgrade = Innate
+    "crimson_mantle": (("power", "crimson_mantle", 2),),  # CrimsonMantle 8 -> 10
+    "cruelty": (("power", "cruelty", 25),),       # Cruelty.cs 25 -> 50
+    "hellraiser": (("cost", -1),),                # Hellraiser.cs cost 2 -> 1
+    "one_two_punch": (("power", "one_two_punch", 1),),  # OneTwoPunch 1 -> 2
+    "primal_force": (),                           # PrimalForce.cs upgrades GiantRocks
+    "stoke": (),                                  # Stoke.cs upgrades generated cards
+    "thrash": (("dmg", 2),),                      # Thrash.cs Damage 4 -> 6
+    "unmovable": (("cost", -1),),                 # Unmovable.cs cost 2 -> 1
+    "giant_rock": (("dmg", 4),),                  # GiantRock.cs Damage 16 -> 20
 }
 
 # Default deltas for any implemented card not in the table above:
@@ -941,6 +1134,10 @@ def _apply_delta(effects: tuple[Effect, ...], delta: tuple) -> tuple[Effect, ...
         elif kind == "energy" and eff.op is EffectOp.ENERGY_GAIN:
             new_eff = _replace(eff, amount=eff.amount + delta[1])
         elif kind == "heal" and eff.op is EffectOp.HEAL:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "block" and eff.op is EffectOp.GAIN_BLOCK_IF_EXHAUSTED:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "energy" and eff.op is EffectOp.GAIN_ENERGY_IF_EXHAUSTED:
             new_eff = _replace(eff, amount=eff.amount + delta[1])
         elif kind == "any_power" and eff.op is EffectOp.APPLY_POWER:
             new_eff = _replace(eff, amount=eff.amount + delta[1])

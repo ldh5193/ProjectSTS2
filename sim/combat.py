@@ -121,6 +121,8 @@ class CombatState:
         self.is_player_turn = True
         self._attacks_played_this_turn = 0
         self._hp_lost_this_turn = False
+        self._block_gains_this_turn = 0
+        self._cards_exhausted_this_turn = 0
         self.player.energy = self.player.max_energy
         # Block resets at turn start unless a power (Barricade) blocks the reset.
         if not any(p.blocks_block_reset() for p in self.player.powers):
@@ -153,6 +155,7 @@ class CombatState:
         """Move a card to the exhaust pile and fire on_card_exhausted for the
         player's powers (Feel No Pain block, Dark Embrace draw)."""
         self.exhaust_pile.append(card)
+        self._cards_exhausted_this_turn += 1
         self._fire_power_hook(self.player, "on_card_exhausted",
                               self, self.player, card)
 
@@ -176,6 +179,14 @@ class CombatState:
     #   _hp_lost_this_turn -> Spite/TearAsunder "if HP lost this turn" triggers.
     _attacks_played_this_turn: int = field(default=0, init=False)
     _hp_lost_this_turn: bool = field(default=False, init=False)
+    # Combat-history counters (Phase 8 Track A):
+    #   _block_gains_this_turn  -> Unmovable (doubles first N card block-gains).
+    #   _cards_exhausted_this_turn -> EvilEye / ForgottenRitual conditionals,
+    #     and ShouldGlowGold-style "was a card exhausted this turn" checks.
+    # Both reset at start_player_turn. _cards_exhausted_this_turn increments in
+    # _exhaust_card; _block_gains_this_turn increments on player card block-gain.
+    _block_gains_this_turn: int = field(default=0, init=False)
+    _cards_exhausted_this_turn: int = field(default=0, init=False)
 
     def play_card(self, card_index: int, target_is_monster: bool = True) -> None:
         if not self.can_play(card_index):
@@ -186,8 +197,20 @@ class CombatState:
         self.player.energy -= spent
         # X-cost cards repeat their effect once per energy spent.
         self._x_value = spent if card.cost == X_COST else 0
-        self._resolve_effects(card)
+        # One-Two Punch: the next N Attacks play one extra time this turn.
+        extra_plays = 0
+        otp = self.player.get_power("one_two_punch")
+        if (card.type is CardType.ATTACK and otp is not None and otp.amount > 0):
+            extra_plays = 1
+            otp.amount -= 1
+            if otp.amount <= 0:
+                self.player.powers.remove(otp)
+        for _ in range(1 + extra_plays):
+            self._resolve_effects(card)
         self._x_value = 0
+        # Juggling: count this card toward the player's attacks-this-turn and
+        # clone it on the 3rd Attack (AfterCardPlayed).
+        self._fire_power_hook(self.player, "on_card_played", self, self.player, card)
         # Per-attack relic hooks (Kunai/Shuriken/Pen Nib) fire after an
         # ATTACK card resolves. Only when a RunState is attached (real runs;
         # standalone combat tests leave run_state=None).
@@ -281,6 +304,8 @@ class CombatState:
                 gain_block(t, eff.amount)
                 if t is self.player:
                     gained = t.block - before
+                    # Unmovable counts each card block-gain attempt this turn.
+                    self._block_gains_this_turn += 1
                     if gained > 0:
                         # Juggernaut: deal damage to a random enemy on block gain.
                         self._fire_power_hook(t, "on_block_gained", self, t, gained)
@@ -296,13 +321,25 @@ class CombatState:
                         v = t.get_power("vulnerable")
                         amt += sc.amount * (v.amount if v else 0)
                 if amt != 0:
-                    t.add_or_stack_power(make_power(eff.power_id, amt, t))
+                    p = make_power(eff.power_id, amt, t)
+                    # Unmovable needs a CombatState back-reference for its
+                    # per-turn block-gain count check.
+                    p._cs = self
+                    t.add_or_stack_power(p)
+                    # Vicious: when the player applies Vulnerable to an enemy,
+                    # the player draws cards (AfterPowerAmountChanged).
+                    if (eff.power_id == "vulnerable" and t is not self.player
+                            and amt > 0):
+                        self._fire_power_hook(self.player, "on_vulnerable_applied",
+                                              self, self.player)
             return
         if eff.op is EffectOp.DRAW_CARD:
             self.draw(eff.amount)
             return
         if eff.op is EffectOp.ENERGY_GAIN:
-            self.player.energy += eff.amount
+            # NoEnergyGain (Expect a Fight's debuff) zeroes any energy gain.
+            if self.player.get_power("no_energy_gain") is None:
+                self.player.energy += eff.amount
             return
         if eff.op is EffectOp.SELF_HP_LOSE:
             # Unblockable self-damage (Bloodletting, Bloodwall, Breakthrough).
@@ -456,6 +493,78 @@ class CombatState:
         if eff.op is EffectOp.NO_DRAW:
             self.player.add_or_stack_power(make_power("no_draw", 1, self.player))
             return
+        if eff.op is EffectOp.THRASH_EXHAUST_ATTACK:
+            # Thrash: exhaust a random Attack card in hand, then deal its base
+            # damage to the selected enemy (Thrash.cs). The card's damage is
+            # added as one extra hit at this attack's target.
+            from .dsl import CardType
+            attacks = [c for c in self.hand if c.type is CardType.ATTACK]
+            if attacks:
+                chosen = self.rng.choice(attacks)
+                self.hand.remove(chosen)
+                bonus = max(
+                    (e.amount for e in chosen.effects
+                     if e.op is EffectOp.DEAL_DAMAGE), default=0)
+                self._exhaust_card(chosen)
+                for t in targets:
+                    if t.alive and bonus > 0:
+                        deal_damage(bonus, self.player, t)
+            return
+        if eff.op is EffectOp.TRANSFORM_ATTACKS_IN_HAND:
+            # Primal Force: transform every Attack in hand into card_id (GiantRock).
+            from .dsl import CardType
+            from .card_catalog import CARDS
+            gen = CARDS.get(eff.card_id) if eff.card_id else None
+            if gen is not None:
+                for i, c in enumerate(self.hand):
+                    if c.type is CardType.ATTACK:
+                        self.hand[i] = gen
+            return
+        if eff.op is EffectOp.EXHAUST_HAND_GENERATE_RANDOM:
+            # Stoke: exhaust the whole hand, then add that many RANDOM Ironclad
+            # cards (non-Ancient) to hand.
+            from .card_catalog import CARDS, RARITY_OF, CardRarity
+            cards = list(self.hand)
+            self.hand.clear()
+            n = len(cards)
+            for c in cards:
+                self._exhaust_card(c)
+            pool = [cid for cid, r in RARITY_OF.items()
+                    if r is not CardRarity.ANCIENT]
+            for _ in range(n):
+                if pool:
+                    self.hand.append(CARDS[self.rng.choice(pool)])
+            return
+        if eff.op is EffectOp.GAIN_ENERGY_PER_HAND_ATTACK:
+            # Expect a Fight: gain 1 energy per Attack card in hand, then apply
+            # NoEnergyGain (no further energy gain this turn).
+            from .dsl import CardType
+            n = sum(1 for c in self.hand if c.type is CardType.ATTACK)
+            if self.player.get_power("no_energy_gain") is None:
+                self.player.energy += n
+            self.player.add_or_stack_power(
+                make_power("no_energy_gain", 1, self.player))
+            return
+        if eff.op is EffectOp.GAIN_BLOCK_IF_EXHAUSTED:
+            # Evil Eye: gain `amount` block; doubled if a card was exhausted
+            # this turn (WasCardExhaustedThisTurn).
+            times = 2 if self._cards_exhausted_this_turn > 0 else 1
+            for _ in range(times):
+                before = self.player.block
+                gain_block(self.player, eff.amount)
+                self._block_gains_this_turn += 1
+                gained = self.player.block - before
+                if gained > 0:
+                    self._fire_power_hook(self.player, "on_block_gained",
+                                          self, self.player, gained)
+            return
+        if eff.op is EffectOp.GAIN_ENERGY_IF_EXHAUSTED:
+            # Forgotten Ritual: gain `amount` energy iff a card was exhausted
+            # this turn. (Itself exhausts via the Exhaust keyword.)
+            if self._cards_exhausted_this_turn > 0:
+                if self.player.get_power("no_energy_gain") is None:
+                    self.player.energy += eff.amount
+            return
 
     # Duration debuffs that decay by 1 at the END of the bearer's OWN turn.
     # In the real game (WeakPower/VulnerablePower/FrailPower .cs) these tick in
@@ -464,16 +573,22 @@ class CombatState:
     # creature's duration debuffs at the end of that creature's own turn:
     #   - Player's Weak/Frail decay at end of the player's turn.
     #   - Monster's Weak/Vulnerable decay at end of that monster's turn.
-    _DURATION_DEBUFFS: tuple[str, ...] = ("weak", "vulnerable", "frail", "no_draw")
+    _DURATION_DEBUFFS: tuple[str, ...] = ("weak", "vulnerable", "frail", "no_draw",
+                                          "no_energy_gain")
 
     def end_player_turn(self) -> None:
         self.is_player_turn = False
+        # Turn-end triggers (Metallicize block, Combust AoE, Stampede auto-play
+        # of hand Attacks) fire BEFORE the hand is discarded so Stampede still
+        # sees its Attacks (StampedePower.BeforeTurnEndEarly).
+        self._fire_power_hook(self.player, "on_turn_end", self, self.player)
+        # One-Two Punch: any unused charge is removed at turn end.
+        otp = self.player.get_power("one_two_punch")
+        if otp is not None:
+            self.player.powers.remove(otp)
         # Discard hand at end of player turn (STS convention).
         self.discard_pile.extend(self.hand)
         self.hand.clear()
-        # Turn-end triggers: Metallicize (block), Combust (lose HP + AoE).
-        # Fire before plating/decay so block stacks then plating adds on top.
-        self._fire_power_hook(self.player, "on_turn_end", self, self.player)
         # End-of-owner-turn effects for the player: Plating block-gain, then
         # decay duration debuffs (Weak/Frail the player bears).
         self._end_of_turn_effects(self.player)
@@ -497,6 +612,10 @@ class CombatState:
             events.append(m.take_turn(self.rng, self.player))
             if self.player.hp < hp_before:
                 self._hp_lost_this_turn = True
+                # Inferno: when the owner takes unblocked damage, retaliate
+                # against all enemies (InfernoPower.AfterDamageReceived).
+                self._fire_power_hook(self.player, "on_owner_hp_lost",
+                                      self, self.player)
             # Drain any status cards the monster queued this turn (Insatiable
             # FranticEscape, Vantom/MechaKnight/TestSubject Burn/Wound, ...)
             # into the player's piles. See monsters._queue_status.
