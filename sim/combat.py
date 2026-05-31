@@ -46,6 +46,17 @@ class CombatState:
     # reward (scaling-engine signal). Lives here because play_card is the
     # single choke point that sees a card's type. Zero in standalone tests.
     powers_played_this_step: int = 0
+    # Per-combat energy-cost overrides keyed by id(CardDef). SneckoEye /
+    # FakeSneckoEye (ConfusedPower) populate this on draw: each drawn card with
+    # a non-negative canonical cost gets a random cost 0-3 that holds for the
+    # rest of combat (decompiled ConfusedPower.AfterCardDrawn:
+    # card.EnergyCost.SetThisCombat(Rng.CombatEnergyCosts.NextInt(4))). Cleared
+    # at combat start. CardDef is frozen, so we key the override by identity.
+    cost_overrides: dict = field(default_factory=dict)
+    # Chemical X (ChemicalX.cs Increase(2)): X-cost cards behave as if their X
+    # is +2. Applied to _x_value when resolving an X-cost card. Set by the
+    # relic's combat-start hook so standalone combat stays at 0.
+    chemical_x_bonus: int = 0
 
     def _sync_monsters(self) -> None:
         """Ensure `self.monsters` includes `self.monster` for legacy code."""
@@ -120,6 +131,11 @@ class CombatState:
                     trigger_on_shuffle(self.run_state, self)
             card = self.draw_pile.pop()
             self.hand.append(card)
+            # Confused (ConfusedPower from SneckoEye/FakeSneckoEye): each drawn
+            # card with a non-negative canonical cost gets a random cost 0-3 for
+            # the rest of combat (ConfusedPower.AfterCardDrawn). Fired before the
+            # relic hook so the override is in place when read.
+            self._fire_power_hook(self.player, "on_card_drawn", self, self.player, card)
             # Per-card-drawn relic hooks (e.g. Necronomicon-style). Fired after
             # the card lands in hand so the relic can read it.
             if self.run_state is not None:
@@ -175,7 +191,8 @@ class CombatState:
         from .dsl import X_COST
         if card.cost == X_COST:
             return self.player.energy
-        cost = card.cost
+        # Confused (SneckoEye): a per-combat random cost override, set on draw.
+        cost = self.cost_overrides.get(id(card), card.cost)
         for p in self.player.powers:
             override = p.modify_card_cost(card)
             if override is not None:
@@ -230,8 +247,9 @@ class CombatState:
         card = self.hand.pop(card_index)
         spent = self.effective_cost(card)
         self.player.energy -= spent
-        # X-cost cards repeat their effect once per energy spent.
-        self._x_value = spent if card.cost == X_COST else 0
+        # X-cost cards repeat their effect once per energy spent. Chemical X
+        # (ChemicalX.cs) makes X-cost cards behave as if X is +chemical_x_bonus.
+        self._x_value = (spent + self.chemical_x_bonus) if card.cost == X_COST else 0
         # One-Two Punch: the next N Attacks play one extra time this turn.
         extra_plays = 0
         otp = self.player.get_power("one_two_punch")
@@ -758,7 +776,15 @@ class CombatState:
             # then decay duration debuffs (Weak/Vulnerable the monster bears).
             self._end_of_turn_effects(m)
             if not self.player.alive:
-                break
+                # Death-prevention relics (LizardTail): once per run, when the
+                # player would die, instead heal a fraction of max HP and
+                # survive. Fired here (the dominant death vector is a monster
+                # attack) before the loop breaks so a revive aborts the loss.
+                if self.run_state is not None:
+                    from .relics import trigger_on_player_would_die
+                    trigger_on_player_would_die(self.run_state, self)
+                if not self.player.alive:
+                    break
         # Re-target if the previously selected monster died this turn.
         alive = self.alive_monsters()
         if alive and self.target_index >= len(alive):

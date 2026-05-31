@@ -300,7 +300,35 @@ class RunState:
         return gained
 
     def gain_gold(self, amount: int) -> None:
+        # Gold-gain multiplier relics (BowlerHat: GoldIncrease(1.25) -> all gold
+        # gained is multiplied by 1.25). Only POSITIVE gains are scaled (spends
+        # pass through untouched), matching the decompiled ShouldGainGold /
+        # GoldIncrease interception which only fires on a gain. Multipliers
+        # stack multiplicatively; the result is floored (decimal -> int).
+        if amount > 0:
+            mult = self.gold_gain_multiplier()
+            if mult != 1.0:
+                amount = int(amount * mult)
         self.gold = max(0, self.gold + amount)
+
+    def gold_gain_multiplier(self) -> float:
+        """Product of every owned relic's gold-gain multiplier (BowlerHat
+        ×1.25). 1.0 when no such relic is held."""
+        from .relics import relic_gold_multiplier
+        mult = 1.0
+        for r in self.relics:
+            mult *= relic_gold_multiplier(r.id)
+        return mult
+
+    def add_card_to_deck(self, card) -> None:
+        """Append `card` to the deck and fire on-card-added relic hooks
+        (BookOfFiveRings: heal 20 every 5th card added; LuckyFysh: +15 gold per
+        card added). Mirrors the decompiled AfterCardAdded / deck-add events.
+        Card reward acceptance and shop purchases route through here so the
+        deck-add relics see every addition."""
+        self.deck.append(card)
+        from .relics import trigger_on_card_added_to_deck
+        trigger_on_card_added_to_deck(self, card)
 
     def has_relic(self, relic_id: str) -> bool:
         return any(r.id == relic_id for r in self.relics)
@@ -341,6 +369,29 @@ class RunState:
         elif relic_id == "LOOMING_FRUIT":
             # LoomingFruit.cs: MaxHpVar(31) on pickup.
             self.gain_max_hp(31)
+        elif relic_id == "FAKE_MANGO":
+            # FakeMango.cs: +3 max HP on pickup (the trap version of Mango +14).
+            self.gain_max_hp(3)
+        elif relic_id == "NUTRITIOUS_OYSTER":
+            # NutritiousOyster.cs: +11 max HP on pickup.
+            self.gain_max_hp(11)
+        elif relic_id == "FAKE_LEES_WAFFLE":
+            # FakeLeesWaffle.cs: heal 10% of max HP on pickup (no max-HP gain).
+            self.heal(int(self.max_hp * 0.10))
+        elif relic_id == "GOLDEN_PEARL":
+            # GoldenPearl.cs: GainGold GoldVar(150) on pickup.
+            self.gain_gold(150)
+        elif relic_id == "NEOWS_TALISMAN":
+            # NeowsTalisman.cs: on pickup, upgrade the basic Strike and Defend
+            # cards (first of each by tag). We upgrade the first un-upgraded
+            # strike_ironclad and defend_ironclad in the deck.
+            from .cards import upgrade_card as _upg
+            for _tag in ("strike", "defend"):
+                for _i, _c in enumerate(self.deck):
+                    cid = getattr(_c, "id", "")
+                    if _tag in cid and not cid.endswith("+"):
+                        self.deck[_i] = _upg(_c)
+                        break
         elif relic_id == "CAULDRON":
             # Cauldron.cs: on pickup, offer 5 potion rewards (DynamicVar
             # "Potions" == 5). We fill up to 5 empty potion slots immediately.

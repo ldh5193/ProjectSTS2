@@ -111,6 +111,19 @@ class RelicDef:
     # Potion-use hook — fired by potions.apply_potion after a potion resolves
     # IN COMBAT (ReptileTrinket: +3 Strength when a potion is used in combat).
     on_potion_used: Optional[Callable[[RunState, object, str], None]] = None  # (rs, cs, potion_id)
+    # Card-added-to-deck hook — fired by RunState.add_card_to_deck whenever a
+    # card is added to the deck (card reward acceptance, shop purchase).
+    # BookOfFiveRings: heal 20 every 5th card added. LuckyFysh: +15 gold per
+    # card added. The relic's RelicInstance.counter persists across the RUN
+    # (not reset per combat) for cadence relics.
+    on_card_added: Optional[Callable[[RunState, object], None]] = None  # (rs, card)
+    # Would-die hook — fired by combat.monster_turn when the player drops to 0
+    # HP. LizardTail: once per run, instead heal a fraction of max HP and
+    # survive (sets player.alive back to True). Returns nothing; mutates state.
+    on_player_would_die: Optional[Callable[[RunState, object], None]] = None  # (rs, cs)
+    # Flat gold-gain multiplier (BowlerHat 1.25). Read by RunState.gain_gold;
+    # 1.0 means no effect. Applied multiplicatively across owned relics.
+    gold_multiplier: float = 1.0
     # If True, the relic's RelicInstance.counter is reset to 0 at the start of
     # each combat (decompiled per-combat counters: Kunai/Shuriken/Nunchaku/…).
     resets_per_combat: bool = False
@@ -302,6 +315,109 @@ def _venerable_tea_arm_on_rest(rs, rt) -> None:
         rs.venerable_tea_armed = True
 
 
+# --- Phase 8B.7 helpers -----------------------------------------------------
+
+def _apply_confused(cs) -> None:
+    """SneckoEye / FakeSneckoEye: apply the Confused power (single stack) to the
+    player at combat start. ConfusedPower randomizes each drawn card's cost to
+    0-3 for the rest of combat (decompiled SneckoEye.BeforeCombatStart ->
+    PowerCmd.Apply<ConfusedPower>(1))."""
+    if cs.player.get_power("confused") is None:
+        cs.player.add_or_stack_power(make_power("confused", 1, cs.player))
+
+
+def _add_max_energy(cs, amount: int) -> None:
+    """BloodSoakedRose-style ModifyMaxEnergy(+amount): raise both live and max
+    energy at combat start (the energy reset has already happened)."""
+    cs.player.max_energy += amount
+    cs.player.energy += amount
+
+
+def _pael_flesh_turn_energy(rs, cs) -> None:
+    """PaelsFlesh.cs: on the owner's turn start, if RoundNumber >= 3, gain
+    EnergyVar(1). turn_number is the combat's 1-based round counter."""
+    if cs.turn_number >= 3:
+        cs.player.energy += 1
+
+
+def _pael_tears_turn_energy(rs, cs) -> None:
+    """PaelsTears.cs: at the owner's turn start, if they had leftover energy at
+    the previous turn end, gain EnergyVar(2). We approximate the BeforeTurnEnd
+    snapshot with a per-relic flag stored on the RunState; here at turn start we
+    grant when armed and disarm. Armed by _pael_tears_arm at turn end."""
+    if getattr(rs, "_pael_tears_armed", False):
+        cs.player.energy += 2
+        rs._pael_tears_armed = False
+
+
+def _fake_strike_dummy_bonus(rs, cs, card) -> None:
+    """FakeStrikeDummy.cs: ModifyDamageAdditive +1 to powered attacks from a
+    Strike card. The sim applies the +1 once per Strike ATTACK card played by
+    adding direct damage to the selected/all enemies. We approximate the
+    per-attack additive (the engine has no per-card damage-additive hook) by
+    dealing +1 to the targeted enemy when a Strike card is played."""
+    if card.type is _ATTACK and "strike" in card.id:
+        # +1 to the just-resolved Strike's target (the selected enemy).
+        alive = cs.alive_monsters()
+        if alive:
+            from .damage import deal_damage
+            idx = min(cs.target_index, len(alive) - 1)
+            deal_damage(1, cs.player, alive[idx])
+
+
+def _lizard_tail_revive(rs, cs) -> None:
+    """LizardTail.cs: once per run, when the owner would die, instead heal
+    HealVar(50)% of max HP and survive. We mark the relic used-up via its
+    RelicInstance.counter (0 = unused, 1 = used)."""
+    inst = _relic_inst(rs, "LIZARD_TAIL")
+    if inst is None or (inst.counter or 0) != 0:
+        return
+    inst.counter = 1
+    heal = max(1, cs.player.max_hp // 2)  # HealVar(50) percent of max HP
+    cs.player.alive = True
+    cs.player.hp = min(cs.player.max_hp, heal)
+    cs.player.block = 0
+    # Keep the run-state HP in sync so the loss path is not taken.
+    rs.hp = cs.player.hp
+
+
+def _book_of_five_rings_added(rs, card) -> None:
+    """BookOfFiveRings.cs: heal 20 every 5th card added to the deck. Counter on
+    the relic's RelicInstance (persists across the run)."""
+    inst = _relic_inst(rs, "BOOK_OF_FIVE_RINGS")
+    if inst is None:
+        return
+    inst.counter = (inst.counter or 0) + 1
+    if inst.counter % 5 == 0:
+        rs.heal(20)
+
+
+def _lucky_fysh_added(rs, card) -> None:
+    """LuckyFysh.cs: GoldVar(15) -> +15 gold whenever a card is added to the
+    deck."""
+    rs.gain_gold(15)
+
+
+def _ember_tea_combat_start(rs, cs) -> None:
+    """EmberTea.cs: for the first 5 combats, gain Strength(2) at combat start,
+    then the relic is used up. The relic's RelicInstance.counter tracks combats
+    consumed (persists across the run)."""
+    inst = _relic_inst(rs, "EMBER_TEA")
+    if inst is None:
+        return
+    used = inst.counter or 0
+    if used >= 5:
+        return
+    inst.counter = used + 1
+    _apply_power_to_self(cs, "strength", 2)
+
+
+def relic_gold_multiplier(relic_id: str) -> float:
+    """Gold-gain multiplier for a relic id (BowlerHat 1.25), 1.0 if none."""
+    rd = RELIC_REGISTRY.get(relic_id)
+    return rd.gold_multiplier if rd is not None else 1.0
+
+
 RELIC_REGISTRY: dict[str, RelicDef] = {
     "BURNING_BLOOD": RelicDef(
         id="BURNING_BLOOD", name="Burning Blood", rarity="starter",
@@ -416,13 +532,6 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
         id="ETERNAL_FEATHER", name="Eternal Feather", rarity="common", merchant_cost=175,
         after_room_entered=lambda rs, rt: rs.heal(3) if rt is StateType.REST else None,
         category="heal_rest",
-    ),
-    "MAW_BANK": RelicDef(
-        id="MAW_BANK", name="Maw Bank", rarity="common", merchant_cost=175,
-        # +12 gold whenever you enter a non-shop room. Sim hook fires
-        # on every room entry; we filter inside the lambda.
-        after_room_entered=lambda rs, rt: rs.gain_gold(12) if rt is not StateType.SHOP else None,
-        category="gold",
     ),
     "CURSED_PEARL": RelicDef(
         id="CURSED_PEARL", name="Cursed Pearl", rarity="event",
@@ -1330,10 +1439,12 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     ),
     "PAELS_TEARS": RelicDef(
         id="PAELS_TEARS", name="Pael's Tears", rarity="ancient", pool="event",
-        # PaelsTears.cs: EnergyVar(2) at turn start if you had leftover energy.
-        # Approx: +2 energy on turn 1 (the reliable trigger).
-        # TODO(fidelity): gate on leftover-energy-last-turn.
-        on_player_turn_start=lambda rs, cs: _energy_on_turn(cs, 1, 2),
+        # PaelsTears.cs: BeforeTurnEnd snapshot HadLeftoverEnergy = Energy > 0;
+        # AfterSideTurnStart, if HadLeftoverEnergy, gain EnergyVar(2). We arm a
+        # flag at turn end (energy > 0) and grant +2 at the next turn start.
+        on_player_turn_end=lambda rs, cs: setattr(
+            rs, "_pael_tears_armed", cs.player.energy > 0),
+        on_player_turn_start=lambda rs, cs: _pael_tears_turn_energy(rs, cs),
         category="energy",
     ),
     "PUMPKIN_CANDLE": RelicDef(
@@ -1469,10 +1580,11 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     "BOOK_OF_FIVE_RINGS": RelicDef(
         id="BOOK_OF_FIVE_RINGS", name="Book of Five Rings", rarity="common",
         pool="shared", merchant_cost=175,
-        # BookOfFiveRings.cs: every 5 cards added to your deck -> heal 20.
-        # TODO(fidelity: deck-add events): fire heal(20) on every 5th card added
-        # to the deck. The sim has no add-to-deck event hook yet.
-        category="misc",
+        # BookOfFiveRings.cs: every 5 cards added to your deck -> heal 20. Now
+        # wired via the on_card_added deck-mutation hook (counter persists for
+        # the run).
+        on_card_added=lambda rs, card: _book_of_five_rings_added(rs, card),
+        category="heal_rest",
     ),
     "RAZOR_TOOTH": RelicDef(
         id="RAZOR_TOOTH", name="Razor Tooth", rarity="rare", pool="shared",
@@ -1608,34 +1720,33 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     "LUCKY_FYSH": RelicDef(
         id="LUCKY_FYSH", name="Lucky Fysh", rarity="uncommon", pool="shared",
         # LuckyFysh.cs: GoldVar(15) -> +15 gold whenever a card is added to your
-        # deck.
-        # TODO(fidelity: deck-add events) — grant gold on every deck add. The sim
-        # has no add-to-deck event hook yet.
+        # deck. Now wired via the on_card_added deck-mutation hook.
+        on_card_added=lambda rs, card: _lucky_fysh_added(rs, card),
         category="gold",
     ),
     "BOWLER_HAT": RelicDef(
         id="BOWLER_HAT", name="Bowler Hat", rarity="uncommon", pool="shared",
         # BowlerHat.cs: GoldIncrease(1.25) -> all gold you gain is multiplied by
-        # 1.25 (extra 25%).
-        # TODO(fidelity: gold-gain multiplier hook) — needs a ShouldGainGold/
-        # AfterGoldGained interception. Documented no-op for now.
+        # 1.25 (extra 25%). Wired via RunState.gain_gold's gold_multiplier.
+        gold_multiplier=1.25,
         category="gold",
     ),
     "CHEMICAL_X": RelicDef(
         id="CHEMICAL_X", name="Chemical X", rarity="shop", pool="shared",
         merchant_cost=160,
         # ChemicalX.cs: Increase(2) -> X-cost cards behave as if their X is +2.
-        # TODO(fidelity: before-play X-value modifier) — needs a ModifyXValue
-        # hook before the X-cost card resolves. Documented no-op for now.
+        # Wired via CombatState.chemical_x_bonus (added to _x_value when an
+        # X-cost card resolves). Set at combat start.
+        on_combat_start=lambda rs, cs: setattr(cs, "chemical_x_bonus", 2),
         category="misc",
     ),
     "LIZARD_TAIL": RelicDef(
         id="LIZARD_TAIL", name="Lizard Tail", rarity="rare", pool="shared",
-        # LizardTail.cs: once per run, when you would die, instead heal HealVar(50)
-        # percent of max HP and survive.
-        # TODO(fidelity: death-prevention primitive) — needs an OnWouldDie hook.
-        # Documented no-op for now.
-        category="misc",
+        # LizardTail.cs: once per run, when you would die, instead heal
+        # HealVar(50) percent of max HP and survive. Wired via the
+        # on_player_would_die hook (counter tracks the once-per-run charge).
+        on_player_would_die=lambda rs, cs: _lizard_tail_revive(rs, cs),
+        category="heal_combat",
     ),
     "VEXING_PUZZLEBOX": RelicDef(
         id="VEXING_PUZZLEBOX", name="Vexing Puzzlebox", rarity="rare",
@@ -1644,6 +1755,200 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
         # TODO(fidelity: random card generation into hand) — the sim has no
         # card-into-hand generation primitive. Documented no-op for now.
         category="misc",
+    ),
+
+    # ===================================================================
+    # Phase 8B.7 — EventRelicPool / boss / Neow / shop-trap relics.
+    # Each verified vs decompiled Relics/*.cs (rarity + trigger + magnitude)
+    # and EventRelicPool.cs membership. Ironclad-obtainable combat / pickup
+    # effects use the engine hooks; effects needing systems the sim lacks
+    # (Enchantment, character-specific card injection) carry an honest TODO.
+    # ===================================================================
+
+    # ---- Snecko Eye / Fake Snecko Eye (ConfusedPower) -----------------
+    "SNECKO_EYE": RelicDef(
+        id="SNECKO_EYE", name="Snecko Eye", rarity="ancient", pool="event",
+        # SneckoEye.cs: BeforeCombatStart -> apply ConfusedPower(1) (each drawn
+        # card's cost randomizes 0-3); ModifyHandDraw +CardsVar(2). Ancient.
+        on_combat_start=lambda rs, cs: _apply_confused(cs),
+        modify_hand_draw=lambda rs, cs, base: base + 2,
+        category="draw_card",
+    ),
+    "FAKE_SNECKO_EYE": RelicDef(
+        id="FAKE_SNECKO_EYE", name="Fake Snecko Eye", rarity="event",
+        pool="event", merchant_cost=50,
+        # FakeSneckoEye.cs: BeforeCombatStart -> ConfusedPower(1). NO bonus draw
+        # (the trap version: all downside, no upside).
+        on_combat_start=lambda rs, cs: _apply_confused(cs),
+        category="misc",
+    ),
+
+    # ---- Pael's fragment set (Ancient, EventRelicPool) ----------------
+    "PAELS_BLOOD": RelicDef(
+        id="PAELS_BLOOD", name="Pael's Blood", rarity="ancient", pool="event",
+        # PaelsBlood.cs: ModifyHandDraw +CardsVar(1) (draw 1 extra each turn).
+        modify_hand_draw=lambda rs, cs, base: base + 1,
+        category="draw_card",
+    ),
+    "PAELS_HORN": RelicDef(
+        id="PAELS_HORN", name="Pael's Horn", rarity="ancient", pool="event",
+        # PaelsHorn.cs: on pickup, add 2 Relax cards to the deck. The Relax card
+        # is not in the sim card catalog.
+        # TODO(fidelity: Relax card) — needs the Relax card defined; deck-add
+        # primitive exists but the specific card does not.
+        category="misc",
+    ),
+    "BOOMING_CONCH": RelicDef(
+        id="BOOMING_CONCH", name="Booming Conch", rarity="ancient", pool="event",
+        # BoomingConch.cs: ModifyHandDraw +CardsVar(2) on turn 1 of an Elite
+        # combat only. We gate on turn 1 and the run being in an Elite room.
+        modify_hand_draw=lambda rs, cs, base: (
+            base + 2 if (cs.turn_number <= 1
+                         and rs.state_type is StateType.ELITE) else base),
+        category="draw_card",
+    ),
+
+    # ---- Fake (shop-trap) relics, EventRelicPool ----------------------
+    "FAKE_ANCHOR": RelicDef(
+        id="FAKE_ANCHOR", name="Fake Anchor", rarity="event", pool="event",
+        merchant_cost=50,
+        # FakeAnchor.cs: BeforeCombatStart -> GainBlock BlockVar(4). (Real Anchor
+        # gives 10; the trap gives only 4.)
+        on_combat_start=lambda rs, cs: _gain_block(cs, 4),
+        category="block_start",
+    ),
+    "FAKE_BLOOD_VIAL": RelicDef(
+        id="FAKE_BLOOD_VIAL", name="Fake Blood Vial", rarity="event",
+        pool="event", merchant_cost=50,
+        # FakeBloodVial.cs: AfterPlayerTurnStartLate on RoundNumber <= 1 ->
+        # Heal HealVar(1). (Real Blood Vial heals 2.) Fires turn 1 only.
+        on_player_turn_start=lambda rs, cs: (
+            cs.player.heal(1) if cs.turn_number <= 1 else None),
+        category="heal_combat",
+    ),
+    "FAKE_MANGO": RelicDef(
+        id="FAKE_MANGO", name="Fake Mango", rarity="event", pool="event",
+        merchant_cost=50,
+        # FakeMango.cs: on pickup, GainMaxHp MaxHpVar(3). (Real Mango gives 14.)
+        # Handled in RunState.add_relic.
+        category="max_hp",
+    ),
+    "FAKE_LEES_WAFFLE": RelicDef(
+        id="FAKE_LEES_WAFFLE", name="Fake Lee's Waffle", rarity="event",
+        pool="event", merchant_cost=50,
+        # FakeLeesWaffle.cs: on pickup, heal HealVar(10) percent of max HP.
+        # (Real Lee's Waffle gives +7 max HP then full heal.) Handled in
+        # RunState.add_relic.
+        category="heal_combat",
+    ),
+    "FAKE_ORICHALCUM": RelicDef(
+        id="FAKE_ORICHALCUM", name="Fake Orichalcum", rarity="event",
+        pool="event", merchant_cost=50,
+        # FakeOrichalcum.cs: BeforeTurnEnd, if Block == 0 -> GainBlock
+        # BlockVar(3). (Real Orichalcum gives 6.) Mirrors the Orichalcum turn-end
+        # block-if-0 pattern.
+        on_player_turn_end=lambda rs, cs: (
+            _gain_block(cs, 3) if cs.player.block == 0 else None),
+        category="block_start",
+    ),
+    "FAKE_HAPPY_FLOWER": RelicDef(
+        id="FAKE_HAPPY_FLOWER", name="Fake Happy Flower", rarity="event",
+        pool="event", merchant_cost=50,
+        # FakeHappyFlower.cs: every Turns(5) of the owner's turns -> EnergyVar(1).
+        # (Real Happy Flower period is 3.) Counter resets per combat.
+        on_player_turn_start=lambda rs, cs: _turn_period_energy(
+            rs, cs, relic_id="FAKE_HAPPY_FLOWER", period=5, amount=1),
+        resets_per_combat=True,
+        category="energy",
+    ),
+    "FAKE_VENERABLE_TEA_SET": RelicDef(
+        id="FAKE_VENERABLE_TEA_SET", name="Fake Venerable Tea Set",
+        rarity="event", pool="event", merchant_cost=50,
+        # FakeVenerableTeaSet.cs: after resting, gain EnergyVar(1) at the next
+        # combat's energy reset. (Real Venerable Tea Set gives 2.) We reuse the
+        # arm-on-rest flag with amount 1.
+        after_room_entered=lambda rs, rt: _venerable_tea_arm_on_rest(rs, rt),
+        on_combat_start=lambda rs, cs: _venerable_tea_combat_start(rs, cs, amount=1),
+        category="energy",
+    ),
+    "FAKE_STRIKE_DUMMY": RelicDef(
+        id="FAKE_STRIKE_DUMMY", name="Fake Strike Dummy", rarity="event",
+        pool="event", merchant_cost=50,
+        # FakeStrikeDummy.cs: ModifyDamageAdditive +ExtraDamage(1) to powered
+        # Strike attacks. (Real Strike Dummy gives +3.) We add +1 to the target
+        # when a Strike ATTACK card is played.
+        on_card_played=lambda rs, cs, card: _fake_strike_dummy_bonus(rs, cs, card),
+        category="strength",
+    ),
+
+    # ---- Neow relics (Ancient, EventRelicPool / Neow event) -----------
+    "NEOWS_TALISMAN": RelicDef(
+        id="NEOWS_TALISMAN", name="Neow's Talisman", rarity="ancient",
+        pool="event",
+        # NeowsTalisman.cs: on pickup, upgrade the basic Strike and Defend cards.
+        # Handled in RunState.add_relic (deck mutation on pickup).
+        category="card_pick",
+    ),
+    "NEOWS_TORMENT": RelicDef(
+        id="NEOWS_TORMENT", name="Neow's Torment", rarity="ancient",
+        pool="event",
+        # NeowsTorment.cs: on pickup, add a NeowsFury curse card to the deck. The
+        # NeowsFury card is not in the sim card catalog.
+        # TODO(fidelity: NeowsFury curse card) — deck-add primitive exists but
+        # the specific curse card does not.
+        category="misc",
+    ),
+
+    # ---- Gold relics (Ancient / Event) --------------------------------
+    "GOLDEN_PEARL": RelicDef(
+        id="GOLDEN_PEARL", name="Golden Pearl", rarity="ancient", pool="event",
+        # GoldenPearl.cs: on pickup, GainGold GoldVar(150). Handled in
+        # RunState.add_relic.
+        category="gold",
+    ),
+    "MAW_BANK": RelicDef(
+        id="MAW_BANK", name="Maw Bank", rarity="event", pool="event",
+        # MawBank.cs: AfterRoomEntered (each NEW room) -> GainGold GoldVar(12),
+        # until you spend gold at a shop (then disabled). We grant +12 on every
+        # non-combat room entry until the maw_bank_spent flag is set.
+        after_room_entered=lambda rs, rt: (
+            rs.gain_gold(12)
+            if not getattr(rs, "maw_bank_spent", False) else None),
+        category="gold",
+    ),
+
+    # ---- Strength / pickup ancient & event relics ---------------------
+    "SWORD_OF_JADE": RelicDef(
+        id="SWORD_OF_JADE", name="Sword of Jade", rarity="event", pool="event",
+        # SwordOfJade.cs: AfterRoomEntered (Combat) -> apply Strength(3) (it
+        # fires once per combat at the start). We grant +3 Strength at combat
+        # start, the equivalent in-combat moment.
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "strength", 3),
+        category="strength",
+    ),
+    "EMBER_TEA": RelicDef(
+        id="EMBER_TEA", name="Ember Tea", rarity="event", pool="event",
+        # EmberTea.cs: for the first Combats(5) combats, gain Strength(2) at the
+        # start of combat, then the relic is used up. Counter tracks combats used
+        # (persists across the run; NOT resets_per_combat).
+        on_combat_start=lambda rs, cs: _ember_tea_combat_start(rs, cs),
+        category="strength",
+    ),
+    "BONE_TEA": RelicDef(
+        id="BONE_TEA", name="Bone Tea", rarity="event", pool="event",
+        # BoneTea.cs: on the first turn of the next Combats(1) combat, upgrade
+        # every card in hand, then the relic is used up.
+        # TODO(fidelity: in-combat hand upgrade once) — the sim's mid-combat
+        # hand-upgrade primitive (UPGRADE_ALL_IN_HAND) is card-driven only; no
+        # relic-triggered hand upgrade hook exists yet.
+        category="misc",
+    ),
+    "NUTRITIOUS_OYSTER": RelicDef(
+        id="NUTRITIOUS_OYSTER", name="Nutritious Oyster", rarity="ancient",
+        pool="event",
+        # NutritiousOyster.cs: on pickup, GainMaxHp MaxHpVar(11). Handled in
+        # RunState.add_relic.
+        category="max_hp",
     ),
 }
 
@@ -1776,6 +2081,24 @@ def trigger_on_potion_used(rs: RunState, combat, potion_id: str) -> None:
             rd.on_potion_used(rs, combat, potion_id)
 
 
+def trigger_on_card_added_to_deck(rs: RunState, card) -> None:
+    """Fired by RunState.add_card_to_deck whenever a card is added to the deck
+    (BookOfFiveRings heal-per-5, LuckyFysh gold-per-add)."""
+    for r in rs.relics:
+        rd = RELIC_REGISTRY.get(r.id)
+        if rd and rd.on_card_added:
+            rd.on_card_added(rs, card)
+
+
+def trigger_on_player_would_die(rs: RunState, combat) -> None:
+    """Fired by combat.monster_turn when the player drops to 0 HP. Death-
+    prevention relics (LizardTail) can revive the player here."""
+    for r in rs.relics:
+        rd = RELIC_REGISTRY.get(r.id)
+        if rd and rd.on_player_would_die:
+            rd.on_player_would_die(rs, combat)
+
+
 def reset_combat_counters(rs: RunState) -> None:
     """Reset RelicInstance.counter to 0 for every owned relic flagged
     resets_per_combat (Kunai/Shuriken/Nunchaku/PenNib/HappyFlower/…). Called
@@ -1876,6 +2199,13 @@ _EVENT_POOL_IDS: frozenset[str] = frozenset({
     "SEAL_OF_GOLD", "SOZU", "SPIKED_GAUNTLETS", "SWORD_OF_STONE", "THE_BOOT",
     "THROWING_AXE", "TWISTED_FUNNEL", "VELVET_CHOKER", "WAR_HAMMER",
     "WHISPERING_EARRING", "WINGED_BOOTS",
+    # Phase 8B.7 — EventRelicPool additions.
+    "SNECKO_EYE", "FAKE_SNECKO_EYE", "PAELS_BLOOD", "PAELS_HORN",
+    "BOOMING_CONCH", "FAKE_ANCHOR", "FAKE_BLOOD_VIAL", "FAKE_MANGO",
+    "FAKE_LEES_WAFFLE", "FAKE_ORICHALCUM", "FAKE_HAPPY_FLOWER",
+    "FAKE_VENERABLE_TEA_SET", "FAKE_STRIKE_DUMMY", "NEOWS_TALISMAN",
+    "NEOWS_TORMENT", "GOLDEN_PEARL", "MAW_BANK", "SWORD_OF_JADE",
+    "EMBER_TEA", "BONE_TEA", "NUTRITIOUS_OYSTER",
 })
 
 

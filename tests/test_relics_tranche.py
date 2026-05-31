@@ -239,12 +239,17 @@ def test_cauldron_grants_potions_on_pickup():
 
 # === Documented no-ops stay inert in combat ================================
 
+# Still-documented no-ops AFTER Phase 8B.7. The deck-add (BookOfFiveRings,
+# LuckyFysh), gold-multiplier (BowlerHat), before-play X-value (ChemicalX) and
+# death-prevention (LizardTail) relics were de-no-opped in 8B.7 and moved to
+# test_relics_event.py. The remainder still need reward-shaping / Enchantment /
+# in-combat card-upgrade / card-into-hand systems the sim lacks.
 NOOP_RELICS = [
-    "BOOK_OF_FIVE_RINGS", "RAZOR_TOOTH", "STONE_CRACKER", "LAVA_LAMP",
+    "RAZOR_TOOTH", "STONE_CRACKER", "LAVA_LAMP",
     "GHOST_SEED", "BURNING_STICKS", "DINGY_RUG", "DOLLYS_MIRROR", "FRESNEL_LENS",
     "GNARLED_HAMMER", "KIFUDA", "PUNCH_DAGGER", "ROYAL_STAMP", "WING_CHARM",
     "MYSTIC_LIGHTER", "LASTING_CANDY", "ORRERY", "MINIATURE_TENT", "TINY_MAILBOX",
-    "LUCKY_FYSH", "BOWLER_HAT", "CHEMICAL_X", "LIZARD_TAIL", "VEXING_PUZZLEBOX",
+    "VEXING_PUZZLEBOX",
 ]
 
 

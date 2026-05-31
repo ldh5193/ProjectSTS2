@@ -723,7 +723,7 @@ def _step_card_reward(rs: RunState, body: dict, res: StepResult) -> StepResult:
             res.invalid_action = True
             res.reason = "card_index out of range"
             return res
-        rs.deck.append(rs.pending_card_reward[idx])
+        rs.add_card_to_deck(rs.pending_card_reward[idx])
     elif action != "skip_card_reward":
         res.invalid_action = True
         res.reason = f"unsupported card reward action {action!r}"
@@ -934,7 +934,7 @@ def _step_shop(rs: RunState, body: dict, res: StepResult) -> StepResult:
                 res.invalid_action = True
                 res.reason = f"unknown shop card {item.get('card_id')!r}"
                 return res
-            rs.deck.append(upgrade_card(cdef) if item.get("upgraded") else cdef)
+            rs.add_card_to_deck(upgrade_card(cdef) if item.get("upgraded") else cdef)
         elif category == "relic":
             rs.add_relic(item.get("relic_id"))
         elif category == "potion":
@@ -949,6 +949,10 @@ def _step_shop(rs: RunState, body: dict, res: StepResult) -> StepResult:
             res.reason = f"unbuyable shop category {category!r}"
             return res
         rs.gain_gold(-price)
+        # MawBank.cs: once the owner spends gold at a shop, Maw Bank is used up
+        # (stops granting +12 gold per room).
+        if price > 0:
+            rs.maw_bank_spent = True
         item["is_stocked"] = False
         item["can_afford"] = False
         _recompute_shop_affordability(rs)

@@ -80,12 +80,20 @@ def test_maw_bank_grants_gold_non_shop():
     assert rs.gold == pre_gold + 12
 
 
-def test_maw_bank_no_gold_in_shop():
+def test_maw_bank_stops_after_gold_spent():
+    # MawBank.cs grants +12 on each room entered (BaseRoom == room) until the
+    # owner spends gold at a shop (AfterItemPurchased -> HasItemBeenBought),
+    # which disables it. There is NO room-type filter in the decompile.
     rs = _new_rs()
     rs.add_relic("MAW_BANK")
     pre_gold = rs.gold
     trigger_after_room_entered(rs, StateType.SHOP)
-    assert rs.gold == pre_gold  # no gain in shop
+    assert rs.gold == pre_gold + 12  # faithful: gains on shop entry too
+    # Once gold is spent at a shop, the relic is used up.
+    rs.maw_bank_spent = True
+    pre_gold2 = rs.gold
+    trigger_after_room_entered(rs, StateType.MONSTER)
+    assert rs.gold == pre_gold2  # no further gains
 
 
 def test_lead_paperweight_grants_gold_non_shop():

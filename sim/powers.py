@@ -69,6 +69,11 @@ class Power:
     def on_card_played(self, cs, owner, card) -> None:
         """A card belonging to `owner` finished resolving (Juggling clone)."""
 
+    def on_card_drawn(self, cs, owner, card) -> None:
+        """A card belonging to `owner` was just drawn into hand. Used by
+        Confused (SneckoEye): randomize the drawn card's cost to 0-3 for the
+        rest of combat (ConfusedPower.AfterCardDrawn)."""
+
     def on_vulnerable_applied(self, cs, owner) -> None:
         """`owner` applied Vulnerable to an enemy (Vicious draw)."""
 
@@ -1351,7 +1356,37 @@ class IllusionPower(Power):
     _owner: object = None
 
 
+@dataclass
+class ConfusedPower(Power):
+    """ConfusedPower.cs (SneckoEye / FakeSneckoEye): each card the owner draws
+    with a non-negative canonical cost has its energy cost randomized to 0-3
+    for the rest of combat (AfterCardDrawn -> EnergyCost.SetThisCombat(
+    Rng.CombatEnergyCosts.NextInt(4))). X-cost cards (canonical cost < 0) are
+    left alone. We record the override in cs.cost_overrides keyed by card
+    identity. test_energy_cost_override mirrors the decompile's TestMode hook so
+    tests can pin the rolled value deterministically. StackType is Single (one
+    copy)."""
+    id: str = field(default="confused", init=False)
+    _owner: object = None
+    test_energy_cost_override: int = -1
+
+    def on_card_drawn(self, cs, owner, card) -> None:
+        if cs is None or owner is not self._owner:
+            return
+        from .dsl import X_COST
+        # Only non-negative canonical costs are randomized (X-cost / unplayable
+        # status cards with cost < 0 are skipped, per the decompile guard).
+        if card.cost < 0 or card.cost == X_COST:
+            return
+        if self.test_energy_cost_override >= 0:
+            cost = self.test_energy_cost_override
+        else:
+            cost = cs.rng.randrange(4)  # NextInt(4) -> 0..3
+        cs.cost_overrides[id(card)] = cost
+
+
 POWER_REGISTRY: dict[str, type[Power]] = {
+    "confused": ConfusedPower,
     "no_draw": NoDrawPower,
     "strength": StrengthPower,
     "vulnerable": VulnerablePower,
