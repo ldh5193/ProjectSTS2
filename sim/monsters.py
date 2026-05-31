@@ -2621,9 +2621,307 @@ class Fabricator(_TableMonster):
     }
 
 
+# --- Underdocks (Act-1 variant) normals/weaks/elites ----------------------
+# HP convention: HP_MIN/MAX are the A0 InitialHp range; *_A8 are the
+# ToughEnemies (A8) range. Damage tuples are (base, DeadlyEnemies A9). Values
+# read verbatim from the decompiled MonsterModel classes.
+
+class CorpseSlug(_TableMonster):
+    # CorpseSlug.cs: HP 25-27 (A8 27-29). WhipSlap(3 x2) -> Glomp(8/9) ->
+    # Goop(Frail 2) self-loop. Ravenous (gain Str) at spawn is cosmetic here;
+    # the encounter spawns 3 (CorpseSlugsNormal) / 2 (CorpseSlugsWeak).
+    MNAME = "Corpse Slug"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 25, 27, 27, 29
+    START = "WHIP_SLAP"
+    MOVES = {
+        "WHIP_SLAP": _Move("WHIP_SLAP", dmg=(3, 3), hits=2, next="GLOMP"),
+        "GLOMP": _Move("GLOMP", dmg=(8, 9), next="GOOP"),
+        "GOOP": _Move("GOOP", debuffs=(("frail", 2),), next="WHIP_SLAP"),
+    }
+
+
+class Seapunk(_TableMonster):
+    # Seapunk.cs: HP 44-46 (A8 47-49). SeaKick(11/13) -> SpinningKick(2 x4)
+    # -> BubbleBurp(block 7/8 + Str 1/2) loop. Starts at SeaKick.
+    MNAME = "Seapunk"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 44, 46, 47, 49
+    START = "SEA_KICK"
+    MOVES = {
+        "SEA_KICK": _Move("SEA_KICK", dmg=(11, 13), next="SPINNING_KICK"),
+        "SPINNING_KICK": _Move("SPINNING_KICK", dmg=(2, 2), hits=4,
+                               next="BUBBLE_BURP"),
+        "BUBBLE_BURP": _Move("BUBBLE_BURP", block=(7, 8), self_strength=(1, 2),
+                             next="SEA_KICK"),
+    }
+
+
+class CalcifiedCultist(_TableMonster):
+    # CalcifiedCultist.cs: HP 38-41 (A8 39-42). Incantation (Ritual 2; sim:
+    # +2 Str proxy) -> DarkStrike(9/11) self-loop. Starts at Incantation.
+    MNAME = "Calcified Cultist"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 38, 41, 39, 42
+    START = "INCANTATION"
+    MOVES = {
+        "INCANTATION": _Move("INCANTATION", self_strength=(2, 2),
+                             next="DARK_STRIKE"),
+        "DARK_STRIKE": _Move("DARK_STRIKE", dmg=(9, 11), next="DARK_STRIKE"),
+    }
+
+
+class DampCultist(_TableMonster):
+    # DampCultist.cs: HP 51-53 (A8 52-54). Incantation (Ritual 5/6; sim: +5/6
+    # Str proxy) -> DarkStrike(1/3) self-loop. Starts at Incantation.
+    MNAME = "Damp Cultist"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 51, 53, 52, 54
+    START = "INCANTATION"
+    MOVES = {
+        "INCANTATION": _Move("INCANTATION", self_strength=(5, 6),
+                             next="DARK_STRIKE"),
+        "DARK_STRIKE": _Move("DARK_STRIKE", dmg=(1, 3), next="DARK_STRIKE"),
+    }
+
+
+class FossilStalker(_TableMonster):
+    # FossilStalker.cs: HP 51-53 (A8 54-56). Gains Suck 3 at spawn (cosmetic
+    # leech, omitted). Random branch among Tackle(9/11 + Frail debuff),
+    # Latch(12/14), Lash(3/4 x2) at equal weight, CannotRepeat. Starts Latch.
+    MNAME = "Fossil Stalker"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 51, 53, 54, 56
+    START = "LATCH"
+    MOVES = {
+        "TACKLE": _Move("TACKLE", dmg=(9, 11), debuffs=(("frail", 1),)),
+        "LATCH": _Move("LATCH", dmg=(12, 14)),
+        "LASH": _Move("LASH", dmg=(3, 4), hits=2),
+    }
+    RAND = {
+        "*": [("TACKLE", 2, True), ("LATCH", 2, True), ("LASH", 2, True)],
+    }
+
+
+class SewerClam(_TableMonster):
+    # SewerClam.cs: HP 56 (A8 58). Gains Plating 8 (A8 9) ONCE at spawn
+    # (AfterAddedToRoom) — recurring +block each turn-end. Pressurize(+4 Str)
+    # -> Jet(10/11) loop. Starts at Jet.
+    MNAME = "Sewer Clam"
+    HP, HP_A8 = 56, 58
+    START = "JET"
+    MOVES = {
+        "PRESSURIZE": _Move("PRESSURIZE", self_strength=(4, 4), next="JET"),
+        "JET": _Move("JET", dmg=(10, 11), next="PRESSURIZE"),
+    }
+
+    @classmethod
+    def spawn(cls, rng, ascension: int = 0):
+        m = super().spawn(rng, ascension=ascension)
+        m.add_or_stack_power(make_power("plating", _a8(ascension, 8, 9), m))
+        return m
+
+
+class Toadpole(_TableMonster):
+    # Toadpole.cs: HP 21-25 (A8 22-26). Front toadpole starts at Spiken
+    # (Thorns 2), back at Whirl. SpikeSpit(3/4 x3) / Whirl(7/8) / Spiken loop.
+    # ToadpolesWeak spawns 2 (front + back).
+    MNAME = "Toadpole"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 21, 25, 22, 26
+    START = "WHIRL"  # overridden per-spawn for the front toadpole
+    MOVES = {
+        "SPIKE_SPIT": _Move("SPIKE_SPIT", dmg=(3, 4), hits=3, next="WHIRL"),
+        "WHIRL": _Move("WHIRL", dmg=(7, 8), next="SPIKEN"),
+        "SPIKEN": _Move("SPIKEN", self_thorns=2, next="SPIKE_SPIT"),
+    }
+
+
+class TwoTailedRat(_TableMonster):
+    # TwoTailedRat.cs: HP 17-21 (A8 18-22). Scratch(8/9) / DiseaseBite(6/7) /
+    # Screech(Frail 1) / CallForBackup(summon, omitted). Three spawn with
+    # staggered starter moves; we deterministically cycle Scratch->Bite->
+    # Screech (the damage-relevant moves) for stability.
+    MNAME = "Two-Tailed Rat"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 17, 21, 18, 22
+    START = "SCRATCH"
+    MOVES = {
+        "SCRATCH": _Move("SCRATCH", dmg=(8, 9), next="DISEASE_BITE"),
+        "DISEASE_BITE": _Move("DISEASE_BITE", dmg=(6, 7), next="SCREECH"),
+        "SCREECH": _Move("SCREECH", debuffs=(("frail", 1),), next="SCRATCH"),
+    }
+
+
+class GremlinMerc(_TableMonster):
+    # GremlinMerc.cs (GremlinMercNormal solo): HP 47-49 (A8 51-53).
+    # Gimme(7/8 x2) -> DoubleSmash(6/7 x2 + Weak 2) -> Hehe(8/9 + Str 2) loop.
+    MNAME = "Gremlin Merc"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 47, 49, 51, 53
+    START = "GIMME"
+    MOVES = {
+        "GIMME": _Move("GIMME", dmg=(7, 8), hits=2, next="DOUBLE_SMASH"),
+        "DOUBLE_SMASH": _Move("DOUBLE_SMASH", dmg=(6, 7), hits=2,
+                              debuffs=(("weak", 2),), next="HEHE"),
+        "HEHE": _Move("HEHE", dmg=(8, 9), self_strength=(2, 2), next="GIMME"),
+    }
+
+
+class HauntedShip(_TableMonster):
+    # HauntedShip.cs: HP 63 (A8 67). RammingSpeed(10/11 + Weak 1) / Swipe(13/14)
+    # / Stomp(4/5 x?) random each odd round; Haunt(Dazed status) start. Modeled
+    # as RammingSpeed -> Swipe -> Stomp loop (damage-relevant). Stomp single hit.
+    MNAME = "Haunted Ship"
+    HP, HP_A8 = 63, 67
+    START = "RAMMING_SPEED"
+    MOVES = {
+        "RAMMING_SPEED": _Move("RAMMING_SPEED", dmg=(10, 11),
+                               debuffs=(("weak", 1),), next="SWIPE"),
+        "SWIPE": _Move("SWIPE", dmg=(13, 14), next="STOMP"),
+        "STOMP": _Move("STOMP", dmg=(4, 5), next="RAMMING_SPEED"),
+    }
+
+
+class LivingFog(_TableMonster):
+    # LivingFog.cs: HP 80 (A8 82). AdvancedGas(8/9 + Smoggy status) ->
+    # Bloat(5/6 + summon) -> SuperGasBlast(8/9) -> Bloat loop. Starts AdvancedGas.
+    MNAME = "Living Fog"
+    HP, HP_A8 = 80, 82
+    START = "ADVANCED_GAS"
+    MOVES = {
+        "ADVANCED_GAS": _Move("ADVANCED_GAS", dmg=(8, 9), next="BLOAT"),
+        "BLOAT": _Move("BLOAT", dmg=(5, 6), next="SUPER_GAS_BLAST"),
+        "SUPER_GAS_BLAST": _Move("SUPER_GAS_BLAST", dmg=(8, 9), next="BLOAT"),
+    }
+
+
+class PhantasmalGardener(_TableMonster):
+    # PhantasmalGardener.cs (PhantasmalGardenersElite, 4 spawn): HP 26-31
+    # (A8 27-32). Gains Skittish 6/7 at spawn (cosmetic). Bite(5) / Lash(7) /
+    # Flail(1 x3) / Enlarge(+2/3 Str) cycle, starting move keyed by slot.
+    MNAME = "Phantasmal Gardener"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 26, 31, 27, 32
+    START = "FLAIL"  # overridden per-slot at spawn
+    MOVES = {
+        "BITE": _Move("BITE", dmg=(5, 5), next="LASH"),
+        "LASH": _Move("LASH", dmg=(7, 7), next="FLAIL"),
+        "FLAIL": _Move("FLAIL", dmg=(1, 1), hits=3, next="ENLARGE"),
+        "ENLARGE": _Move("ENLARGE", self_strength=(2, 3), next="BITE"),
+    }
+
+
+class SkulkingColony(_TableMonster):
+    # SkulkingColony.cs (SkulkingColonyElite solo): HP 70 (A8 75). Gains
+    # HardenedShell 15 at spawn (a decaying damage-reduction power, not
+    # modeled in the sim — omitted, like other unmodeled spawn buffs).
+    # Smash(12/13) -> Zoom(14/16 + block 10/13) -> Inertia(9/11 + Str 2/3) ->
+    # PiercingStabs(7/8 x2) loop. Starts at Smash.
+    MNAME = "Skulking Colony"
+    HP, HP_A8 = 70, 75
+    START = "SMASH"
+    MOVES = {
+        "SMASH": _Move("SMASH", dmg=(12, 13), next="ZOOM"),
+        "ZOOM": _Move("ZOOM", dmg=(14, 16), block=(10, 13), next="INERTIA"),
+        "INERTIA": _Move("INERTIA", dmg=(9, 11), self_strength=(2, 3),
+                         next="PIERCING_STABS"),
+        "PIERCING_STABS": _Move("PIERCING_STABS", dmg=(7, 8), hits=2,
+                                next="SMASH"),
+    }
+
+
+class TerrorEel(_TableMonster):
+    # TerrorEel.cs (TerrorEelElite solo): HP 140 (A8 150). Crash(16/18) <->
+    # Thrash(3/4 x? + Vigor 6 buff) loop. Stun/Terror (Vulnerable 99) branch is
+    # situational; modeled as the Crash<->Thrash core. Thrash single hit.
+    MNAME = "Terror Eel"
+    HP, HP_A8 = 140, 150
+    START = "CRASH"
+    MOVES = {
+        "CRASH": _Move("CRASH", dmg=(16, 18), next="THRASH"),
+        "THRASH": _Move("THRASH", dmg=(3, 4), next="CRASH"),
+    }
+
+
 # ===========================================================================
 # MULTI-MONSTER GROUP FACTORIES
 # ===========================================================================
+
+def spawn_corpse_slugs_normal(rng, ascension: int = 0) -> list[Monster]:
+    """CorpseSlugsNormal: 3 Corpse Slugs (staggered starter moves)."""
+    return _spawn_corpse_slugs(rng, ascension, 3)
+
+
+def spawn_corpse_slugs_weak(rng, ascension: int = 0) -> list[Monster]:
+    """CorpseSlugsWeak: 2 Corpse Slugs."""
+    return _spawn_corpse_slugs(rng, ascension, 2)
+
+
+def _spawn_corpse_slugs(rng, ascension: int, count: int) -> list[Monster]:
+    # EnsureCorpseSlugsStartWithDifferentMoves: stagger the starting move
+    # across WhipSlap/Glomp/Goop by consuming one Rng pick (NextInt(3)).
+    starts = ["WHIP_SLAP", "GLOMP", "GOOP"]
+    base = rng.next_int(0, 3)
+    out: list[Monster] = []
+    for i in range(count):
+        m = CorpseSlug.spawn(rng, ascension=ascension)
+        m.next_move = starts[(base + i) % 3]
+        m.name = f"Corpse Slug ({i + 1})"
+        out.append(m)
+    return out
+
+
+def spawn_cultists_normal(rng, ascension: int = 0) -> list[Monster]:
+    """CultistsNormal: 1 Calcified + 1 Damp cultist. CultistsNormal.cs."""
+    return [
+        CalcifiedCultist.spawn(rng, ascension=ascension),
+        DampCultist.spawn(rng, ascension=ascension),
+    ]
+
+
+def spawn_seapunk_normal(rng, ascension: int = 0) -> list[Monster]:
+    """SeapunkNormal: 1 Calcified Cultist + 1 Seapunk. SeapunkNormal.cs."""
+    return [
+        CalcifiedCultist.spawn(rng, ascension=ascension),
+        Seapunk.spawn(rng, ascension=ascension),
+    ]
+
+
+def spawn_toadpoles_weak(rng, ascension: int = 0) -> list[Monster]:
+    """ToadpolesWeak: 2 Toadpoles (front starts at Spiken, back at Whirl)."""
+    front = Toadpole.spawn(rng, ascension=ascension)
+    front.next_move = "SPIKEN"
+    front.name = "Toadpole (front)"
+    back = Toadpole.spawn(rng, ascension=ascension)
+    back.next_move = "WHIRL"
+    back.name = "Toadpole (back)"
+    return [front, back]
+
+
+def spawn_two_tailed_rats_normal(rng, ascension: int = 0) -> list[Monster]:
+    """TwoTailedRatsNormal: 3 rats with staggered starter moves (Scratch/
+    DiseaseBite/Screech). TwoTailedRatsNormal.cs (StarterMoveIndex stagger)."""
+    starts = ["SCRATCH", "DISEASE_BITE", "SCREECH"]
+    base = rng.next_int(0, 3)
+    out: list[Monster] = []
+    for i in range(3):
+        m = TwoTailedRat.spawn(rng, ascension=ascension)
+        m.next_move = starts[(base + i) % 3]
+        m.name = f"Two-Tailed Rat ({i + 1})"
+        out.append(m)
+    return out
+
+
+def spawn_living_fog_normal(rng, ascension: int = 0) -> list[Monster]:
+    """LivingFogNormal: solo Living Fog (GasBomb minions summoned mid-combat
+    are not modeled). LivingFogNormal.cs."""
+    return [LivingFog.spawn(rng, ascension=ascension)]
+
+
+def spawn_phantasmal_gardeners_elite(rng, ascension: int = 0) -> list[Monster]:
+    """PhantasmalGardenersElite: 4 Gardeners with slot-keyed starting moves
+    (first=Flail, second=Bite, third=Lash, fourth=Enlarge)."""
+    slot_starts = ["FLAIL", "BITE", "LASH", "ENLARGE"]
+    out: list[Monster] = []
+    for i in range(4):
+        m = PhantasmalGardener.spawn(rng, ascension=ascension)
+        m.next_move = slot_starts[i]
+        m.name = f"Phantasmal Gardener ({i + 1})"
+        out.append(m)
+    return out
+
 
 def spawn_slimes_normal(rng, ascension: int = 0) -> list[Monster]:
     """SlimesNormal: TwigSlimeM + LeafSlimeM + 2 small slimes (one Leaf, one

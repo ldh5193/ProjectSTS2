@@ -22,9 +22,12 @@ from .monsters import (
     Fabricator,
     Entomancer,
     Flyconid,
+    FossilStalker,
     FrogKnight,
     FuzzyWurmCrawler,
     GlobeHead,
+    GremlinMerc,
+    HauntedShip,
     HunterKiller,
     InfestedPrism,
     LagavulinMatriarch,
@@ -38,13 +41,17 @@ from .monsters import (
     OwlMagistrate,
     PunchConstruct,
     Queen,
+    Seapunk,
+    SewerClam,
     ShrinkerBeetle,
+    SkulkingColony,
     SlimedBerserker,
     SludgeSpinnerWeak,
     SlumberingBeetle,
     SoulFysh,
     SoulNexus,
     SpinyToad,
+    TerrorEel,
     TestSubject,
     TheInsatiable,
     TheObscura,
@@ -58,22 +65,30 @@ from .monsters import (
     spawn_bowlbugs_weak,
     spawn_chompers_normal,
     spawn_construct_menagerie_normal,
+    spawn_corpse_slugs_normal,
+    spawn_corpse_slugs_weak,
+    spawn_cultists_normal,
     spawn_decimillipede_elite,
     spawn_exoskeletons_normal,
     spawn_exoskeletons_weak,
     spawn_flyconid_normal,
     spawn_inklets_normal,
     spawn_knights_elite,
+    spawn_living_fog_normal,
     spawn_lost_and_forgotten_normal,
     spawn_nibbits_normal,
+    spawn_phantasmal_gardeners_elite,
     spawn_ruby_raiders_normal,
     spawn_scrolls_normal,
     spawn_scrolls_weak,
+    spawn_seapunk_normal,
     spawn_slimes_normal,
     spawn_slimes_weak,
     spawn_slithering_strangler_normal,
     spawn_snapping_jaxfruit_normal,
+    spawn_toadpoles_weak,
     spawn_tunneler_normal,
+    spawn_two_tailed_rats_normal,
 )
 from .rng import Rng
 
@@ -329,6 +344,16 @@ _FACTORY_BY_ID = {
     # Overgrowth elites (solo).
     "BygoneEffigyElite": BygoneEffigy.spawn,
     "ByrdonisElite": Byrdonis.spawn,
+    # --- Underdocks (Act-1 variant) solo encounters -----------------------
+    "FossilStalkerNormal": FossilStalker.spawn,
+    "SewerClamNormal": SewerClam.spawn,
+    "HauntedShipNormal": HauntedShip.spawn,
+    "GremlinMercNormal": GremlinMerc.spawn,   # solo merc (3-gremlin scene unmodeled)
+    "PunchConstructNormal": PunchConstruct.spawn,
+    "SeapunkWeak": Seapunk.spawn,             # solo Seapunk
+    # Underdocks elites.
+    "SkulkingColonyElite": SkulkingColony.spawn,
+    "TerrorEelElite": TerrorEel.spawn,
 }
 
 # Multi-monster encounters return a list[Monster]. Used by Cycle F's
@@ -360,6 +385,15 @@ _MULTI_FACTORY_BY_ID = {
     "KnightsElite": spawn_knights_elite,
     "ScrollsOfBitingNormal": spawn_scrolls_normal,
     "ScrollsOfBitingWeak": spawn_scrolls_weak,
+    # --- Underdocks (Act-1 variant) groups --------------------------------
+    "CorpseSlugsNormal": spawn_corpse_slugs_normal,
+    "CorpseSlugsWeak": spawn_corpse_slugs_weak,
+    "CultistsNormal": spawn_cultists_normal,
+    "SeapunkNormal": spawn_seapunk_normal,
+    "ToadpolesWeak": spawn_toadpoles_weak,
+    "TwoTailedRatsNormal": spawn_two_tailed_rats_normal,
+    "LivingFogNormal": spawn_living_fog_normal,
+    "PhantasmalGardenersElite": spawn_phantasmal_gardeners_elite,
 }
 
 

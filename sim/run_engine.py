@@ -57,7 +57,38 @@ class StepResult:
     reason: str = ""
 
 
-_ACT_ORDER = ("overgrowth", "hive", "glory")  # Single-path run (Underdocks variant ignored).
+# Default 3-act sequence (ActModel.GetDefaultList): Overgrowth -> Hive -> Glory.
+# Act 1 is replaced by Underdocks on a per-run coin flip (see _act_order).
+_ACT_ORDER = ("overgrowth", "hive", "glory")
+
+
+def _act_order(rs: RunState) -> tuple[str, ...]:
+    """Per-run act sequence, deterministic from rs.run_seed.
+
+    Mirrors ActModel.GetRandomList (ActModel.cs:414-424): the default list
+    is [Overgrowth, Hive, Glory]; once the Underdocks epoch is revealed,
+    list[0] becomes Underdocks if first-discovery OR rng.NextBool(). We
+    model a normal *endgame* run where Underdocks is unlocked and already
+    discovered, so the swap is a pure coin flip on a dedicated run-seed
+    stream. Acts 2-3 (Hive, Glory) are unchanged.
+
+    The choice is cached on the RunState so every consumer (act index,
+    map/encounter generation, boss-floor logic) sees a single stable
+    sequence for the whole run.
+    """
+    cached = getattr(rs, "_act_order_cache", None)
+    if cached is not None:
+        return cached
+    from .rng import Rng
+    # Dedicated stream so the coin flip never perturbs map/encounter RNG and
+    # stays reproducible for eval seeds.
+    act_rng = Rng(rs.run_seed, "act_selection")
+    order = list(_ACT_ORDER)
+    if act_rng.next_bool():  # GetRandomList: list[0] = Underdocks on heads.
+        order[0] = "underdocks"
+    order_t = tuple(order)
+    setattr(rs, "_act_order_cache", order_t)
+    return order_t
 
 
 def start_run(rs: RunState) -> None:
@@ -67,7 +98,7 @@ def start_run(rs: RunState) -> None:
     """
     if rs.state_type is not StateType.MENU:
         return
-    _generate_act(rs, _ACT_ORDER[0])
+    _generate_act(rs, _act_order(rs)[0])
     rs.state_type = StateType.MAP
     rs.floor = 0
     rs.current_node = (0, 0)
@@ -78,7 +109,7 @@ def _generate_act(rs: RunState, act_key: str) -> None:
     RunState. RunState exposes rs.maps[act-1] for the env's observation."""
     map_rng = _act_rng(rs, act_key)
     encounter_rng = _encounter_rng(rs)
-    is_final_act = (act_key == _ACT_ORDER[-1])
+    is_final_act = (act_key == _act_order(rs)[-1])
     pools = generate_pools(act_key, encounter_rng,
                            ascension=int(rs.ascension),
                            is_final_act=is_final_act)
@@ -120,7 +151,10 @@ def _shop_rng(rs: RunState):
 
 
 def _act_index(act_key: str) -> int:
-    return _ACT_ORDER.index(act_key) + 1
+    # Overgrowth and Underdocks are both Act 1; Hive=2, Glory=3. This holds
+    # regardless of which Act-1 variant the run rolled, so a static map is
+    # both correct and independent of the per-run order.
+    return {"overgrowth": 1, "underdocks": 1, "hive": 2, "glory": 3}[act_key]
 
 
 def reachable_map_nodes(rs: RunState) -> list[MapNode]:
@@ -639,7 +673,7 @@ def _step_combat(rs: RunState, body: dict, res: StepResult) -> StepResult:
             res.boss_killed = True
             # On final-act boss with no second-boss queued, the run is won.
             pools = getattr(rs, "_pools", None)
-            is_final = (rs.act == len(_ACT_ORDER))
+            is_final = (rs.act == len(_act_order(rs)))
             second_done = pools is None or pools.boss_visited >= 2 or pools.second_boss is None
             if is_final and second_done:
                 rs.is_victorious = True
@@ -689,9 +723,10 @@ def _step_card_reward(rs: RunState, body: dict, res: StepResult) -> StepResult:
     # Advance to next act if we just killed the act boss.
     rmap = rs.maps[rs.act - 1]
     if rmap and rs.current_node == (rmap.boss_floor, 3):
+        order = _act_order(rs)
         next_act_idx = rs.act  # 1-based; rs.act+1 means next
-        if next_act_idx < len(_ACT_ORDER):
-            _generate_act(rs, _ACT_ORDER[next_act_idx])  # next act
+        if next_act_idx < len(order):
+            _generate_act(rs, order[next_act_idx])  # next act
             rs.floor = 0
             rs.current_node = (0, 0)
             res.act_completed = True
