@@ -516,6 +516,12 @@ def _start_combat(rs: RunState, encounter_id: str) -> None:
     cs.draw_pile = [c for c in rs.deck if c.cost >= 0]  # exclude unplayable placeholder curses
     import random as _r
     _r.Random(rs.run_seed).shuffle(cs.draw_pile)
+    # Reset per-combat enchant state (Swift/Sown re-enabled, Momentum ExtraDamage
+    # cleared, Glam un-used). EnchantmentStatus returns to Normal at combat start.
+    for c in cs.draw_pile:
+        ench = getattr(c, "enchantment", None)
+        if ench is not None:
+            ench.reset_for_combat()
     cs.hand = []
     cs.discard_pile = []
     cs.run_state = rs  # enable per-attack/per-card/turn-end relic hooks
@@ -866,13 +872,15 @@ def _step_rest(rs: RunState, body: dict, res: StepResult) -> StepResult:
                     break
             rs.add_relic("BYRDPIP")
         elif option == "clone":
-            # CloneRestSiteOption: duplicate every Clone-enchanted card in the
-            # deck (Pael's Growth). The sim has no per-card enchantment layer
-            # (see sim/events.py enchantment note), so there is no set of
-            # Clone-enchanted cards to duplicate — the effect is a faithful
-            # no-op until enchantments are modeled. The option is still exposed
-            # when Pael's Growth is owned so the action surface matches.
-            pass
+            # CloneRestSiteOption (Pael's Growth): duplicate every Clone-enchanted
+            # card in the deck (RunState.CloneCard each, add to Deck). The clone
+            # carries its own enchant-state copy so the two stay independent.
+            from .enchantments import clone_card_instance
+            clones = [clone_card_instance(c) for c in rs.deck
+                      if getattr(c, "enchantment", None) is not None
+                      and c.enchantment.id == "clone"]
+            for c in clones:
+                rs.add_card_to_deck(c)
         rs.pending_rest_options = None
         rs.state_type = StateType.MAP
         return res

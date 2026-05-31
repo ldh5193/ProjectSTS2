@@ -104,3 +104,15 @@ class CardDef:
     # Card keyword flags ported from the decompile's CanonicalKeywords.
     exhaust: bool = False  # card goes to exhaust pile after play (Exhaust keyword)
     is_status: bool = False  # generated status/curse card (Burn, Wound, Shiv, ...)
+    # Per-instance card-enchantment layer (sim/enchantments.py). A card carries
+    # AT MOST ONE Enchantment (decompiled CardModel.Enchantment is a single slot;
+    # EnchantmentModel.CanEnchant rejects a 2nd non-stackable enchant). The field
+    # holds a MUTABLE Enchantment object (CardDef itself stays frozen / shared by
+    # identity); enchanting a card produces a fresh CardDef copy via
+    # enchantments.enchant_card so deck/draw/hand instances diverge correctly.
+    # None for the vast majority of cards. `eq=False`/`compare=False` keep frozen
+    # CardDefs hashable & equality-by-value-ignoring-enchant for existing lookups.
+    enchantment: object = field(default=None, compare=False)
+    # Per-instance card-AFFLICTION layer (Hex/Hunger/Tangled status powers attach
+    # an Affliction). Same single-slot model (CardModel.Affliction); mutable.
+    affliction: object = field(default=None, compare=False)

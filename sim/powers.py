@@ -115,6 +115,23 @@ class Power:
         (Corruption: skills cost 0)."""
         return None
 
+    # ---- power-application hooks (Phase 8B.11 card-affliction powers) ----
+    # Fired by the engine when a power is applied to / removed from the player
+    # while a CombatState is attached. Card-affliction powers (Hex/Hunger/
+    # Dampen/Tangled) use these to mutate the owner's cards (AfterApplied /
+    # AfterRemoved) and to afflict newly-drawn cards (AfterCardEnteredCombat).
+    def on_applied(self, cs, owner) -> None:
+        """This power was just applied to `owner` (AfterApplied)."""
+
+    def on_removed(self, cs, owner) -> None:
+        """This power was just removed from `owner` (AfterRemoved)."""
+
+    def on_card_entered_combat(self, cs, owner, card):
+        """A card entered the owner's combat (drawn/generated). May return a
+        replacement card (with an affliction attached) to swap into the pile,
+        or None to leave it unchanged (AfterCardEnteredCombat)."""
+        return None
+
     def modify_hand_draw(self, owner, count: int) -> int:
         """Modify the number of cards the owner draws at hand-draw
         (ModifyHandDraw). Default: no change. Used by Demesne/Tyranny (+amount),
@@ -1873,6 +1890,113 @@ POWER_REGISTRY: dict[str, type[Power]] = {
     "piercing_wail": PiercingWailPower,
     "feeding_frenzy": FeedingFrenzyPower,
 }
+
+
+# ===========================================================================
+# Phase 8B.11 — card-affliction status powers (Hex / Hunger / Dampen / Tangled).
+# Each rides the per-card affliction layer (sim/enchantments.py). Verified vs:
+#   decompiled/MegaCrit.Sts2.Core.Models.Powers/HexPower.cs
+#   decompiled/MegaCrit.Sts2.Core.Models.Powers/HungerPower.cs
+#   decompiled/MegaCrit.Sts2.Core.Models.Powers/DampenPower.cs
+#   decompiled/MegaCrit.Sts2.Core.Models.Powers/TangledPower.cs
+# These are MONSTER-applied debuffs. The engine fires on_applied/on_removed/
+# on_card_entered_combat when a CombatState is attached (cs.apply_power_to_player).
+# ===========================================================================
+@dataclass
+class HexPower(Power):
+    """HexPower.cs: on apply, afflict EVERY card with Hexed + Ethereal. New
+    cards entering combat are afflicted too. On removal, clear Hexed (and the
+    Ethereal it added)."""
+    id: str = "hex"
+
+    def on_applied(self, cs, owner) -> None:
+        from .enchantments import apply_hex_to_cards
+        apply_hex_to_cards(cs, self.amount)
+
+    def on_removed(self, cs, owner) -> None:
+        from .enchantments import remove_hex_from_cards
+        remove_hex_from_cards(cs)
+
+    def on_card_entered_combat(self, cs, owner, card):
+        from .enchantments import HEXED, Affliction, card_keywords, KW_ETHEREAL
+        from dataclasses import replace as _replace
+        if getattr(card, "affliction", None) is not None:
+            return None
+        already = KW_ETHEREAL in card_keywords(card)
+        return _replace(card, affliction=Affliction(
+            id=HEXED, amount=self.amount, applied_keyword=not already))
+
+
+@dataclass
+class HungerPower(Power):
+    """HungerPower.cs: afflict every Attack/Skill with Devoured + Exhaust."""
+    id: str = "hunger"
+
+    def on_applied(self, cs, owner) -> None:
+        from .enchantments import apply_hunger_to_cards
+        apply_hunger_to_cards(cs, self.amount)
+
+    def on_removed(self, cs, owner) -> None:
+        from .enchantments import remove_hunger_from_cards
+        remove_hunger_from_cards(cs)
+
+    def on_card_entered_combat(self, cs, owner, card):
+        from .dsl import CardType
+        from .enchantments import DEVOURED, Affliction, card_keywords, KW_EXHAUST
+        from dataclasses import replace as _replace
+        if (card.type not in (CardType.ATTACK, CardType.SKILL)
+                or getattr(card, "affliction", None) is not None):
+            return None
+        already = KW_EXHAUST in card_keywords(card)
+        return _replace(card, affliction=Affliction(
+            id=DEVOURED, amount=self.amount, applied_keyword=not already))
+
+
+@dataclass
+class TangledPower(Power):
+    """TangledPower.cs: afflict every Attack with Entangled (+amount energy cost
+    this turn); removed at the owner's turn end (cleared via duration tick)."""
+    id: str = "tangled"
+
+    def on_applied(self, cs, owner) -> None:
+        from .enchantments import apply_tangled_to_cards
+        apply_tangled_to_cards(cs, self.amount)
+
+    def on_removed(self, cs, owner) -> None:
+        from .enchantments import remove_tangled_from_cards
+        remove_tangled_from_cards(cs)
+
+    def on_card_entered_combat(self, cs, owner, card):
+        from .dsl import CardType
+        from .enchantments import ENTANGLED, Affliction
+        from dataclasses import replace as _replace
+        if (card.type is not CardType.ATTACK
+                or getattr(card, "affliction", None) is not None):
+            return None
+        return _replace(card, affliction=Affliction(id=ENTANGLED, amount=self.amount))
+
+
+@dataclass
+class DampenPower(Power):
+    """DampenPower.cs: on apply, downgrade every upgraded card; restore on
+    removal. Tracks the downgraded set on the instance."""
+    id: str = "dampen"
+    _downgraded: dict = field(default_factory=dict)
+
+    def on_applied(self, cs, owner) -> None:
+        from .enchantments import apply_dampen_to_cards
+        self._downgraded = apply_dampen_to_cards(cs)
+
+    def on_removed(self, cs, owner) -> None:
+        from .enchantments import remove_dampen_from_cards
+        remove_dampen_from_cards(cs, self._downgraded)
+        self._downgraded = {}
+
+
+POWER_REGISTRY["hex"] = HexPower
+POWER_REGISTRY["hunger"] = HungerPower
+POWER_REGISTRY["tangled"] = TangledPower
+POWER_REGISTRY["dampen"] = DampenPower
 
 
 def make_power(power_id: str, amount: int, owner) -> Power:

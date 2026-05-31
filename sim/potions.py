@@ -485,13 +485,25 @@ def _eff_stars(amount):
 
 
 def _eff_soldiers_stew():
-    # Soldier's Stew: every Strike-tagged card in the deck gains +1 BaseReplay
-    # (plays one extra time). The sim has no per-card replay-count field, so we
-    # proxy the net effect as the strongest single primitive available: a
-    # one-time Vigor-style burst is wrong; instead we add One-Two-Punch-style
-    # next-attack double via a single Duplication stack (next card plays twice).
-    # TODO(fidelity): real effect is permanent +replay on all Strikes.
-    return lambda rs, cs, t: _apply_power_self(cs, "duplication", 1)
+    # SoldiersStew.cs: every Strike-tagged card in combat gains +1 BaseReplay
+    # (plays one extra time, for the rest of combat). Now modelled exactly via
+    # the per-card enchant layer: attach Spiral(1) (permanent +1 replay) to each
+    # Strike-tagged card in the combat piles; stack on cards already Spiral'd.
+    from dataclasses import replace as _replace
+    from .enchantments import Enchantment, SPIRAL
+
+    def f(rs, cs, t):
+        for pile in (cs.draw_pile, cs.hand, cs.discard_pile, cs.exhaust_pile):
+            for i, c in enumerate(pile):
+                cid = c.id[:-1] if c.id.endswith("+") else c.id
+                if "strike" not in cid:
+                    continue
+                ench = getattr(c, "enchantment", None)
+                if ench is not None and ench.id == SPIRAL:
+                    ench.amount += 1
+                elif ench is None:
+                    pile[i] = _replace(c, enchantment=Enchantment(id=SPIRAL, amount=1))
+    return f
 
 
 def _noop():
@@ -665,9 +677,8 @@ _reg("BEETLE_JUICE", "Beetle Juice", PotionRarity.RARE, _eff_shrink(30, 4))
 # powered attacks deal ×0.7 for 4 of its turns.
 _reg("SOLDIERS_STEW", "Soldier's Stew", PotionRarity.RARE, _eff_soldiers_stew())
 # SoldiersStew.cs: every Strike-tagged card gains +1 BaseReplayCount (plays one
-# extra time, permanently this combat). No per-card replay field in the sim;
-# proxy as 1 Duplication stack (next card plays twice).
-# TODO(fidelity): real effect is permanent +1 replay on every Strike.
+# extra time, for the rest of combat). Modelled EXACTLY via the per-card enchant
+# layer: Spiral(1) (permanent +1 replay) attached to each Strike in combat.
 _reg("POTION_OF_DOOM", "Potion of Doom", PotionRarity.COMMON, _eff_doom(33))
 # PotionOfDoom.cs -> DoomPower 33 (Rarity Common): at the enemy's turn end, if
 # its CURRENT HP <= 33 it is instantly killed (delayed execute, not 33 burst).

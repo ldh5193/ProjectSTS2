@@ -403,6 +403,26 @@ class RunState:
                         len(self.potions) >= self.max_potion_slots:
                     break
                 self.add_potion("BLOCK_POTION")
+        # --- Card-enchantment pickup relics (Phase 8B.11) ----------------
+        # Each enchants N eligible deck cards on pickup (AfterObtained ->
+        # CardSelectCmd.FromDeckForEnchantment). The sim has no card-selection
+        # UI, so we enchant the first N eligible cards in deck order.
+        elif relic_id == "GNARLED_HAMMER":
+            from .relics import _pickup_enchant_deck
+            _pickup_enchant_deck(self, "sharp", 3, 3)
+        elif relic_id == "KIFUDA":
+            from .relics import _pickup_enchant_deck
+            _pickup_enchant_deck(self, "adroit", 3, 3)
+        elif relic_id == "PUNCH_DAGGER":
+            from .relics import _pickup_enchant_deck
+            _pickup_enchant_deck(self, "momentum", 5, 1)
+        elif relic_id == "ROYAL_STAMP":
+            from .relics import _pickup_enchant_deck
+            _pickup_enchant_deck(self, "royally_approved", 1, 1)
+        elif relic_id == "PAELS_GROWTH":
+            # PaelsGrowth.cs AfterObtained: enchant 1 card with Clone(4).
+            from .relics import _pickup_enchant_deck
+            _pickup_enchant_deck(self, "clone", 4, 1)
 
     def add_potion(self, potion_id: str) -> bool:
         """Place a potion in the first empty slot. Returns False if all

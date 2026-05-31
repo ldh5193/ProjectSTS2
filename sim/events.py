@@ -145,6 +145,24 @@ def _upgrade_first_card(rs: RunState) -> Optional[str]:
     return None
 
 
+def _enchant_first_card(rs: RunState, enchant_id: str, amount: int = 0,
+                        ctype=None) -> Optional[str]:
+    """Enchant the first eligible deck card with `enchant_id`(amount). With
+    `ctype` set, only a card of that CardType is eligible (SelfHelpBook's
+    Attack/Skill/Power split). Returns the enchanted card id, or None.
+
+    Now that the per-card enchantment layer exists (sim/enchantments.py), event
+    enchants apply the REAL enchantment instead of the previous upgrade proxy."""
+    from .enchantments import can_enchant, enchant_card
+    for i, c in enumerate(rs.deck):
+        if ctype is not None and c.type is not ctype:
+            continue
+        if can_enchant(enchant_id, c):
+            rs.deck[i] = enchant_card(c, enchant_id, amount)
+            return c.id
+    return None
+
+
 def _remove_first_removable_card(rs: RunState) -> Optional[str]:
     """Remove the first removable card (basic Strike/Defend OK; curses
     not removable in vanilla STS2 — TODO: model curse-only-removable
@@ -1093,49 +1111,52 @@ def _round_tea_party_options(rs: RunState) -> list[EventOption]:
 # --- 42. SapphireSeed (any act): heal 9 + upgrade vs enchant(Sown) ---
 def _sapphire_seed_options(rs: RunState) -> list[EventOption]:
     def eat(rs: RunState) -> None:
+        # SapphireSeed.Eat: heal HealVar(9) only (no card change).
         rs.heal(9)
-        _upgrade_first_card(rs)
     def plant(rs: RunState) -> None:
-        _upgrade_first_card(rs)  # TODO(fidelity: enchantments) Sown proxy
+        # SapphireSeed.Plant: enchant 1 card with Sown(1) (real enchant layer).
+        from .enchantments import SOWN
+        _enchant_first_card(rs, SOWN, 1)
     return [
-        EventOption("eat", "Eat (heal 9 + upgrade)", eat, tag="HEAL_UPGRADE"),
-        EventOption("plant", "Plant (enchant)", plant, tag="UPGRADE"),
+        EventOption("eat", "Eat (heal 9)", eat, tag="HEAL"),
+        EventOption("plant", "Plant (enchant Sown)", plant, tag="ENCHANT"),
     ]
 
 
 # --- 43. SelfHelpBook (any act): enchant Attack/Skill/Power (proxy=upgrade) ---
 def _self_help_book_options(rs: RunState) -> list[EventOption]:
     from .dsl import CardType
-    def mk(card_type):
+    # SelfHelpBook.cs: ReadTheBack=Sharp(2) on Attack, ReadPassage=Nimble(2) on
+    # Skill, ReadEntireBook=Swift(2) on Power. Real enchants via the layer.
+    from .enchantments import SHARP, NIMBLE, SWIFT
+    def mk(card_type, enchant_id):
         def _apply(rs: RunState) -> None:
-            # Upgrade the first card of the matching type (enchant proxy).
-            for i, c in enumerate(rs.deck):
-                if c.id.endswith("+") or c.id == "ascenders_bane":
-                    continue
-                if c.type == card_type:
-                    rs.deck[i] = _upgrade_card_obj(c)
-                    return
-            _upgrade_first_card(rs)  # fallback
+            if _enchant_first_card(rs, enchant_id, 2, ctype=card_type) is None:
+                _upgrade_first_card(rs)  # fallback: no eligible card of type
         return _apply
     return [
-        EventOption("read_the_back", "Read Back (enchant Attack)",
-                    mk(CardType.ATTACK), tag="UPGRADE"),
-        EventOption("read_passage", "Read Passage (enchant Skill)",
-                    mk(CardType.SKILL), tag="UPGRADE"),
-        EventOption("read_entire_book", "Read Book (enchant Power)",
-                    mk(CardType.POWER), tag="UPGRADE"),
+        EventOption("read_the_back", "Read Back (Sharp Attack)",
+                    mk(CardType.ATTACK, SHARP), tag="ENCHANT"),
+        EventOption("read_passage", "Read Passage (Nimble Skill)",
+                    mk(CardType.SKILL, NIMBLE), tag="ENCHANT"),
+        EventOption("read_entire_book", "Read Book (Swift Power)",
+                    mk(CardType.POWER, SWIFT), tag="ENCHANT"),
     ]
 
 
 # --- 44. SpiralingWhirlpool (enchantable card): enchant(Spiral) vs heal 33% ---
 def _spiraling_whirlpool_options(rs: RunState) -> list[EventOption]:
     def observe(rs: RunState) -> None:
-        _upgrade_first_card(rs)  # TODO(fidelity: enchantments) Spiral proxy
+        # SpiralingWhirlpool.Observe: enchant a basic Strike/Defend with Spiral
+        # (permanent +1 replay). Falls back to upgrade if no basic card remains.
+        from .enchantments import SPIRAL
+        if _enchant_first_card(rs, SPIRAL, 1) is None:
+            _upgrade_first_card(rs)
     def drink(rs: RunState) -> None:
         rs.heal(int(rs.max_hp * 0.33))
     return [
         EventOption("observe", "Observe Spiral (enchant)", observe,
-                    tag="UPGRADE"),
+                    tag="ENCHANT"),
         EventOption("drink", "Drink (heal 33%)", drink, tag="HEAL"),
     ]
 
@@ -1166,13 +1187,15 @@ def _stone_of_all_time_options(rs: RunState) -> list[EventOption]:
                 break
         rs.gain_max_hp(10)
     def push(rs: RunState) -> None:
+        # StoneOfAllTime.Push: -6 HP, enchant 1 card with Vigorous(8).
         rs.lose_hp(6)
-        _upgrade_first_card(rs)  # TODO(fidelity: enchantments) Vigorous proxy
+        from .enchantments import VIGOROUS
+        _enchant_first_card(rs, VIGOROUS, 8)
     return [
         EventOption("lift", "Lift (discard potion, +10 max HP)", lift,
                     enabled=has_potion, tag="MAX_HP_GAIN"),
-        EventOption("push", "Push (-6 HP, enchant)", push,
-                    tag="HP_LOSS_UPGRADE"),
+        EventOption("push", "Push (-6 HP, Vigorous enchant)", push,
+                    tag="HP_LOSS_ENCHANT"),
     ]
 
 
@@ -1194,11 +1217,14 @@ def _sunken_treasury_options(rs: RunState) -> list[EventOption]:
 # --- 48. Symbiote (act>=2, enchantable): enchant(Corrupted) vs transform 1 ---
 def _symbiote_options(rs: RunState) -> list[EventOption]:
     def approach(rs: RunState) -> None:
-        _upgrade_first_card(rs)  # TODO(fidelity: enchantments) Corrupted proxy
+        # Symbiote.Approach: enchant 1 Attack with Corrupted (real enchant).
+        from .enchantments import CORRUPTED
+        _enchant_first_card(rs, CORRUPTED, 1)
     def kill_with_fire(rs: RunState) -> None:
         _transform_first_removable(rs)
     return [
-        EventOption("approach", "Approach (enchant)", approach, tag="UPGRADE"),
+        EventOption("approach", "Approach (Corrupted enchant)", approach,
+                    tag="ENCHANT"),
         EventOption("kill_with_fire", "Kill With Fire (transform)",
                     kill_with_fire, tag="CARD_REMOVE_CARD_ADD"),
     ]

@@ -244,11 +244,14 @@ def test_cauldron_grants_potions_on_pickup():
 # death-prevention (LizardTail) relics were de-no-opped in 8B.7 and moved to
 # test_relics_event.py. The remainder still need reward-shaping / Enchantment /
 # in-combat card-upgrade / card-into-hand systems the sim lacks.
+# Phase 8B.11: the 8 card-enchantment relics (GHOST_SEED, FRESNEL_LENS,
+# GNARLED_HAMMER, KIFUDA, PUNCH_DAGGER, ROYAL_STAMP, WING_CHARM, MYSTIC_LIGHTER)
+# were de-no-opped by the per-card enchantment system; they now carry real
+# combat / pickup / deck-add hooks and are tested in test_enchantments.py.
 NOOP_RELICS = [
     "RAZOR_TOOTH", "STONE_CRACKER", "LAVA_LAMP",
-    "GHOST_SEED", "BURNING_STICKS", "DINGY_RUG", "DOLLYS_MIRROR", "FRESNEL_LENS",
-    "GNARLED_HAMMER", "KIFUDA", "PUNCH_DAGGER", "ROYAL_STAMP", "WING_CHARM",
-    "MYSTIC_LIGHTER", "LASTING_CANDY", "ORRERY", "MINIATURE_TENT", "TINY_MAILBOX",
+    "BURNING_STICKS", "DINGY_RUG", "DOLLYS_MIRROR",
+    "LASTING_CANDY", "ORRERY", "MINIATURE_TENT", "TINY_MAILBOX",
     "VEXING_PUZZLEBOX",
 ]
 

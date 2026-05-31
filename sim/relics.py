@@ -410,6 +410,77 @@ def _lucky_fysh_added(rs, card) -> None:
     rs.gain_gold(15)
 
 
+# --- Card-enchantment relics (Phase 8B.11) ---------------------------------
+def _enchant_deck_card_in_place(rs, card, enchant_id: str, amount: int) -> None:
+    """Replace `card` in rs.deck with an enchanted copy (if enchantable and not
+    already carrying a different enchant). Used by relics whose enchant target is
+    a card that just entered the deck (FresnelLens)."""
+    from .enchantments import can_enchant, enchant_card
+    if not can_enchant(enchant_id, card):
+        return
+    try:
+        idx = rs.deck.index(card)
+    except ValueError:
+        return
+    rs.deck[idx] = enchant_card(card, enchant_id, amount)
+
+
+def _fresnel_lens_added(rs, card) -> None:
+    """FresnelLens.cs: every card added to your deck gains Nimble(2). Only cards
+    that GainsBlock are valid in the real game; the sim accepts any non-status
+    card (the Nimble block bonus is gated on a powered card block-gain at play
+    time, so a card with no block simply never reads it -> faithful net effect)."""
+    from .enchantments import NIMBLE
+    _enchant_deck_card_in_place(rs, card, NIMBLE, 2)
+
+
+def _pickup_enchant_deck(rs, enchant_id: str, amount: int, count: int) -> int:
+    """Enchant up to `count` eligible deck cards with `enchant_id`(amount), in
+    deck order (the sim has no card-selection UI). Mirrors a relic's
+    AfterObtained CardSelectCmd.FromDeckForEnchantment loop. Returns how many
+    cards were enchanted."""
+    from .enchantments import can_enchant, enchant_card
+    done = 0
+    for i, c in enumerate(rs.deck):
+        if done >= count:
+            break
+        if can_enchant(enchant_id, c):
+            rs.deck[i] = enchant_card(c, enchant_id, amount)
+            done += 1
+    return done
+
+
+def mystic_lighter_bonus(rs) -> int:
+    """MysticLighter.cs DamageVar(9): a powered attack played from an ENCHANTED
+    card deals +9 damage. The +damage is gated by the relic being owned; the
+    caller (combat._resolve_damage_scaling) only invokes this when the source
+    card carries an enchantment, matching cardSource.Enchantment != null."""
+    return 9 if rs.has_relic("MYSTIC_LIGHTER") else 0
+
+
+def _ghost_seed_combat_start(rs, cs) -> None:
+    """GhostSeed.cs: your basic Strike/Defend cards gain Ethereal. Applied at
+    combat start (AfterRoomEntered / AfterCardEnteredCombat for every basic
+    Strike/Defend). The sim applies the Ethereal keyword to the draw-pile copies
+    for this combat via the per-card enchant slot (ETHEREAL_ENCHANT marker)."""
+    from .enchantments import Enchantment, ETHEREAL_ENCHANT, KW_ETHEREAL
+    from dataclasses import replace as _replace
+
+    def _is_basic_strike_defend(c) -> bool:
+        cid = (c.id[:-1] if c.id.endswith("+") else c.id)
+        return cid in ("strike_ironclad", "defend_ironclad")
+
+    for pile in (cs.draw_pile, cs.hand, cs.discard_pile):
+        for i, c in enumerate(pile):
+            if not _is_basic_strike_defend(c):
+                continue
+            ench = getattr(c, "enchantment", None)
+            if ench is not None and ench.id == ETHEREAL_ENCHANT:
+                continue
+            if ench is None:
+                pile[i] = _replace(c, enchantment=Enchantment(id=ETHEREAL_ENCHANT))
+
+
 def _ember_tea_combat_start(rs, cs) -> None:
     """EmberTea.cs: for the first 5 combats, gain Strength(2) at combat start,
     then the relic is used up. The relic's RelicInstance.counter tracks combats
@@ -1366,10 +1437,10 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     ),
     "PAELS_GROWTH": RelicDef(
         id="PAELS_GROWTH", name="Pael's Growth", rarity="ancient", pool="event",
-        # PaelsGrowth.cs: on pickup enchants 1 card with Clone; adds the CLONE
-        # rest-site option (TryModifyRestSiteOptions -> CloneRestSiteOption) that
-        # duplicates every Clone-enchanted card. Enchantments aren't modelled in
-        # the sim, so the option is exposed but its effect is a documented no-op.
+        # PaelsGrowth.cs: on pickup enchants 1 card with Clone(4) (handled in
+        # game_state.add_relic); adds the CLONE rest-site option
+        # (TryModifyRestSiteOptions -> CloneRestSiteOption) that duplicates every
+        # Clone-enchanted card (run_engine._step_rest "clone"). Both faithful now.
         category="misc",
     ),
     "WAR_HAMMER": RelicDef(
@@ -1644,8 +1715,10 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     "GHOST_SEED": RelicDef(
         id="GHOST_SEED", name="Ghost Seed", rarity="shop", pool="shared",
         merchant_cost=160,
-        # GhostSeed.cs: your basic Strike/Defend cards gain Ethereal.
-        # TODO(fidelity: Ethereal keyword): the sim has no Ethereal mechanic.
+        # GhostSeed.cs: your basic Strike/Defend cards gain Ethereal (a card
+        # exhausts at end of turn if still in hand). Applied at combat start via
+        # the per-card enchant slot (ETHEREAL_ENCHANT marker -> Ethereal keyword).
+        on_combat_start=lambda rs, cs: _ghost_seed_combat_start(rs, cs),
         category="misc",
     ),
     "BURNING_STICKS": RelicDef(
@@ -1671,51 +1744,57 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     ),
     "FRESNEL_LENS": RelicDef(
         id="FRESNEL_LENS", name="Fresnel Lens", rarity="event", pool="shared",
-        # FresnelLens.cs: cards added to your deck gain Nimble(2) (Enchantment).
-        # TODO(fidelity: Enchantment system).
+        # FresnelLens.cs: every card added to your deck gains Nimble(2)
+        # (Enchantment). Wired via the on_card_added deck hook.
+        on_card_added=lambda rs, card: _fresnel_lens_added(rs, card),
         category="misc",
     ),
     "GNARLED_HAMMER": RelicDef(
         id="GNARLED_HAMMER", name="Gnarled Hammer", rarity="shop", pool="shared",
         merchant_cost=160,
         # GnarledHammer.cs: on pickup, enchant 3 cards with Sharp(3).
-        # TODO(fidelity: Enchantment system).
+        # Pickup enchant handled in game_state.add_relic (deck mutation).
         category="misc",
     ),
     "KIFUDA": RelicDef(
         id="KIFUDA", name="Kifuda", rarity="shop", pool="shared",
         merchant_cost=160,
         # Kifuda.cs: on pickup, enchant 3 cards with Adroit(3).
-        # TODO(fidelity: Enchantment system).
+        # Pickup enchant handled in game_state.add_relic.
         category="misc",
     ),
     "PUNCH_DAGGER": RelicDef(
         id="PUNCH_DAGGER", name="Punch Dagger", rarity="shop", pool="shared",
         merchant_cost=160,
         # PunchDagger.cs: on pickup, enchant 1 card with Momentum(5).
-        # TODO(fidelity: Enchantment system).
+        # Pickup enchant handled in game_state.add_relic.
         category="misc",
     ),
     "ROYAL_STAMP": RelicDef(
         id="ROYAL_STAMP", name="Royal Stamp", rarity="shop", pool="shared",
         merchant_cost=160,
-        # RoyalStamp.cs: on pickup, enchant 1 card with RoyallyApproved.
-        # TODO(fidelity: Enchantment system).
+        # RoyalStamp.cs: on pickup, enchant 1 card with RoyallyApproved
+        # (Innate + Retain). Pickup enchant handled in game_state.add_relic.
         category="misc",
     ),
     "WING_CHARM": RelicDef(
         id="WING_CHARM", name="Wing Charm", rarity="shop", pool="shared",
         merchant_cost=160,
-        # WingCharm.cs: a card-reward option is enchanted with Swift(1).
-        # TODO(fidelity: Enchantment system).
+        # WingCharm.cs: a card-reward option is enchanted with Swift(1). The sim
+        # has no per-reward-option enchant slot; approximated as: every card you
+        # add to your deck gains Swift(1) (on_card_added). This is a faithful
+        # over-approximation of the "one reward option per reward" rule (the
+        # reward is the only deck-add source). Documented divergence.
+        on_card_added=lambda rs, card: _enchant_deck_card_in_place(
+            rs, card, "swift", 1),
         category="card_pick",
     ),
     "MYSTIC_LIGHTER": RelicDef(
         id="MYSTIC_LIGHTER", name="Mystic Lighter", rarity="shop", pool="shared",
         merchant_cost=160,
         # MysticLighter.cs: DamageVar(9) -> powered attacks from ENCHANTED cards
-        # deal +9 damage.
-        # TODO(fidelity: Enchantment system) — needs per-card enchant state.
+        # deal +9 damage. Wired via combat._resolve_damage_scaling ->
+        # mystic_lighter_bonus (fires only for cards carrying an enchant).
         category="misc",
     ),
     "LASTING_CANDY": RelicDef(

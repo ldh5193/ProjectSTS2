@@ -130,6 +130,13 @@ class CombatState:
                     from .relics import trigger_on_shuffle
                     trigger_on_shuffle(self.run_state, self)
             card = self.draw_pile.pop()
+            # Card-affliction powers (Hex/Hunger/Tangled): a card entering combat
+            # gets afflicted (AfterCardEnteredCombat). The power may return a
+            # replacement card (with an affliction attached) to swap in.
+            for p in list(self.player.powers):
+                replacement = p.on_card_entered_combat(self, self.player, card)
+                if replacement is not None:
+                    card = replacement
             self.hand.append(card)
             # Confused (ConfusedPower from SneckoEye/FakeSneckoEye): each drawn
             # card with a non-negative canonical cost gets a random cost 0-3 for
@@ -152,6 +159,26 @@ class CombatState:
         Iterates a snapshot so a hook that mutates `powers` is safe."""
         for p in list(creature.powers):
             getattr(p, hook)(*args)
+
+    def apply_player_affliction_power(self, power_id: str, amount: int):
+        """Apply a card-affliction status power (Hex/Hunger/Dampen/Tangled) to
+        the player and fire its AfterApplied (on_applied) hook so it mutates the
+        player's cards immediately. Mirrors PowerCmd.Apply + AfterApplied for the
+        monster-applied affliction powers. Returns the applied Power."""
+        from .powers import make_power
+        p = make_power(power_id, amount, self.player)
+        self.player.add_or_stack_power(p)
+        p.on_applied(self, self.player)
+        return p
+
+    def remove_player_affliction_power(self, power_id: str) -> None:
+        """Remove a card-affliction power from the player and fire its
+        AfterRemoved (on_removed) hook so the card mutations are reverted."""
+        p = self.player.get_power(power_id)
+        if p is None:
+            return
+        self.player.powers.remove(p)
+        p.on_removed(self, self.player)
 
     def start_player_turn(self) -> None:
         self.turn_number += 1
@@ -207,6 +234,10 @@ class CombatState:
             override = p.modify_card_cost(card)
             if override is not None:
                 cost = min(cost, override)
+        # Entangled (TangledPower): Attack cards cost +Amount energy this turn.
+        affl = getattr(card, "affliction", None)
+        if affl is not None:
+            cost += affl.energy_cost_delta()
         return max(0, cost)
 
     def _exhaust_card(self, card: CardDef) -> None:
@@ -285,6 +316,11 @@ class CombatState:
             burst.amount -= 1
             if burst.amount <= 0:
                 self.player.powers.remove(burst)
+        # Per-card enchant play-count (Glam: first play replays +Times this
+        # combat). EnchantPlayCount(originalPlayCount) -> originalPlayCount+Times.
+        ench = getattr(card, "enchantment", None)
+        if ench is not None:
+            extra_plays += ench.play_count(1) - 1
         alive_before = [m for m in self.monsters if m.alive]
         # Accuracy (AccuracyPower.cs): the active card is read by the power's
         # modify_damage_additive (Shiv-tagged attacks only). Latch it for the
@@ -300,6 +336,10 @@ class CombatState:
                       and gig is not None and gig.amount > 0)
         for _ in range(1 + extra_plays):
             self._resolve_effects(card)
+            # Enchantment.OnPlay runs after the card's own effects each play
+            # (CardModel.OnPlayWrapper order: OnPlay -> Enchantment.OnPlay).
+            if ench is not None:
+                self._resolve_enchant_on_play(card, ench)
         self._x_value = 0
         # Consume one Gigantification stack after the powered Attack resolves
         # (GigantificationPower.AfterAttack -> PowerCmd.Decrement).
@@ -329,6 +369,19 @@ class CombatState:
         # Juggling: count this card toward the player's attacks-this-turn and
         # clone it on the 3rd Attack (AfterCardPlayed).
         self._fire_power_hook(self.player, "on_card_played", self, self.player, card)
+        # Per-card enchant AfterCardPlayed reactions (once, after all plays):
+        #   Glam     — _usedThisCombat=True + status=Disabled (no more replays).
+        #   Vigorous — status=Disabled (the +Amount damage was one-shot).
+        #   Goopy    — Amount++ (its block grows each play).
+        if ench is not None:
+            from .enchantments import GLAM, VIGOROUS, GOOPY
+            if ench.id == GLAM and not ench.used_this_combat:
+                ench.used_this_combat = True
+                ench.status = "disabled"
+            elif ench.id == VIGOROUS:
+                ench.status = "disabled"
+            elif ench.id == GOOPY:
+                ench.amount += 1
         # Enrage (EnragePower.cs AfterCardPlayed, Skill): monsters react to the
         # player playing a card (Strength on Skills).
         for m in self.alive_monsters():
@@ -360,9 +413,44 @@ class CombatState:
         for eff in card.effects:
             self._resolve_single_effect(card, eff)
 
-    def _resolve_damage_scaling(self, eff, targets) -> tuple[int, int]:
+    def _resolve_enchant_on_play(self, card, ench) -> None:
+        """Run an Enchantment.OnPlay (called once per play of the card).
+
+        Faithful to each Enchantments/*.cs OnPlay:
+          Swift  — once: draw Amount, then status=Disabled.
+          Sown   — once: gain Amount energy, then status=Disabled.
+          Adroit — every play: gain Amount block (with Dexterity etc).
+          Corrupted — every play: 2 unblockable self-damage.
+          Momentum  — every play: ExtraDamage += Amount (boosts later plays).
+        """
+        from .enchantments import (SWIFT, SOWN, ADROIT, CORRUPTED, MOMENTUM)
+        from .damage import gain_block
+        if ench.id == SWIFT:
+            if ench.status == "normal":
+                self.draw(ench.amount)
+                ench.status = "disabled"
+        elif ench.id == SOWN:
+            if ench.status == "normal":
+                if self.player.get_power("no_energy_gain") is None:
+                    self.player.energy += ench.amount
+                ench.status = "disabled"
+        elif ench.id == ADROIT:
+            gain_block(self.player, ench.amount)
+        elif ench.id == CORRUPTED:
+            # 2 unblockable, unpowered self-damage (CreatureCmd.Damage Move|
+            # Unblockable|Unpowered). lose_hp is unblockable; unpowered == no
+            # scaling powers.
+            self.player.lose_hp(2)
+        elif ench.id == MOMENTUM:
+            ench.extra_damage += ench.amount
+
+    def _resolve_damage_scaling(self, eff, targets, card=None) -> tuple[int, int]:
         """Compute (base_damage, hit_count) for a DEAL_DAMAGE-shaped effect,
-        applying any ScalingKind overrides and the X-cost hit multiplier."""
+        applying any ScalingKind overrides and the X-cost hit multiplier.
+
+        `card` (the source CardDef) lets a per-card Enchantment add damage on a
+        POWERED attack (Sharp/Momentum/Vigorous additive, Corrupted/Instinct
+        multiplicative) — EnchantDamageAdditive / EnchantDamageMultiplicative."""
         base_amount = eff.amount
         hit_count = eff.hit_count
         # X-cost attacks (Whirlwind) multi-hit == energy spent.
@@ -395,6 +483,21 @@ class CombatState:
             elif k == "hp_lost_hits":
                 if self._hp_lost_this_turn:
                     hit_count += 1
+        # Per-card enchantment damage (powered card attack only). The additive
+        # pass (Sharp +Amount, Momentum +ExtraDamage, Vigorous +Amount once) and
+        # the multiplicative pass (Corrupted ×1.5, Instinct ×2) mirror the
+        # EnchantDamage* hooks. MysticLighter relic +damage to any enchanted
+        # card's powered attack is applied here too (per-card, relic-gated).
+        ench = getattr(card, "enchantment", None) if card is not None else None
+        if ench is not None:
+            base_amount += ench.damage_additive()
+            mult = ench.damage_multiplicative()
+            if mult != 1.0:
+                base_amount = int(base_amount * mult)
+            # MysticLighter.cs: powered attacks from ENCHANTED cards deal +Damage.
+            if self.run_state is not None:
+                from .relics import mystic_lighter_bonus
+                base_amount += mystic_lighter_bonus(self.run_state)
         return base_amount, max(0, hit_count)
 
     def _resolve_single_effect(self, card: CardDef, eff) -> None:  # noqa: PLR0912
@@ -418,16 +521,22 @@ class CombatState:
             targets = []
 
         if eff.op is EffectOp.DEAL_DAMAGE:
-            base_amount, hit_count = self._resolve_damage_scaling(eff, targets)
+            base_amount, hit_count = self._resolve_damage_scaling(eff, targets, card)
             for _ in range(max(0, hit_count)):
                 for t in targets:
                     if t.alive:
                         deal_damage(base_amount, self.player, t)
             return
         if eff.op is EffectOp.GAIN_BLOCK:
+            # Per-card enchant block (Nimble +Amount, Goopy +Amount-1) adds to
+            # the card's own block-gain (EnchantBlockAdditive, powered card block).
+            ench_block = 0
+            ench = getattr(card, "enchantment", None)
+            if ench is not None:
+                ench_block = ench.block_additive()
             for t in targets:
                 before = t.block
-                gain_block(t, eff.amount)
+                gain_block(t, eff.amount + (ench_block if t is self.player else 0))
                 if t is self.player:
                     gained = t.block - before
                     # Unmovable counts each card block-gain attempt this turn.
@@ -511,7 +620,7 @@ class CombatState:
             return
         if eff.op is EffectOp.GAIN_MAX_HP_ON_KILL:
             # Feed: deal damage to the selected enemy; if it kills, gain max HP.
-            base_amount, _ = self._resolve_damage_scaling(eff, targets)
+            base_amount, _ = self._resolve_damage_scaling(eff, targets, card)
             for t in targets:
                 if t.alive:
                     was_alive = t.alive
@@ -521,7 +630,7 @@ class CombatState:
             return
         if eff.op is EffectOp.LIFESTEAL_AOE:
             # Reaper: AoE attack; heal the player by total UNBLOCKED damage dealt.
-            base_amount, _ = self._resolve_damage_scaling(eff, targets)
+            base_amount, _ = self._resolve_damage_scaling(eff, targets, card)
             total_unblocked = 0
             for t in list(self.alive_monsters()):
                 if t.alive:
@@ -730,6 +839,10 @@ class CombatState:
         rage = self.player.get_power("rage")
         if rage is not None:
             self.player.powers.remove(rage)
+        # Tangled (TangledPower.cs AfterTurnEnd side==Owner): removed at the
+        # player's own turn end, clearing the Entangled afflictions (+cost).
+        if self.player.get_power("tangled") is not None:
+            self.remove_player_affliction_power("tangled")
         # Retain (RetainHandPower from Stable Serum): keep up to `amount` cards
         # in hand at end of turn instead of discarding them; the counter
         # decrements by 1 each of the owner's turn ends (AfterTurnEnd). With no
@@ -750,11 +863,27 @@ class CombatState:
                 kept_ids.add(id(c))
             retained = [c for c in self.hand if id(c) in kept_ids]
             self.hand = [c for c in self.hand if id(c) not in kept_ids]
+        # Ethereal (GhostSeed enchant keyword / Hexed affliction): a card with
+        # the Ethereal keyword still in hand at end of turn is EXHAUSTED instead
+        # of discarded (CardKeyword.Ethereal). Resolve this BEFORE the discard.
+        from .enchantments import card_keywords, KW_ETHEREAL, KW_RETAIN
+        ethereal = [c for c in self.hand if KW_ETHEREAL in card_keywords(c)]
+        for c in ethereal:
+            self.hand.remove(c)
+            self._exhaust_card(c)
+        # Per-card Retain (Steady / RoyallyApproved enchant keyword): the card
+        # stays in hand at end of turn rather than being discarded. Collect them
+        # alongside the RetainHandPower-retained cards.
+        kw_retained = [c for c in self.hand if KW_RETAIN in card_keywords(c)]
+        for c in kw_retained:
+            self.hand.remove(c)
         # Discard hand at end of player turn (STS convention).
         self.discard_pile.extend(self.hand)
         self.hand.clear()
         # Re-seat retained cards into the hand for next turn, and tick the
         # retain counter down (it expires when it reaches 0).
+        if kw_retained:
+            self.hand.extend(kw_retained)
         if retained:
             self.hand.extend(retained)
         if retain is not None:
