@@ -301,6 +301,15 @@ class RotatingEvalCallback(BaseCallback):
         else:
             self.ema_value = self.ema_alpha * val + (1 - self.ema_alpha) * self.ema_value
         self.logger.record(f"eval/{self.best_metric}_ema", self.ema_value)
+        # Heartbeat: always print every eval so progress is observable even
+        # when the EMA peak is unchanged (otherwise "no new peak" during the
+        # A0 curriculum phase is indistinguishable from a hung process).
+        print(f"  [eval] step {self.num_timesteps:,} "
+              f"win_rate={res.get('win_rate', 0.0):.3f} "
+              f"floor={res.get('mean_floor', 0.0):.1f} "
+              f"score={res.get('mean_terminal_score', 0.0):.1f} "
+              f"EMA({self.best_metric})={self.ema_value:.3f}",
+              flush=True)
         if self.best_out is not None and self.ema_value > self.best_value:
             self.best_value = self.ema_value
             self.best_step = self.num_timesteps

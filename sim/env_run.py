@@ -45,6 +45,11 @@ from .run_engine import (
 OBS_DIM = 504  # v4.4 (Phase 7F+G, 2026-05). +118 per-item shop block (rounded to 504); was 384.
 OBS_DIM_V3 = 256  # legacy export for the v3-layout-only tests
 
+# Per-episode hard truncation cap (insurance against a non-terminating state
+# hanging eval/training). Far above any legitimate run: random play dies in
+# 24-68 decision-steps, a full A10 victory is a few thousand at most.
+MAX_EP_STEPS = 10_000
+
 # Per-act boss floor. rs.floor is PER-ACT (game's ActFloor semantics,
 # resets each act), so the boss of each act sits at a different floor:
 # act1=17, act2=16, act3=15 — from ActModel.GetNumberOfFloors =
@@ -370,6 +375,13 @@ class RunEnv(gym.Env):
         self._boss_dmg_dealt_ratio: float = 0.0
         self._boss_max_hp_at_act: int = 0
         self._boss_total_dmg_dealt: int = 0
+        # Hard per-episode truncation cap. Legit episodes are tiny (random
+        # play dies in 24-68 steps; a full A10 victory is a few thousand
+        # decision-steps at most). This is pure insurance: it can never fire
+        # on a real run, but it guarantees a degenerate non-terminating state
+        # (or a policy that learns to stall to dodge the death penalty) cannot
+        # hang a training eval forever (the h24 hang at step-50k eval).
+        self._ep_steps: int = 0
 
     def _sample_ascension(self) -> int:
         """Sample an ascension from the mixture (if set) or return fixed."""
@@ -401,6 +413,7 @@ class RunEnv(gym.Env):
         self._boss_dmg_dealt_ratio = 0.0
         self._boss_max_hp_at_act = 0
         self._boss_total_dmg_dealt = 0
+        self._ep_steps = 0
         self._invalidate_caches()
         return self._obs(), {"action_mask": self.action_masks()}
 
@@ -415,11 +428,16 @@ class RunEnv(gym.Env):
         # penalty (player gets a small minus for ending with energy left).
         reward = self._reward(result, pre, post, body)
         terminated = self.rs.is_terminal()
+        self._ep_steps += 1
+        # Truncate (not terminate) if an episode runs absurdly long — this is
+        # a safety net against a non-terminating state hanging eval/training;
+        # it never fires on a legitimate run (see MAX_EP_STEPS rationale).
+        truncated = (not terminated) and self._ep_steps >= MAX_EP_STEPS
         return (
             self._obs(),
             float(reward),
             terminated,
-            False,
+            truncated,
             {"action_mask": self.action_masks(), "result": result},
         )
 
