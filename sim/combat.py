@@ -230,10 +230,30 @@ class CombatState:
             otp.amount -= 1
             if otp.amount <= 0:
                 self.player.powers.remove(otp)
+        # Duplicator (DuplicationPower): the next card of ANY type plays one
+        # extra time. Consumes one stack (AfterModifyingCardPlayCount).
+        dup = self.player.get_power("duplication")
+        if dup is not None and dup.amount > 0:
+            extra_plays += 1
+            dup.amount -= 1
+            if dup.amount <= 0:
+                self.player.powers.remove(dup)
         alive_before = [m for m in self.monsters if m.alive]
+        # Gigantification (GigantificationPower): the owner's next powered
+        # Attack deals ×3 (applied via modify_damage_multiplicative). Snapshot
+        # whether a stack was active so we consume exactly one after the Attack.
+        gig = self.player.get_power("gigantification")
+        gig_active = (card.type is CardType.ATTACK
+                      and gig is not None and gig.amount > 0)
         for _ in range(1 + extra_plays):
             self._resolve_effects(card)
         self._x_value = 0
+        # Consume one Gigantification stack after the powered Attack resolves
+        # (GigantificationPower.AfterAttack -> PowerCmd.Decrement).
+        if gig_active and gig is not None:
+            gig.amount -= 1
+            if gig.amount <= 0 and gig in self.player.powers:
+                self.player.powers.remove(gig)
         # Detect monsters that died during this card's resolution.
         newly_dead = [m for m in alive_before if not m.alive]
         # Crab Rage (CrabRagePower.cs AfterDeath, ally died): each surviving
@@ -628,7 +648,7 @@ class CombatState:
     #   - Monster's Weak/Vulnerable decay at end of that monster's turn.
     _DURATION_DEBUFFS: tuple[str, ...] = ("weak", "vulnerable", "frail", "no_draw",
                                           "no_energy_gain", "blur", "double_damage",
-                                          "reflect", "soar")
+                                          "reflect", "soar", "shrink")
 
     def end_player_turn(self) -> None:
         self.is_player_turn = False
@@ -651,9 +671,37 @@ class CombatState:
         rage = self.player.get_power("rage")
         if rage is not None:
             self.player.powers.remove(rage)
+        # Retain (RetainHandPower from Stable Serum): keep up to `amount` cards
+        # in hand at end of turn instead of discarding them; the counter
+        # decrements by 1 each of the owner's turn ends (AfterTurnEnd). With no
+        # selection UI in the sim we retain the highest-cost cards (the cards a
+        # player most wants to keep). Cards flagged ethereal/status are not
+        # specially handled here (the sim has no ethereal hand cards yet).
+        retain = self.player.get_power("retain_hand")
+        retained: list = []
+        if retain is not None and retain.amount > 0 and self.hand:
+            from .dsl import X_COST
+            n_keep = min(2, len(self.hand))
+
+            def _cost_key(c):
+                return c.cost if (c.cost is not None and c.cost != X_COST) else 0
+            kept = sorted(self.hand, key=_cost_key, reverse=True)[:n_keep]
+            kept_ids = set()
+            for c in kept:
+                kept_ids.add(id(c))
+            retained = [c for c in self.hand if id(c) in kept_ids]
+            self.hand = [c for c in self.hand if id(c) not in kept_ids]
         # Discard hand at end of player turn (STS convention).
         self.discard_pile.extend(self.hand)
         self.hand.clear()
+        # Re-seat retained cards into the hand for next turn, and tick the
+        # retain counter down (it expires when it reaches 0).
+        if retained:
+            self.hand.extend(retained)
+        if retain is not None:
+            retain.amount -= 1
+            if retain.amount <= 0 and retain in self.player.powers:
+                self.player.powers.remove(retain)
         # End-of-owner-turn effects for the player: Plating block-gain, then
         # decay duration debuffs (Weak/Frail the player bears).
         self._end_of_turn_effects(self.player)

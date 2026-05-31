@@ -1177,6 +1177,124 @@ class InfestedPower(Power):
 
 
 @dataclass
+class DuplicationPower(Power):
+    """DuplicationPower.cs (ModifyCardPlayCount): the next card the owner plays
+    is played one extra time (playCount + 1). Decrements per card whose play
+    count it modified (AfterModifyingCardPlayCount), and is removed entirely at
+    the owner's turn end (AfterTurnEnd). Granted by the Duplicator potion (1).
+    The engine consumes a stack and doubles the resolve in play_card (any card
+    type, unlike OneTwoPunch which is Attacks only)."""
+    id: str = field(default="duplication", init=False)
+    _owner: object = None
+
+
+@dataclass
+class GigantificationPower(Power):
+    """GigantificationPower.cs (BeforeAttack + ModifyDamageMultiplicative +
+    AfterAttack): the owner's next powered Attack deals ×3 damage. The .cs
+    latches onto the first powered attack command, multiplies its damage by 3,
+    and decrements the counter after that command resolves. Granted by the
+    Gigantification potion (1). We surface the ×3 multiplier on the owner's
+    powered attacks and consume one stack after a powered attack lands (the
+    engine calls consume_gigantification in play_card)."""
+    id: str = field(default="gigantification", init=False)
+    _owner: object = None
+
+    def modify_damage_multiplicative(self, dealer, target, base_amount: int) -> float:
+        if dealer is not self._owner or self.amount <= 0:
+            return 1.0
+        return 3.0
+
+
+@dataclass
+class BlockNextTurnPower(Power):
+    """BlockNextTurnPower.cs (AfterBlockCleared): grants the owner `amount`
+    Block when its Block is cleared (i.e. at the start of its next turn), then
+    removes itself. Granted by Ship in a Bottle. We fire the deferred block at
+    the owner's turn start (when block has been reset) and remove the power."""
+    id: str = field(default="block_next_turn", init=False)
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        from .damage import gain_block
+        gain_block(owner, self.amount)
+        if self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class ClarityPower(Power):
+    """ClarityPower.cs (ModifyHandDraw +1; AfterSideTurnStart side==Owner
+    decrements): while present, the owner draws 1 extra card at hand-draw, and
+    the counter decrements by 1 at the owner's turn start. Granted by the
+    Clarity potion (3). We add +1 to the draw at the owner's turn start and
+    decrement; at 0 the power is removed."""
+    id: str = field(default="clarity", init=False)
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        # The base hand-draw already happened; add the +1 Clarity card, then
+        # decrement the counter (AfterSideTurnStart).
+        cs.draw(1)
+        self.amount -= 1
+        if self.amount <= 0 and self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class DoomPower(Power):
+    """DoomPower.cs (BeforeTurnEnd side==Owner): at the owner's (enemy's) turn
+    end, if the owner's CURRENT HP <= `amount`, the owner is instantly killed.
+    A delayed execution-threshold debuff applied by Potion of Doom (33). The
+    combat engine checks this at the enemy's turn end via on_turn_end."""
+    id: str = field(default="doom", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        if owner.alive and owner.hp <= self.amount:
+            owner.hp = 0
+            owner.alive = False
+
+
+@dataclass
+class DemisePower(Power):
+    """DemisePower.cs (AfterTurnEnd side==Owner): at the owner's (enemy's) turn
+    end, the owner takes `amount` unblockable, unpowered damage. A delayed-tick
+    debuff applied by Powdered Demise (9)."""
+    id: str = field(default="demise", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        if owner.alive:
+            owner.lose_hp(self.amount)
+
+
+@dataclass
+class ShrinkPower(Power):
+    """ShrinkPower.cs (ModifyDamageMultiplicative): the owner's powered attacks
+    deal (100 − 30)% = ×0.7 damage. Counter ticks down at the owner's turn end.
+    A debuff applied by Beetle Juice (Repeat 4 -> 4 turns)."""
+    id: str = field(default="shrink", init=False)
+    _owner: object = None
+
+    def modify_damage_multiplicative(self, dealer, target, base_amount: int) -> float:
+        if dealer is not self._owner:
+            return 1.0
+        return 0.70
+
+
+@dataclass
+class RetainHandPower(Power):
+    """RetainHandPower.cs (Counter; AfterTurnEnd side==Owner decrements): while
+    present, the owner retains up to `amount` cards in hand at end of turn
+    instead of discarding them, and the counter decrements by 1 each of the
+    owner's turn ends. Granted by the Stable Serum potion (Repeat 2 -> retains
+    for 2 turns). The engine reads this in end_player_turn to keep N cards."""
+    id: str = field(default="retain_hand", init=False)
+    _owner: object = None
+
+
+@dataclass
 class IllusionPower(Power):
     """IllusionPower.cs: marks a creature as a summoned illusion (a minion).
     In the real game it carries a one-time self-revive; we model the simpler,
@@ -1254,6 +1372,16 @@ POWER_REGISTRY: dict[str, type[Power]] = {
     "rampart": RampartPower,
     "infested": InfestedPower,
     "illusion": IllusionPower,
+    # Phase 8B.5 — potion-backing powers (Duplicator/Gigantification/StableSerum
+    # /ShipInABottle/Clarity/PotionOfDoom/PowderedDemise/BeetleJuice).
+    "duplication": DuplicationPower,
+    "gigantification": GigantificationPower,
+    "retain_hand": RetainHandPower,
+    "block_next_turn": BlockNextTurnPower,
+    "clarity": ClarityPower,
+    "doom": DoomPower,
+    "demise": DemisePower,
+    "shrink": ShrinkPower,
     # Phase 8B — player/relic powers.
     "buffer": BufferPower,
     "blur": BlurPower,
