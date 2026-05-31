@@ -773,10 +773,11 @@ class LagavulinMatriarch(Monster):
     def spawn(cls, rng: random.Random, ascension: int = 0) -> "LagavulinMatriarch":
         hp = _a8(ascension, LAGAVULIN_HP, LAGAVULIN_HP_A8)
         m = cls(name="Lagavulin Matriarch", hp=hp, max_hp=hp, ascension=ascension)
-        # Asleep + Plating simplified: just start with +8 Plating so the
-        # opening turns "feel" similar (player needs sustained damage).
+        # LagavulinMatriarch.cs:112-113 — spawns with Plating 12 + Asleep 3
+        # (AsleepPower: the first unblocked hit wakes it, removing its Plating).
         from .powers import make_power
-        m.add_or_stack_power(make_power("plating", 8, m))
+        m.add_or_stack_power(make_power("plating", 12, m))
+        m.add_or_stack_power(make_power("asleep", 3, m))
         m.next_move = LagavulinMove.DEBILITATE
         m.cycle_index = 0
         return m
@@ -1534,8 +1535,12 @@ class TestSubject(Monster):
         m = cls(name="Test Subject", hp=total, max_hp=total, ascension=ascension)
         m.form1_hp = f1
         m.form2_hp = f2
-        # Enrage (gain Strength when hit by an attack) — not modeled as a live
-        # trigger in the sim; the per-phase damage already pressures the agent.
+        # Enrage (EnragePower: gain Strength when the player plays a Skill) and
+        # PainfulStabs (PainfulStabsPower: powered attacks add Wounds to the
+        # player's discard) are granted at spawn, matching TestSubject.cs:172
+        # (EnrageAmount 2 / A9 3) and the Phase-3 PainfulStabs 1.
+        m.add_or_stack_power(make_power("enrage", _a9(ascension, 2, 3), m))
+        m.add_or_stack_power(make_power("painful_stabs", 1, m))
         m.next_move = TestSubjectMove.BITE  # machine start = BITE_MOVE
         return m
 
@@ -1752,6 +1757,11 @@ class _Move:
     self_strength: tuple[int, int] = (0, 0)   # StrengthPower to self (a9)
     self_thorns: int = 0
     self_plating: int = 0
+    self_ritual: int = 0          # gain Ritual (Strength at turn end) — cultists
+    self_regen: int = 0           # gain Regen (heal each turn end)
+    # generic self-power grants (id, amount) for monster powers without a
+    # dedicated _Move field (e.g. flame_barrier, reflect, double_damage).
+    self_powers: tuple[tuple[str, int], ...] = ()
     # player debuffs (id -> amount); only sim-registered powers.
     debuffs: tuple[tuple[str, int], ...] = ()
     status: tuple = ()                 # (card_id, pile, count) or empty
@@ -1795,6 +1805,9 @@ class _TableMonster(Monster):
     MOVES = None
     START = ""
     RAND = None
+    # Powers granted at spawn (id, amount): e.g. CurlUp on lice, Slumber on the
+    # Slumbering Beetle, PainfulStabs/Enrage on TestSubject. Applied in spawn().
+    SPAWN_POWERS: tuple = ()
 
     @classmethod
     def _roll_hp(cls, rng: random.Random, ascension: int) -> int:
@@ -1809,6 +1822,10 @@ class _TableMonster(Monster):
         hp = cls._roll_hp(rng, ascension)
         m = cls(name=cls.MNAME, hp=hp, max_hp=hp, ascension=ascension)
         m.next_move = cls.START
+        for pid, amt in cls.SPAWN_POWERS:
+            # amt may be a flat int or an (base, a8) tuple for ascension scaling.
+            value = _a8(ascension, amt[0], amt[1]) if isinstance(amt, tuple) else amt
+            m.add_or_stack_power(make_power(pid, value, m))
         return m
 
     def _branch(self, rng: random.Random, key: str) -> str:
@@ -1863,6 +1880,12 @@ class _TableMonster(Monster):
             self.add_or_stack_power(make_power("plating", mv.self_plating, self))
         if mv.self_thorns:
             self.add_or_stack_power(make_power("thorns", mv.self_thorns, self))
+        if mv.self_ritual:
+            self.add_or_stack_power(make_power("ritual", mv.self_ritual, self))
+        if mv.self_regen:
+            self.add_or_stack_power(make_power("regen", mv.self_regen, self))
+        for pid, amt in mv.self_powers:
+            self.add_or_stack_power(make_power(pid, amt, self))
         if mv.self_strength != (0, 0):
             amt = _a9(self.ascension, mv.self_strength[0], mv.self_strength[1])
             st = StrengthPower(amount=amt)
@@ -2034,13 +2057,14 @@ class Inklet(_TableMonster):
 
 
 class SlitheringStrangler(_TableMonster):
-    # SlitheringStrangler.cs: HP 53-55 (A8 54-56). CONSTRICT(Constrict~Weak3)
-    # -> RAND{THWACK(7/8 +5blk), LASH(12/13)} -> CONSTRICT.
+    # SlitheringStrangler.cs: HP 53-55 (A8 54-56). CONSTRICT applies Constrict 3
+    # (ConstrictPower: player takes 3 unblockable at its turn end) -> RAND{THWACK
+    # (7/8 +5blk), LASH(12/13)} -> CONSTRICT.
     MNAME = "Slithering Strangler"
     HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 53, 55, 54, 56
     START = "CONSTRICT"
     MOVES = {
-        "CONSTRICT": _Move("CONSTRICT", debuffs=(("weak", 3),)),
+        "CONSTRICT": _Move("CONSTRICT", debuffs=(("constrict", 3),)),
         "THWACK": _Move("THWACK", dmg=(7, 8), block=(5, 5), next="CONSTRICT"),
         "LASH": _Move("LASH", dmg=(12, 13), next="CONSTRICT"),
     }
@@ -2182,13 +2206,16 @@ class Ovicopter(_TableMonster):
 
 
 class SlumberingBeetle(_TableMonster):
-    # SlumberingBeetle.cs: HP 86 (A8 89). Spawns Plating 15/18 + Slumber.
-    # SNORE(sleep) -> ROLL_OUT(16/18 +2Str) self-loop once awake.
+    # SlumberingBeetle.cs: HP 86 (A8 89). Spawns Plating 15/18 + Slumber 3
+    # (SlumberPower: each own turn-end or unblocked hit decrements it; at 0 it
+    # wakes). While asleep it SNOREs (no-op); once Slumber expires it ROLL_OUTs
+    # (16/18 +2Str) on a self-loop.
     MNAME = "Slumbering Beetle"
     HP, HP_A8 = 86, 89
     START = "SNORE"
+    SPAWN_POWERS = (("slumber", 3),)
     MOVES = {
-        "SNORE": _Move("SNORE", next="ROLL_OUT"),
+        "SNORE": _Move("SNORE", next="SNORE"),
         "ROLL_OUT": _Move("ROLL_OUT", dmg=(16, 18), self_strength=(2, 2),
                           next="ROLL_OUT"),
     }
@@ -2198,6 +2225,12 @@ class SlumberingBeetle(_TableMonster):
         m = super().spawn(rng, ascension)
         m.add_or_stack_power(make_power("plating", _a8(ascension, 15, 18), m))
         return m
+
+    def roll_next_move(self, rng: random.Random) -> str:
+        # Stay asleep (SNORE) until Slumber wears off, then begin ROLL_OUT.
+        if self.get_power("slumber") is not None:
+            return "SNORE"
+        return "ROLL_OUT"
 
 
 class TheObscura(_TableMonster):
@@ -2234,15 +2267,16 @@ class Tunneler(_TableMonster):
 
 
 class ThievingHopper(_TableMonster):
-    # ThievingHopper.cs: HP 79 (A8 84). THIEVERY(17/19) -> FLUTTER(self buff;
-    # sim: +2 Str proxy) -> HAT_TRICK(21/23) -> NAB(14/16) -> ESCAPE(flees;
-    # sim: no-op terminal looping NAB).
+    # ThievingHopper.cs: HP 79 (A8 84). THIEVERY(17/19) -> FLUTTER grants Flutter
+    # 5 (FlutterPower: powered attacks on it are halved; 5 powered hits stun it)
+    # -> HAT_TRICK(21/23) -> NAB(14/16) -> ESCAPE(flees; sim: no-op looping NAB).
     MNAME = "Thieving Hopper"
     HP, HP_A8 = 79, 84
     START = "THIEVERY"
     MOVES = {
         "THIEVERY": _Move("THIEVERY", dmg=(17, 19), next="FLUTTER"),
-        "FLUTTER": _Move("FLUTTER", self_strength=(2, 2), next="HAT_TRICK"),
+        "FLUTTER": _Move("FLUTTER", self_powers=(("flutter", 5),),
+                         next="HAT_TRICK"),
         "HAT_TRICK": _Move("HAT_TRICK", dmg=(21, 23), next="NAB"),
         "NAB": _Move("NAB", dmg=(14, 16), next="ESCAPE"),
         "ESCAPE": _Move("ESCAPE", next="NAB"),
@@ -2263,11 +2297,13 @@ class Myte(_TableMonster):
 
 
 class LouseProgenitor(_TableMonster):
-    # LouseProgenitor.cs: HP 134-136 (A8 138-141). CurlUp(block). WEB(9/10 +
-    # Frail2) -> CURL_AND_GROW(+blk 14/18 +5 Str) -> POUNCE(14/16) -> WEB.
+    # LouseProgenitor.cs: HP 134-136 (A8 138-141). Spawns with CurlUp 14 (A8 18)
+    # — gains that much Block the FIRST time it is hit by a powered attack. WEB
+    # (9/10 + Frail2) -> CURL_AND_GROW(+blk 14/18 +5 Str) -> POUNCE(14/16) -> WEB.
     MNAME = "Louse Progenitor"
     HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 134, 136, 138, 141
     START = "WEB"
+    SPAWN_POWERS = (("curl_up", (14, 18)),)
     MOVES = {
         "WEB": _Move("WEB", dmg=(9, 10), debuffs=(("frail", 2),),
                      next="CURL_AND_GROW"),
@@ -2413,8 +2449,8 @@ class SlimedBerserker(_TableMonster):
 
 class OwlMagistrate(_TableMonster):
     # OwlMagistrate.cs: HP 234 (A8 243). SCRUTINY(16/17) -> PECK_ASSAULT(4 x6)
-    # -> JUDICIAL_FLIGHT(Soar; sim +1 Str proxy) -> VERDICT(33/36 + Vuln4) ->
-    # SCRUTINY (loop).
+    # -> JUDICIAL_FLIGHT grants Soar (SoarPower: powered attacks on it are
+    # halved while aloft) -> VERDICT(33/36 + Vuln4) -> SCRUTINY (loop).
     MNAME = "Owl Magistrate"
     HP, HP_A8 = 234, 243
     START = "SCRUTINY"
@@ -2422,7 +2458,7 @@ class OwlMagistrate(_TableMonster):
         "SCRUTINY": _Move("SCRUTINY", dmg=(16, 17), next="PECK_ASSAULT"),
         "PECK_ASSAULT": _Move("PECK_ASSAULT", dmg=(4, 4), hits=6,
                               next="JUDICIAL_FLIGHT"),
-        "JUDICIAL_FLIGHT": _Move("JUDICIAL_FLIGHT", self_strength=(1, 1),
+        "JUDICIAL_FLIGHT": _Move("JUDICIAL_FLIGHT", self_powers=(("soar", 1),),
                                  next="VERDICT"),
         "VERDICT": _Move("VERDICT", dmg=(33, 36), debuffs=(("vulnerable", 4),),
                          next="SCRUTINY"),
@@ -2567,14 +2603,14 @@ class ScrollOfBiting(_TableMonster):
 
 
 class DevotedSculptor(_TableMonster):
-    # DevotedSculptor.cs: HP 162 (A8 172). FORBIDDEN_INCANTATION(Ritual; sim:
-    # +2 Str proxy per turn) -> SAVAGE(12/15) self-loop.
+    # DevotedSculptor.cs: HP 162 (A8 172). FORBIDDEN_INCANTATION grants Ritual 2
+    # (RitualPower: +Strength each turn end) -> SAVAGE(12/15) self-loop.
     MNAME = "Devoted Sculptor"
     HP, HP_A8 = 162, 172
     START = "FORBIDDEN_INCANTATION"
     MOVES = {
         "FORBIDDEN_INCANTATION": _Move("FORBIDDEN_INCANTATION",
-                                       self_strength=(2, 2), next="SAVAGE"),
+                                       self_ritual=2, next="SAVAGE"),
         "SAVAGE": _Move("SAVAGE", dmg=(12, 15), next="SAVAGE"),
     }
 
@@ -2656,27 +2692,25 @@ class Seapunk(_TableMonster):
 
 
 class CalcifiedCultist(_TableMonster):
-    # CalcifiedCultist.cs: HP 38-41 (A8 39-42). Incantation (Ritual 2; sim:
-    # +2 Str proxy) -> DarkStrike(9/11) self-loop. Starts at Incantation.
+    # CalcifiedCultist.cs: HP 38-41 (A8 39-42). Incantation grants Ritual 2
+    # (RitualPower: +Strength at every turn end) -> DarkStrike(9/11) self-loop.
     MNAME = "Calcified Cultist"
     HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 38, 41, 39, 42
     START = "INCANTATION"
     MOVES = {
-        "INCANTATION": _Move("INCANTATION", self_strength=(2, 2),
-                             next="DARK_STRIKE"),
+        "INCANTATION": _Move("INCANTATION", self_ritual=2, next="DARK_STRIKE"),
         "DARK_STRIKE": _Move("DARK_STRIKE", dmg=(9, 11), next="DARK_STRIKE"),
     }
 
 
 class DampCultist(_TableMonster):
-    # DampCultist.cs: HP 51-53 (A8 52-54). Incantation (Ritual 5/6; sim: +5/6
-    # Str proxy) -> DarkStrike(1/3) self-loop. Starts at Incantation.
+    # DampCultist.cs: HP 51-53 (A8 52-54). Incantation grants Ritual 5/6
+    # (RitualPower: +Strength each turn end) -> DarkStrike(1/3) self-loop.
     MNAME = "Damp Cultist"
     HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 51, 53, 52, 54
     START = "INCANTATION"
     MOVES = {
-        "INCANTATION": _Move("INCANTATION", self_strength=(5, 6),
-                             next="DARK_STRIKE"),
+        "INCANTATION": _Move("INCANTATION", self_ritual=5, next="DARK_STRIKE"),
         "DARK_STRIKE": _Move("DARK_STRIKE", dmg=(1, 3), next="DARK_STRIKE"),
     }
 

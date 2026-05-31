@@ -220,17 +220,27 @@ class CombatState:
         for _ in range(1 + extra_plays):
             self._resolve_effects(card)
         self._x_value = 0
+        # Detect monsters that died during this card's resolution.
+        newly_dead = [m for m in alive_before if not m.alive]
+        # Crab Rage (CrabRagePower.cs AfterDeath, ally died): each surviving
+        # monster's powers react to an ally's death. Fire for every corpse.
+        for dead in newly_dead:
+            for m in self.monsters:
+                if m is not dead and m.alive:
+                    self._fire_power_hook(m, "on_monster_death", self, m, dead)
         # On-monster-death relic hooks (GremlinHorn: +1 energy & draw on each
-        # enemy death). Detect monsters that died during this card's resolution.
-        if self.run_state is not None:
-            newly_dead = [m for m in alive_before if not m.alive]
-            if newly_dead:
-                from .relics import trigger_on_monster_death
-                for m in newly_dead:
-                    trigger_on_monster_death(self.run_state, self, m)
+        # enemy death).
+        if self.run_state is not None and newly_dead:
+            from .relics import trigger_on_monster_death
+            for m in newly_dead:
+                trigger_on_monster_death(self.run_state, self, m)
         # Juggling: count this card toward the player's attacks-this-turn and
         # clone it on the 3rd Attack (AfterCardPlayed).
         self._fire_power_hook(self.player, "on_card_played", self, self.player, card)
+        # Enrage (EnragePower.cs AfterCardPlayed, Skill): monsters react to the
+        # player playing a card (Strength on Skills).
+        for m in self.alive_monsters():
+            self._fire_power_hook(m, "on_player_card_played", self, m, card)
         # Per-attack relic hooks (Kunai/Shuriken/Pen Nib) fire after an
         # ATTACK card resolves. Only when a RunState is attached (real runs;
         # standalone combat tests leave run_state=None).
@@ -598,7 +608,8 @@ class CombatState:
     #   - Player's Weak/Frail decay at end of the player's turn.
     #   - Monster's Weak/Vulnerable decay at end of that monster's turn.
     _DURATION_DEBUFFS: tuple[str, ...] = ("weak", "vulnerable", "frail", "no_draw",
-                                          "no_energy_gain")
+                                          "no_energy_gain", "blur", "double_damage",
+                                          "reflect", "soar")
 
     def end_player_turn(self) -> None:
         self.is_player_turn = False
@@ -616,6 +627,11 @@ class CombatState:
         otp = self.player.get_power("one_two_punch")
         if otp is not None:
             self.player.powers.remove(otp)
+        # Rage (RagePower.cs AfterTurnEnd side==Owner.Side): removed entirely at
+        # the player's own turn end.
+        rage = self.player.get_power("rage")
+        if rage is not None:
+            self.player.powers.remove(rage)
         # Discard hand at end of player turn (STS convention).
         self.discard_pile.extend(self.hand)
         self.hand.clear()
@@ -623,6 +639,12 @@ class CombatState:
         # decay duration debuffs (Weak/Frail the player bears).
         self._end_of_turn_effects(self.player)
         self.monster_turn()
+        # Flame Barrier (FlameBarrierPower.cs): removed at the END of the enemy
+        # turn (Owner.Side != side), i.e. after the monsters have attacked into
+        # the player's retaliatory barrier this round.
+        fb = self.player.get_power("flame_barrier")
+        if fb is not None:
+            self.player.powers.remove(fb)
         if self.alive_monsters():
             self.start_player_turn()
 

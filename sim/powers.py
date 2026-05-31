@@ -75,6 +75,26 @@ class Power:
     def on_owner_hp_lost(self, cs, owner) -> None:
         """`owner` took unblocked damage on its own side (Inferno retaliate)."""
 
+    # ---- attack-reaction hooks (Phase 8B monster/player powers) ----
+    # Fired from damage.deal_damage AFTER block + HP loss are applied. `cs` is
+    # None when an attack resolves outside a CombatState (standalone tests);
+    # powers that need the combat object guard on `cs is not None`.
+
+    def on_attacked(self, owner, dealer, blocked: int, unblocked: int) -> None:
+        """`owner` was just hit by `dealer`'s attack. `blocked`/`unblocked` are
+        the post-block split of that single attack instance. Used by Curl Up
+        (block on first powered hit), Flame Barrier / Reflect (retaliate),
+        Slumber / Asleep (wake on unblocked damage), Flutter, Sharp Hide-style
+        on-attack thorns, Angry/Enrage-on-hit (Strength when struck)."""
+
+    def on_monster_death(self, cs, owner, dead) -> None:
+        """A creature on the owner's side died (`dead` is the corpse). Used by
+        Crab Rage (gain Strength + Block when an ally dies)."""
+
+    def on_player_card_played(self, cs, owner, card) -> None:
+        """The PLAYER played `card` (monster-side reaction). Used by Enrage
+        (monster gains Strength whenever the player plays a Skill)."""
+
     def modify_card_cost(self, card) -> int | None:
         """Return an override cost for `card`, or None to leave unchanged
         (Corruption: skills cost 0)."""
@@ -702,6 +722,395 @@ class NoDrawPower(Power):
     _owner: object = None
 
 
+# ===========================================================================
+# Phase 8B — MONSTER powers (faithful triggers from the decompile).
+# Cites: decompiled/MegaCrit.Sts2.Core.Models.Powers/{CurlUp,Ritual,Regen,
+#   FlameBarrier,Reflect,Slumber,Asleep,Flutter,Soar,Constrict,CrabRage,
+#   Enrage,PainfulStabs,HardenedShell,Buffer,Blur,DoubleDamage}Power.cs.
+# ===========================================================================
+
+
+@dataclass
+class CurlUpPower(Power):
+    """CurlUpPower.cs (AfterDamageReceived, powered attack): the FIRST time the
+    owner takes a powered attack, gain `amount` Block (Unpowered) and the power
+    is removed. We fire on the first attack that lands on the owner (the .cs
+    tracks the source card and grants on AfterCardPlayed; the net effect — one
+    block-gain on first being hit — is what we model)."""
+    id: str = field(default="curl_up", init=False)
+    _owner: object = None
+    _used: bool = False
+
+    def on_attacked(self, owner, dealer, blocked: int, unblocked: int) -> None:
+        if self._used or dealer is owner:
+            return
+        self._used = True
+        from .damage import gain_block
+        gain_block(owner, self.amount)
+        if self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class RitualPower(Power):
+    """RitualPower.cs (AfterTurnEnd, side == Owner.Side): at the owner's turn
+    end, gain Strength == amount. (The .cs skips the very first end-of-turn if
+    the power was applied THIS turn by an enemy; monster Ritual is granted at
+    spawn so it fires from turn 1, which is what the cultists/Sculptor do.)"""
+    id: str = field(default="ritual", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        owner.add_or_stack_power(make_power("strength", self.amount, owner))
+
+
+@dataclass
+class RegenPower(Power):
+    """RegenPower.cs (AfterTurnEnd, side == Owner.Side): heal `amount` HP, then
+    decrement the counter by 1."""
+    id: str = field(default="regen", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        owner.heal(self.amount)
+        self.amount -= 1
+        if self.amount <= 0 and self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class EnragePower(Power):
+    """EnragePower.cs (AfterCardPlayed, Skill): whenever the PLAYER plays a
+    Skill, the owning monster gains Strength == amount. Fired by the combat
+    engine's player-card-played fan-out to monster powers."""
+    id: str = field(default="enrage", init=False)
+    _owner: object = None
+
+    def on_player_card_played(self, cs, owner, card) -> None:
+        from .dsl import CardType
+        if card.type is CardType.SKILL:
+            owner.add_or_stack_power(make_power("strength", self.amount, owner))
+
+
+@dataclass
+class FlameBarrierPower(Power):
+    """FlameBarrierPower.cs (AfterDamageReceived, powered attack): when the
+    owner is hit by a powered attack, deal `amount` (Unpowered) back to the
+    dealer. Removed at the end of the enemy turn (1-stack duration handled by
+    the engine's flame_barrier decay)."""
+    id: str = field(default="flame_barrier", init=False)
+    _owner: object = None
+
+    def on_attacked(self, owner, dealer, blocked: int, unblocked: int) -> None:
+        if dealer is None or dealer is owner or not dealer.alive:
+            return
+        dealer.lose_hp(self.amount)
+
+
+@dataclass
+class ReflectPower(Power):
+    """ReflectPower.cs (AfterDamageReceived): when the owner BLOCKS part of a
+    powered attack, deal the blocked amount back to the dealer (Unpowered).
+    Decrements at the owner's turn start (modeled as a 1-turn duration via the
+    engine's reflect decay)."""
+    id: str = field(default="reflect", init=False)
+    _owner: object = None
+
+    def on_attacked(self, owner, dealer, blocked: int, unblocked: int) -> None:
+        if dealer is None or dealer is owner or not dealer.alive or blocked <= 0:
+            return
+        dealer.lose_hp(blocked)
+
+
+@dataclass
+class SoarPower(Power):
+    """SoarPower.cs (ModifyDamageMultiplicative): powered attacks targeting the
+    owner are reduced to amount% (DamageDecrease, default 50 -> ×0.5). A
+    Flight/Intangible-style halving for fliers (Owl Magistrate)."""
+    id: str = field(default="soar", init=False)
+    multiplier_pct: int = 50
+    _owner: object = None
+
+    def modify_damage_multiplicative(self, dealer, target, base_amount: int) -> float:
+        if target is not self._owner:
+            return 1.0
+        return self.multiplier_pct / 100.0
+
+
+@dataclass
+class FlutterPower(Power):
+    """FlutterPower.cs (ModifyDamageMultiplicative + AfterDamageReceived):
+    powered attacks on the owner are halved (×0.5); each powered hit that deals
+    unblocked damage decrements the counter, and at 0 the monster is stunned.
+    We model the defensive halving (the combat-relevant part) and decrement on
+    unblocked powered hits; the stun is approximated by simply expiring the
+    power (the monster's normal move machine then proceeds)."""
+    id: str = field(default="flutter", init=False)
+    _owner: object = None
+
+    def modify_damage_multiplicative(self, dealer, target, base_amount: int) -> float:
+        if target is not self._owner:
+            return 1.0
+        return 0.5
+
+    def on_attacked(self, owner, dealer, blocked: int, unblocked: int) -> None:
+        if dealer is owner or unblocked <= 0:
+            return
+        self.amount -= 1
+        if self.amount <= 0 and self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class SlumberPower(Power):
+    """SlumberPower.cs (AfterDamageReceived + AfterTurnEnd): the owner is asleep
+    while Slumber > 0. Each unblocked hit OR own turn-end decrements it; at 0
+    the monster wakes (its move machine starts attacking). We model the counter
+    decay on unblocked hits and on the owner's turn end; the wake itself is the
+    monster's move machine (SlumberingBeetle ROLL_OUT) which the sim already
+    cycles to. The SNORE move is a no-op while asleep."""
+    id: str = field(default="slumber", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        self.amount -= 1
+        if self.amount <= 0 and self in owner.powers:
+            owner.powers.remove(self)
+
+    def on_attacked(self, owner, dealer, blocked: int, unblocked: int) -> None:
+        if unblocked <= 0:
+            return
+        self.amount -= 1
+        if self.amount <= 0 and self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class AsleepPower(Power):
+    """AsleepPower.cs (AfterDamageReceived): while asleep the owner also holds
+    Plating; the FIRST unblocked hit wakes it (removes its Plating and the
+    Asleep power) and it begins attacking. We remove the owner's Plating + this
+    power on the first unblocked hit (the wake)."""
+    id: str = field(default="asleep", init=False)
+    _owner: object = None
+
+    def on_attacked(self, owner, dealer, blocked: int, unblocked: int) -> None:
+        if unblocked <= 0:
+            return
+        plating = owner.get_power("plating") if hasattr(owner, "get_power") else None
+        if plating is not None:
+            owner.powers.remove(plating)
+        if self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class ConstrictPower(Power):
+    """ConstrictPower.cs (AfterTurnEnd, side == Owner.Side): at the owner's turn
+    end, take `amount` unblockable damage. A debuff applied to the player by
+    Slithering Strangler."""
+    id: str = field(default="constrict", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        owner.lose_hp(self.amount)
+
+
+@dataclass
+class CrabRagePower(Power):
+    """CrabRagePower.cs (AfterDeath, ally died): when an ally on the owner's
+    side dies, gain Strength (CanonicalVars Strength, base 6) and Block
+    (CanonicalVars Block, base 99 in the .cs's example), then remove this power.
+    We store the Strength in `amount` and the Block in `block_amount`."""
+    id: str = field(default="crab_rage", init=False)
+    block_amount: int = 99
+    _owner: object = None
+
+    def on_monster_death(self, cs, owner, dead) -> None:
+        if dead is owner or not owner.alive:
+            return
+        owner.add_or_stack_power(make_power("strength", self.amount, owner))
+        owner.block += self.block_amount
+        if self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class PainfulStabsPower(Power):
+    """PainfulStabsPower.cs (AfterAttack, powered attack with unblocked damage):
+    each powered attack the owner lands on the player adds `amount` Wound status
+    cards to the player's discard. We fire on each on_attacked where the owner
+    is the dealer and unblocked > 0, queuing Wounds on the owner's pending
+    status-card list (drained by combat.monster_turn)."""
+    id: str = field(default="painful_stabs", init=False)
+    _owner: object = None
+
+    def on_attacked(self, owner, other, blocked: int, unblocked: int) -> None:
+        # Holder (`owner`) is the attacking monster; `other` is the victim.
+        # Queue Wounds only when this monster landed unblocked damage.
+        if owner is not self._owner or unblocked <= 0:
+            return
+        from .monsters import _queue_status, WOUND_CARD
+        _queue_status(owner, WOUND_CARD, "discard", self.amount)
+
+
+@dataclass
+class HardenedShellPower(Power):
+    """HardenedShellPower.cs (ModifyHpLostBeforeOsty): caps the TOTAL HP the
+    owner loses this turn at `amount` (a per-turn damage cap). We track HP lost
+    this turn on the power and clamp each incoming HP-loss to the remaining
+    budget; the budget resets at the owner's turn start."""
+    id: str = field(default="hardened_shell", init=False)
+    _owner: object = None
+    _lost_this_turn: int = 0
+
+    def on_turn_start(self, cs, owner) -> None:
+        self._lost_this_turn = 0
+
+    def modify_hp_lost(self, dealer, target, amount: int) -> int:
+        if target is not self._owner:
+            return amount
+        remaining = max(0, self.amount - self._lost_this_turn)
+        capped = min(amount, remaining)
+        self._lost_this_turn += capped
+        return capped
+
+
+@dataclass
+class BufferPower(Power):
+    """BufferPower.cs (ModifyHpLostAfterOsty): prevents the next `amount`
+    instances of HP loss entirely (each prevented loss decrements a charge)."""
+    id: str = field(default="buffer", init=False)
+    _owner: object = None
+
+    def modify_hp_lost(self, dealer, target, amount: int) -> int:
+        if target is not self._owner or self.amount <= 0 or amount <= 0:
+            return amount
+        self.amount -= 1
+        if self.amount <= 0 and self in self._owner.powers:
+            self._owner.powers.remove(self)
+        return 0
+
+
+@dataclass
+class BlurPower(Power):
+    """BlurPower.cs (ShouldClearBlock -> False for owner): the owner's Block is
+    not cleared at turn start while Blur is active. Decrements at the owner's
+    turn start (1-stack duration via the engine's blur decay)."""
+    id: str = field(default="blur", init=False)
+    _owner: object = None
+
+    def blocks_block_reset(self) -> bool:
+        return True
+
+
+@dataclass
+class DoubleDamagePower(Power):
+    """DoubleDamagePower.cs (ModifyDamageMultiplicative): the owner's powered
+    attacks deal ×2 damage. Counter ticks down at turn end (engine decay)."""
+    id: str = field(default="double_damage", init=False)
+    _owner: object = None
+
+    def modify_damage_multiplicative(self, dealer, target, base_amount: int) -> float:
+        if dealer is not self._owner:
+            return 1.0
+        return 2.0
+
+
+@dataclass
+class TemporaryStrengthPower(Power):
+    """TemporaryStrengthPower.cs: applies +amount Strength immediately (the .cs
+    silently applies a real StrengthPower) and removes that Strength again at
+    the owner's turn end. We model it by carrying the Strength on this power and
+    reversing it at turn end. Positive form only (the Down form is a debuff with
+    negative net Strength)."""
+    id: str = field(default="temporary_strength", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        owner.add_or_stack_power(make_power("strength", -self.amount, owner))
+        if self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class TemporaryDexterityPower(Power):
+    """TemporaryDexterityPower.cs: +amount Dexterity for the turn, reversed at
+    the owner's turn end. We surface the block bonus directly (additive, like
+    DexterityPower) and remove it at turn end."""
+    id: str = field(default="temporary_dexterity", init=False)
+    _owner: object = None
+
+    def modify_block_additive(self, dealer, base_amount: int) -> int:
+        if dealer is not self._owner:
+            return 0
+        return self.amount
+
+    def on_turn_end(self, cs, owner) -> None:
+        if self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class StrengthDownPower(Power):
+    """MonarchsGazeStrengthDownPower.cs / temporary Strength-down: applies
+    -amount Strength immediately and removes it at the owner's turn end. We
+    model the net effect: the owner's outgoing attacks are reduced by `amount`
+    until its turn ends, at which point the penalty is lifted."""
+    id: str = field(default="strength_down", init=False)
+    _owner: object = None
+
+    def modify_damage_additive(self, dealer, target, base_amount: int) -> int:
+        if dealer is not self._owner:
+            return 0
+        return -self.amount
+
+    def on_turn_end(self, cs, owner) -> None:
+        if self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class RagePower(Power):
+    """RagePower.cs (AfterCardPlayed, Attack): gain `amount` Block whenever the
+    owner plays an Attack. Removed at the owner's turn end (engine decay)."""
+    id: str = field(default="rage", init=False)
+    _owner: object = None
+
+    def on_card_played(self, cs, owner, card) -> None:
+        from .dsl import CardType
+        if card.type is CardType.ATTACK:
+            from .damage import gain_block
+            gain_block(owner, self.amount)
+
+
+@dataclass
+class AfterimagePower(Power):
+    """AfterimagePower.cs (AfterCardPlayed): gain `amount` Block whenever the
+    owner plays ANY card (Unpowered)."""
+    id: str = field(default="afterimage", init=False)
+    _owner: object = None
+
+    def on_card_played(self, cs, owner, card) -> None:
+        from .damage import gain_block
+        gain_block(owner, self.amount)
+
+
+@dataclass
+class EnvenomPower(Power):
+    """EnvenomPower.cs (AfterAttack, unblocked): apply `amount` Poison to the
+    target of the owner's attacks. We fire on on_attacked where the owner is the
+    dealer and the hit dealt unblocked damage."""
+    id: str = field(default="envenom", init=False)
+    _owner: object = None
+
+    def on_attacked(self, owner, other, blocked: int, unblocked: int) -> None:
+        # Holder (`owner`) is the attacker; apply Poison to the victim `other`.
+        if owner is not self._owner or unblocked <= 0:
+            return
+        other.add_or_stack_power(make_power("poison", self.amount, other))
+
+
 POWER_REGISTRY: dict[str, type[Power]] = {
     "no_draw": NoDrawPower,
     "strength": StrengthPower,
@@ -750,6 +1159,31 @@ POWER_REGISTRY: dict[str, type[Power]] = {
     "intangible": IntangiblePower,
     "metallicize_start": MetallicizeStartPower,
     "monster_barricade": MonsterBarricadePower,
+    # Phase 8B — monster powers (faithful triggers from the decompile).
+    "curl_up": CurlUpPower,
+    "ritual": RitualPower,
+    "regen": RegenPower,
+    "enrage": EnragePower,
+    "flame_barrier": FlameBarrierPower,
+    "reflect": ReflectPower,
+    "soar": SoarPower,
+    "flutter": FlutterPower,
+    "slumber": SlumberPower,
+    "asleep": AsleepPower,
+    "constrict": ConstrictPower,
+    "crab_rage": CrabRagePower,
+    "painful_stabs": PainfulStabsPower,
+    "hardened_shell": HardenedShellPower,
+    "double_damage": DoubleDamagePower,
+    # Phase 8B — player/relic powers.
+    "buffer": BufferPower,
+    "blur": BlurPower,
+    "temporary_strength": TemporaryStrengthPower,
+    "temporary_dexterity": TemporaryDexterityPower,
+    "strength_down": StrengthDownPower,
+    "rage": RagePower,
+    "afterimage": AfterimagePower,
+    "envenom": EnvenomPower,
 }
 
 

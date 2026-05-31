@@ -58,6 +58,16 @@ def deal_damage(base_amount: int, dealer: Creature, target: Creature) -> tuple[i
     if (thorns is not None and thorns.amount > 0 and unblocked > 0
             and dealer is not target and dealer.alive):
         dealer.lose_hp(thorns.amount)
+    # Attack-reaction hooks (Phase 8B): fire on_attacked for every power held by
+    # the TARGET (Curl Up, Flame Barrier, Reflect, Slumber/Asleep, Flutter) and
+    # by the DEALER (Painful Stabs, Envenom react to landing an attack). Iterate
+    # snapshots so a hook that removes its own power is safe. Guarded on
+    # dealer is not target (self-damage does not trigger reactions).
+    if dealer is not target:
+        for p in list(target.powers):
+            p.on_attacked(target, dealer, blocked, unblocked)
+        for p in list(dealer.powers):
+            p.on_attacked(dealer, target, blocked, unblocked)
     # Vigor (VigorPower.cs): consumed after the powered attack it boosted.
     # We treat any attack routed through deal_damage as a powered attack, so
     # remove the dealer's Vigor entirely (ModifyAmount(-amountWhenStarted)).
