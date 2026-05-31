@@ -23,6 +23,51 @@ from .dsl import CardDef, CardType
 from .powers import StrengthPower, WeakPower, make_power
 
 
+# --- RNG shims --------------------------------------------------------------
+# Monster *spawn* time is driven by the run's `Rng` wrapper (sim/rng.py), while
+# in-combat `take_turn` is driven by a stdlib `random.Random`. Neither exposes
+# the full API of the other, so these shims normalise the few operations the
+# table monsters + group factories need across both.
+
+def _rng_random(rng) -> float:
+    if hasattr(rng, "next_float"):
+        return rng.next_float(0.0, 1.0)
+    return rng.random()
+
+
+def _rng_choice(rng, items):
+    # Both Rng and random.Random expose `choice`.
+    return rng.choice(items)
+
+
+def _rng_choices(rng, names, weights):
+    """Weighted single pick that works on Rng or random.Random."""
+    if hasattr(rng, "choices"):
+        return rng.choices(names, weights=weights)[0]
+    total = float(sum(weights))
+    r = _rng_random(rng) * total
+    upto = 0.0
+    for n, w in zip(names, weights):
+        upto += w
+        if r < upto:
+            return n
+    return names[-1]
+
+
+def _rng_sample(rng, items, k):
+    """Sample k distinct items, working on Rng or random.Random."""
+    if hasattr(rng, "sample"):
+        return rng.sample(items, k)
+    pool = list(items)
+    out = []
+    for _ in range(k):
+        idx = int(_rng_random(rng) * len(pool))
+        if idx >= len(pool):
+            idx = len(pool) - 1
+        out.append(pool.pop(idx))
+    return out
+
+
 def _a8(asc: int, base: int, ascended: int) -> int:
     """Return ascended value if ASC>=8 (ToughEnemies), else base."""
     return ascended if asc >= 8 else base
@@ -1677,3 +1722,1106 @@ class Queen(Monster):
         self.last_move = move
         self.next_move = self.roll_next_move(rng)
         return event
+
+
+# ===========================================================================
+# GENERIC MOVE-TABLE MONSTERS (Phase 8 roster expansion)
+# ===========================================================================
+# The remaining Overgrowth / Hive / Glory normals + elites all follow the same
+# decompiled shape: a fixed-name MoveState set wired into either a
+# deterministic FollowUp chain or a RandomBranchState (with CannotRepeat /
+# weighted branches). Rather than hand-write a near-identical class per
+# monster, we describe each by a declarative move table and an AI graph and
+# run them all through one faithful engine (`_TableMonster`).
+#
+# Each Move carries the decompiled (base, ascended) numbers so _a9 (damage) /
+# _a8 (block) scaling stays exact. Effects are limited to powers the sim
+# already implements (strength/weak/frail/vulnerable/thorns/plating/poison);
+# unmodeled visual powers (Tender, Hex, Slumber, Artifact, CurlUp, ...) are
+# documented and approximated or dropped, matching the simplification policy
+# used by the boss/elite classes above.
+
+
+@dataclass
+class _Move:
+    name: str
+    # damage tuple (base, ascended_a9); 0 -> non-attack move.
+    dmg: tuple[int, int] = (0, 0)
+    hits: int = 1                      # MultiAttackIntent repeat count
+    block: tuple[int, int] = (0, 0)    # self block gained (a8 scaled)
+    self_strength: tuple[int, int] = (0, 0)   # StrengthPower to self (a9)
+    self_thorns: int = 0
+    self_plating: int = 0
+    # player debuffs (id -> amount); only sim-registered powers.
+    debuffs: tuple[tuple[str, int], ...] = ()
+    status: tuple = ()                 # (card_id, pile, count) or empty
+    next: str | None = None            # deterministic follow-up state name
+
+
+# Status-card id -> CardDef for the table monsters.
+_STATUS_CARDS = {
+    "wound": WOUND_CARD,
+    "burn": BURN_CARD,
+}
+
+
+@dataclass
+class _TableMonster(Monster):
+    """Faithful engine for the declarative move-table monsters.
+
+    Subclasses set class attributes:
+      MNAME           display name
+      HP / HP_A8      flat HP (or HP_MIN/MAX[/_A8] for a roll)
+      MOVES           dict[name -> _Move]
+      START           starting move name
+      RAND            optional dict[name -> list[(name, weight, cannot_repeat)]]
+                      describing RandomBranchState transitions out of `name`.
+    """
+    last_move: str | None = None
+    next_move: str | None = None
+    ascension: int = 0
+
+    # NB: the following are plain CLASS attributes (no type annotation) so the
+    # dataclass machinery does NOT turn them into instance fields. If they were
+    # fields, the generated __init__ would reset them to the base defaults on
+    # every instance, shadowing each subclass's overrides.
+    MNAME = "Monster"
+    HP = 1
+    HP_A8 = 1
+    HP_MIN = None
+    HP_MAX = None
+    HP_MIN_A8 = None
+    HP_MAX_A8 = None
+    MOVES = None
+    START = ""
+    RAND = None
+
+    @classmethod
+    def _roll_hp(cls, rng: random.Random, ascension: int) -> int:
+        if cls.HP_MIN is not None:
+            lo = _a8(ascension, cls.HP_MIN, cls.HP_MIN_A8 or cls.HP_MIN)
+            hi = _a8(ascension, cls.HP_MAX, cls.HP_MAX_A8 or cls.HP_MAX)
+            return rng.randint(lo, hi)
+        return _a8(ascension, cls.HP, cls.HP_A8)
+
+    @classmethod
+    def spawn(cls, rng: random.Random, ascension: int = 0):
+        hp = cls._roll_hp(rng, ascension)
+        m = cls(name=cls.MNAME, hp=hp, max_hp=hp, ascension=ascension)
+        m.next_move = cls.START
+        return m
+
+    def _branch(self, rng: random.Random, key: str) -> str:
+        """Pick from a RandomBranchState; honours CannotRepeat + weights."""
+        branches = self.RAND[key]
+        pool = [(n, w) for (n, w, cannot) in branches
+                if not (cannot and n == self.last_move)]
+        if not pool:  # everything would repeat -> allow repeats (bag dry)
+            pool = [(n, w) for (n, w, _c) in branches]
+        names = [n for n, _w in pool]
+        weights = [w for _n, w in pool]
+        return _rng_choices(rng, names, weights)
+
+    def roll_next_move(self, rng: random.Random) -> str:
+        last = self.last_move
+        if last is None:
+            return self.START
+        mv = self.MOVES[last]
+        if mv.next is not None:
+            return mv.next
+        if self.RAND and last in self.RAND:
+            return self._branch(rng, last)
+        # Several moves can funnel into one shared RAND node, keyed by "*".
+        if self.RAND and "*" in self.RAND:
+            return self._branch(rng, "*")
+        return self.START
+
+    def intent_damage(self) -> int:
+        if self.next_move is None:
+            return 0
+        mv = self.MOVES[self.next_move]
+        if mv.dmg == (0, 0):
+            return 0
+        str_amt = self.get_power("strength").amount if self.get_power("strength") else 0
+        return (_a9(self.ascension, mv.dmg[0], mv.dmg[1]) + str_amt) * mv.hits
+
+    def take_turn(self, rng: random.Random, player: Creature) -> dict:
+        name = self.next_move or self.roll_next_move(rng)
+        mv = self.MOVES[name]
+        event = {"move": name, "damage": 0, "blocked": 0, "hp_loss": 0}
+
+        if mv.dmg != (0, 0):
+            per = _a9(self.ascension, mv.dmg[0], mv.dmg[1])
+            for _ in range(mv.hits):
+                blocked, hp_loss = deal_damage(per, self, player)
+                event["damage"] += per
+                event["blocked"] += blocked
+                event["hp_loss"] += hp_loss
+        if mv.block != (0, 0):
+            self.block += _a8(self.ascension, mv.block[0], mv.block[1])
+        if mv.self_plating:
+            self.add_or_stack_power(make_power("plating", mv.self_plating, self))
+        if mv.self_thorns:
+            self.add_or_stack_power(make_power("thorns", mv.self_thorns, self))
+        if mv.self_strength != (0, 0):
+            amt = _a9(self.ascension, mv.self_strength[0], mv.self_strength[1])
+            st = StrengthPower(amount=amt)
+            st._owner = self
+            self.add_or_stack_power(st)
+        for pid, amt in mv.debuffs:
+            player.add_or_stack_power(make_power(pid, amt, player))
+        if mv.status:
+            card_id, pile, count = mv.status
+            _queue_status(self, _STATUS_CARDS[card_id], pile, count)
+
+        self.last_move = name
+        self.next_move = self.roll_next_move(rng)
+        return event
+
+
+# --- Overgrowth normals/weaks ---------------------------------------------
+
+class FuzzyWurmCrawler(_TableMonster):
+    # FuzzyWurmCrawler.cs: HP 55-57 (A8 58-59). FIRST_ACID_GOOP(4/6) ->
+    # INHALE(+7 Str) -> ACID_GOOP(4/6) -> FIRST_ACID_GOOP (loop).
+    MNAME = "Fuzzy Wurm Crawler"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 55, 57, 58, 59
+    START = "FIRST_ACID_GOOP"
+    MOVES = {
+        "FIRST_ACID_GOOP": _Move("FIRST_ACID_GOOP", dmg=(4, 6), next="INHALE"),
+        "INHALE": _Move("INHALE", self_strength=(7, 7), next="ACID_GOOP"),
+        "ACID_GOOP": _Move("ACID_GOOP", dmg=(4, 6), next="FIRST_ACID_GOOP"),
+    }
+
+
+class ShrinkerBeetle(_TableMonster):
+    # ShrinkerBeetle.cs: HP 38-40 (A8 40-42). SHRINK(Shrink debuff ~Weak)
+    # -> CHOMP(7/8) -> STOMP(13/14) -> CHOMP (loop). Shrink reduces player dmg;
+    # approximated by Weak 2 (no Shrink power in sim).
+    MNAME = "Shrinker Beetle"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 38, 40, 40, 42
+    START = "SHRINK"
+    MOVES = {
+        "SHRINK": _Move("SHRINK", debuffs=(("weak", 2),), next="CHOMP"),
+        "CHOMP": _Move("CHOMP", dmg=(7, 8), next="STOMP"),
+        "STOMP": _Move("STOMP", dmg=(13, 14), next="CHOMP"),
+    }
+
+
+class Mawler(_TableMonster):
+    # Mawler.cs: HP 72 (A8 76). Start CLAW(4/5 x2); RandomBranch:
+    # RIP_AND_TEAR(14/16) CannotRepeat, ROAR(Vuln 3) UseOnlyOnce, CLAW x2.
+    MNAME = "Mawler"
+    HP, HP_A8 = 72, 76
+    START = "CLAW"
+    MOVES = {
+        "RIP_AND_TEAR": _Move("RIP_AND_TEAR", dmg=(14, 16)),
+        "ROAR": _Move("ROAR", debuffs=(("vulnerable", 3),)),
+        "CLAW": _Move("CLAW", dmg=(4, 5), hits=2),
+    }
+    _roared: bool = False
+
+    def roll_next_move(self, rng: random.Random) -> str:
+        if self.last_move is None:
+            return self.START
+        branches = [("RIP_AND_TEAR", 1.0, True), ("CLAW", 1.0, True)]
+        if not self._roared:
+            branches.append(("ROAR", 1.0, False))  # UseOnlyOnce
+        pool = [(n, w) for (n, w, c) in branches
+                if not (c and n == self.last_move)]
+        if not pool:
+            pool = [(n, w) for (n, w, _c) in branches]
+        choice = _rng_choices(rng, [n for n, _w in pool],
+                              [w for _n, w in pool])
+        if choice == "ROAR":
+            self._roared = True
+        return choice
+
+
+class VineShambler(_TableMonster):
+    # VineShambler.cs: HP 61 (A8 64). Start SWIPE(6/7 x2) -> GRASPING_VINES
+    # (8/9 + Tangled~Frail) -> CHOMP(16/18) -> SWIPE (loop).
+    MNAME = "Vine Shambler"
+    HP, HP_A8 = 61, 64
+    START = "SWIPE"
+    MOVES = {
+        "GRASPING_VINES": _Move("GRASPING_VINES", dmg=(8, 9),
+                                debuffs=(("frail", 1),), next="CHOMP"),
+        "SWIPE": _Move("SWIPE", dmg=(6, 7), hits=2, next="GRASPING_VINES"),
+        "CHOMP": _Move("CHOMP", dmg=(16, 18), next="SWIPE"),
+    }
+
+
+class CubexConstruct(_TableMonster):
+    # CubexConstruct.cs: HP 65 (A8 70). Starts with 13 block + Artifact 1
+    # (cosmetic). CHARGE_UP(+2 Str) -> REPEATER(7/8 +2Str) -> REPEATER2(7/8
+    # +2Str) -> EXPEL(5/6 x2) -> REPEATER (loop).
+    MNAME = "Cubex Construct"
+    HP, HP_A8 = 65, 70
+    START = "CHARGE_UP"
+    MOVES = {
+        "CHARGE_UP": _Move("CHARGE_UP", self_strength=(2, 2), next="REPEATER"),
+        "REPEATER": _Move("REPEATER", dmg=(7, 8), self_strength=(2, 2),
+                          next="REPEATER2"),
+        "REPEATER2": _Move("REPEATER2", dmg=(7, 8), self_strength=(2, 2),
+                           next="EXPEL"),
+        "EXPEL": _Move("EXPEL", dmg=(5, 6), hits=2, next="REPEATER"),
+    }
+
+    @classmethod
+    def spawn(cls, rng: random.Random, ascension: int = 0):
+        m = super().spawn(rng, ascension)
+        m.block = 13  # AfterAddedToRoom GainBlock(13)
+        return m
+
+
+class Flyconid(_TableMonster):
+    # Flyconid.cs: HP 47-49 (A8 51-53). Initial RAND: FRAIL_SPORES(8/9 + Frail)
+    # w2 / SMASH(11/12) w1. Main RAND: VULN_SPORES(Vuln) w3 / FRAIL_SPORES w2 /
+    # SMASH w1, all CannotRepeat.
+    MNAME = "Flyconid"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 47, 49, 51, 53
+    START = "__INITIAL__"
+    MOVES = {
+        "VULN_SPORES": _Move("VULN_SPORES", debuffs=(("vulnerable", 2),)),
+        "FRAIL_SPORES": _Move("FRAIL_SPORES", dmg=(8, 9),
+                              debuffs=(("frail", 2),)),
+        "SMASH": _Move("SMASH", dmg=(11, 12)),
+    }
+    RAND = {
+        "*": [("VULN_SPORES", 3.0, True), ("FRAIL_SPORES", 2.0, True),
+              ("SMASH", 1.0, True)],
+    }
+
+    def roll_next_move(self, rng: random.Random) -> str:
+        if self.last_move is None or self.last_move == "__INITIAL__":
+            # INITIAL RandomBranch: FRAIL_SPORES w2, SMASH w1.
+            return _rng_choices(rng, ["FRAIL_SPORES", "SMASH"], [2.0, 1.0])
+        return self._branch(rng, "*")
+
+    @classmethod
+    def spawn(cls, rng: random.Random, ascension: int = 0):
+        m = super().spawn(rng, ascension)
+        m.next_move = m.roll_next_move(rng)  # resolve INITIAL branch up front
+        m.last_move = None
+        return m
+
+
+class SnappingJaxfruit(_TableMonster):
+    # SnappingJaxfruit.cs: HP 31-33 (A8 34-36). Single move ENERGY_ORB(3/4 +2
+    # Str) self-loop.
+    MNAME = "Snapping Jaxfruit"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 31, 33, 34, 36
+    START = "ENERGY_ORB"
+    MOVES = {
+        "ENERGY_ORB": _Move("ENERGY_ORB", dmg=(3, 4), self_strength=(2, 2),
+                            next="ENERGY_ORB"),
+    }
+
+
+class Inklet(_TableMonster):
+    # Inklet.cs: HP 11-17 (A8 12-18). Small minion. JAB(3/4) w2 / WHIRLWIND
+    # (2/3 x3) random attacker; PIERCING_GAZE(10/11) for the middle inklet.
+    MNAME = "Inklet"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 11, 17, 12, 18
+    START = "JAB"
+    MOVES = {
+        "JAB": _Move("JAB", dmg=(3, 4)),
+        "WHIRLWIND": _Move("WHIRLWIND", dmg=(2, 3), hits=3),
+        "PIERCING_GAZE": _Move("PIERCING_GAZE", dmg=(10, 11)),
+    }
+    RAND = {"*": [("JAB", 2.0, False), ("WHIRLWIND", 1.0, True)]}
+
+
+class SlitheringStrangler(_TableMonster):
+    # SlitheringStrangler.cs: HP 53-55 (A8 54-56). CONSTRICT(Constrict~Weak3)
+    # -> RAND{THWACK(7/8 +5blk), LASH(12/13)} -> CONSTRICT.
+    MNAME = "Slithering Strangler"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 53, 55, 54, 56
+    START = "CONSTRICT"
+    MOVES = {
+        "CONSTRICT": _Move("CONSTRICT", debuffs=(("weak", 3),)),
+        "THWACK": _Move("THWACK", dmg=(7, 8), block=(5, 5), next="CONSTRICT"),
+        "LASH": _Move("LASH", dmg=(12, 13), next="CONSTRICT"),
+    }
+    RAND = {"CONSTRICT": [("THWACK", 1.0, False), ("LASH", 1.0, False)]}
+
+
+# Slimes — Overgrowth SlimesNormal/Weak + Flyconid/Strangler add-ons.
+class LeafSlimeS(_TableMonster):
+    # LeafSlimeS.cs: HP 11-15 (A8 12-16). RAND BUTT(3/4) / GOOP(status).
+    MNAME = "Leaf Slime (S)"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 11, 15, 12, 16
+    START = "BUTT"
+    MOVES = {
+        "BUTT": _Move("BUTT", dmg=(3, 4)),
+        "GOOP": _Move("GOOP", status=("wound", "discard", 1)),
+    }
+    RAND = {"*": [("BUTT", 1.0, True), ("GOOP", 1.0, True)]}
+
+
+class TwigSlimeS(_TableMonster):
+    # TwigSlimeS.cs: HP 7-11 (A8 8-12). BUTT(4/5) self-loop.
+    MNAME = "Twig Slime (S)"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 7, 11, 8, 12
+    START = "BUTT"
+    MOVES = {"BUTT": _Move("BUTT", dmg=(4, 5), next="BUTT")}
+
+
+class LeafSlimeM(_TableMonster):
+    # LeafSlimeM.cs: HP 32-35 (A8 33-36). STICKY(status) -> CLUMP(8/9) ->
+    # STICKY (loop).
+    MNAME = "Leaf Slime (M)"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 32, 35, 33, 36
+    START = "STICKY"
+    MOVES = {
+        "STICKY": _Move("STICKY", status=("wound", "discard", 2), next="CLUMP"),
+        "CLUMP": _Move("CLUMP", dmg=(8, 9), next="STICKY"),
+    }
+
+
+class TwigSlimeM(_TableMonster):
+    # TwigSlimeM.cs: HP 26-28 (A8 27-29). RAND STICKY(status1)/CLUMP(11/12).
+    MNAME = "Twig Slime (M)"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 26, 28, 27, 29
+    START = "STICKY"
+    MOVES = {
+        "STICKY": _Move("STICKY", status=("wound", "discard", 1)),
+        "CLUMP": _Move("CLUMP", dmg=(11, 12)),
+    }
+    RAND = {"*": [("STICKY", 1.0, True), ("CLUMP", 1.0, True)]}
+
+
+# RubyRaiders (Overgrowth RubyRaidersNormal: 3 distinct raiders).
+class AxeRubyRaider(_TableMonster):
+    # AxeRubyRaider.cs: HP 20-22 (A8 21-23). SWING(5/6 +blk) -> SWING2 ->
+    # BIG_SWING(12/13) -> SWING.
+    MNAME = "Axe Ruby Raider"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 20, 22, 21, 23
+    START = "SWING1"
+    MOVES = {
+        "SWING1": _Move("SWING1", dmg=(5, 6), block=(5, 5), next="SWING2"),
+        "SWING2": _Move("SWING2", dmg=(5, 6), block=(5, 5), next="BIG_SWING"),
+        "BIG_SWING": _Move("BIG_SWING", dmg=(12, 13), next="SWING1"),
+    }
+
+
+class AssassinRubyRaider(_TableMonster):
+    # AssassinRubyRaider.cs: HP 18-23 (A8 19-24). KILLSHOT(11/12) self-loop.
+    MNAME = "Assassin Ruby Raider"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 18, 23, 19, 24
+    START = "KILLSHOT"
+    MOVES = {"KILLSHOT": _Move("KILLSHOT", dmg=(11, 12), next="KILLSHOT")}
+
+
+class BruteRubyRaider(_TableMonster):
+    # BruteRubyRaider.cs: HP 30-33 (A8 31-34). BEAT(7/8) -> ROAR(+Str) -> BEAT.
+    MNAME = "Brute Ruby Raider"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 30, 33, 31, 34
+    START = "BEAT"
+    MOVES = {
+        "BEAT": _Move("BEAT", dmg=(7, 8), next="ROAR"),
+        "ROAR": _Move("ROAR", self_strength=(3, 3), next="BEAT"),
+    }
+
+
+class CrossbowRubyRaider(_TableMonster):
+    # CrossbowRubyRaider.cs: HP 18-21 (A8 19-22). RELOAD(+blk) -> FIRE(14/16)
+    # -> RELOAD.
+    MNAME = "Crossbow Ruby Raider"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 18, 21, 19, 22
+    START = "RELOAD"
+    MOVES = {
+        "RELOAD": _Move("RELOAD", block=(6, 6), next="FIRE"),
+        "FIRE": _Move("FIRE", dmg=(14, 16), next="RELOAD"),
+    }
+
+
+class TrackerRubyRaider(_TableMonster):
+    # TrackerRubyRaider.cs: HP 21-25 (A8 22-26). TRACK(Vuln) -> HOUNDS(1 x N)
+    # self-loop. Hounds modeled as 1 dmg x4 plus the Vulnerable from track.
+    MNAME = "Tracker Ruby Raider"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 21, 25, 22, 26
+    START = "TRACK"
+    MOVES = {
+        "TRACK": _Move("TRACK", debuffs=(("vulnerable", 2),), next="HOUNDS"),
+        "HOUNDS": _Move("HOUNDS", dmg=(1, 1), hits=4, next="HOUNDS"),
+    }
+
+
+# --- Hive normals/weaks ----------------------------------------------------
+
+class HunterKiller(_TableMonster):
+    # HunterKiller.cs: HP 121 (A8 126). Start GOOP(Tender~Vuln1) -> RAND
+    # BITE(17/19) CannotRepeat / PUNCTURE(7/8 x3) w2.
+    MNAME = "Hunter Killer"
+    HP, HP_A8 = 121, 126
+    START = "GOOP"
+    MOVES = {
+        "GOOP": _Move("GOOP", debuffs=(("vulnerable", 1),)),
+        "BITE": _Move("BITE", dmg=(17, 19)),
+        "PUNCTURE": _Move("PUNCTURE", dmg=(7, 8), hits=3),
+    }
+    RAND = {"*": [("BITE", 1.0, True), ("PUNCTURE", 2.0, False)],
+            "GOOP": [("BITE", 1.0, True), ("PUNCTURE", 2.0, False)]}
+
+
+class Ovicopter(_TableMonster):
+    # Ovicopter.cs: HP 124-130 (A8 126-132). LAY_EGGS(summon; sim: +3/+4 Str
+    # proxy for the egg threat) -> SMASH(16/17) -> TENDERIZER(7/8 + Vuln2) ->
+    # SMASH (loop). We fold the summon into a self-strength gain.
+    MNAME = "Ovicopter"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 124, 130, 126, 132
+    START = "LAY_EGGS"
+    MOVES = {
+        "LAY_EGGS": _Move("LAY_EGGS", self_strength=(3, 4), next="SMASH"),
+        "SMASH": _Move("SMASH", dmg=(16, 17), next="TENDERIZER"),
+        "TENDERIZER": _Move("TENDERIZER", dmg=(7, 8),
+                            debuffs=(("vulnerable", 2),), next="SMASH"),
+    }
+
+
+class SlumberingBeetle(_TableMonster):
+    # SlumberingBeetle.cs: HP 86 (A8 89). Spawns Plating 15/18 + Slumber.
+    # SNORE(sleep) -> ROLL_OUT(16/18 +2Str) self-loop once awake.
+    MNAME = "Slumbering Beetle"
+    HP, HP_A8 = 86, 89
+    START = "SNORE"
+    MOVES = {
+        "SNORE": _Move("SNORE", next="ROLL_OUT"),
+        "ROLL_OUT": _Move("ROLL_OUT", dmg=(16, 18), self_strength=(2, 2),
+                          next="ROLL_OUT"),
+    }
+
+    @classmethod
+    def spawn(cls, rng: random.Random, ascension: int = 0):
+        m = super().spawn(rng, ascension)
+        m.add_or_stack_power(make_power("plating", _a8(ascension, 15, 18), m))
+        return m
+
+
+class TheObscura(_TableMonster):
+    # TheObscura.cs: HP 123 (A8 129). ILLUSION(summon; sim: +3 Str proxy) ->
+    # RAND PIERCING_GAZE(10/11) / WAIL(team Str -> self +3 Str) /
+    # HARDENING_STRIKE(6/7 +6/7 blk), all CannotRepeat.
+    MNAME = "The Obscura"
+    HP, HP_A8 = 123, 129
+    START = "ILLUSION"
+    MOVES = {
+        "ILLUSION": _Move("ILLUSION", self_strength=(3, 3)),
+        "PIERCING_GAZE": _Move("PIERCING_GAZE", dmg=(10, 11)),
+        "WAIL": _Move("WAIL", self_strength=(3, 3)),
+        "HARDENING_STRIKE": _Move("HARDENING_STRIKE", dmg=(6, 7),
+                                  block=(6, 7)),
+    }
+    RAND = {"*": [("PIERCING_GAZE", 1.0, True), ("WAIL", 1.0, True),
+                  ("HARDENING_STRIKE", 1.0, True)],
+            "ILLUSION": [("PIERCING_GAZE", 1.0, True), ("WAIL", 1.0, True),
+                         ("HARDENING_STRIKE", 1.0, True)]}
+
+
+class Tunneler(_TableMonster):
+    # Tunneler.cs: HP 87 (A8 92). BITE(13/15) -> BURROW(+blk 32/37) ->
+    # BELOW(23/26) self-loop. (DIZZY stun branch not reached in main chain.)
+    MNAME = "Tunneler"
+    HP, HP_A8 = 87, 92
+    START = "BITE"
+    MOVES = {
+        "BITE": _Move("BITE", dmg=(13, 15), next="BURROW"),
+        "BURROW": _Move("BURROW", block=(32, 37), next="BELOW"),
+        "BELOW": _Move("BELOW", dmg=(23, 26), next="BELOW"),
+    }
+
+
+class ThievingHopper(_TableMonster):
+    # ThievingHopper.cs: HP 79 (A8 84). THIEVERY(17/19) -> FLUTTER(self buff;
+    # sim: +2 Str proxy) -> HAT_TRICK(21/23) -> NAB(14/16) -> ESCAPE(flees;
+    # sim: no-op terminal looping NAB).
+    MNAME = "Thieving Hopper"
+    HP, HP_A8 = 79, 84
+    START = "THIEVERY"
+    MOVES = {
+        "THIEVERY": _Move("THIEVERY", dmg=(17, 19), next="FLUTTER"),
+        "FLUTTER": _Move("FLUTTER", self_strength=(2, 2), next="HAT_TRICK"),
+        "HAT_TRICK": _Move("HAT_TRICK", dmg=(21, 23), next="NAB"),
+        "NAB": _Move("NAB", dmg=(14, 16), next="ESCAPE"),
+        "ESCAPE": _Move("ESCAPE", next="NAB"),
+    }
+
+
+class Myte(_TableMonster):
+    # Myte.cs: HP 61-67 (A8 64-69). TOXIC(status2) -> BITE(13/15) -> SUCK(4/6
+    # +2/3 Str) -> TOXIC (loop).
+    MNAME = "Myte"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 61, 67, 64, 69
+    START = "TOXIC"
+    MOVES = {
+        "TOXIC": _Move("TOXIC", status=("wound", "discard", 2), next="BITE"),
+        "BITE": _Move("BITE", dmg=(13, 15), next="SUCK"),
+        "SUCK": _Move("SUCK", dmg=(4, 6), self_strength=(2, 3), next="TOXIC"),
+    }
+
+
+class LouseProgenitor(_TableMonster):
+    # LouseProgenitor.cs: HP 134-136 (A8 138-141). CurlUp(block). WEB(9/10 +
+    # Frail2) -> CURL_AND_GROW(+blk 14/18 +5 Str) -> POUNCE(14/16) -> WEB.
+    MNAME = "Louse Progenitor"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 134, 136, 138, 141
+    START = "WEB"
+    MOVES = {
+        "WEB": _Move("WEB", dmg=(9, 10), debuffs=(("frail", 2),),
+                     next="CURL_AND_GROW"),
+        "CURL_AND_GROW": _Move("CURL_AND_GROW", block=(14, 18),
+                               self_strength=(5, 5), next="POUNCE"),
+        "POUNCE": _Move("POUNCE", dmg=(14, 16), next="WEB"),
+    }
+
+
+class Chomper(_TableMonster):
+    # Chomper.cs: HP 60-64 (A8 63-67). Spawns Artifact 2 (cosmetic).
+    # CLAMP(8/9 x2) -> SCREECH(status3) -> CLAMP (loop).
+    MNAME = "Chomper"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 60, 64, 63, 67
+    START = "CLAMP"
+    MOVES = {
+        "CLAMP": _Move("CLAMP", dmg=(8, 9), hits=2, next="SCREECH"),
+        "SCREECH": _Move("SCREECH", status=("wound", "discard", 3),
+                         next="CLAMP"),
+    }
+
+
+class Exoskeleton(_TableMonster):
+    # Exoskeleton.cs: HP 24-28 (A8 25-29). HardToKill (cosmetic). RAND
+    # SKITTER(1 x3) / MANDIBLES(8/9 -> ENRAGE +2 Str). MANDIBLES funnels into
+    # ENRAGE, then back to RAND.
+    MNAME = "Exoskeleton"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 24, 28, 25, 29
+    START = "__ENTRY__"
+    MOVES = {
+        "SKITTER": _Move("SKITTER", dmg=(1, 1), hits=3),
+        "MANDIBLES": _Move("MANDIBLES", dmg=(8, 9), next="ENRAGE"),
+        "ENRAGE": _Move("ENRAGE", self_strength=(2, 2)),
+    }
+    RAND = {"*": [("SKITTER", 1.0, True), ("MANDIBLES", 1.0, True)]}
+
+    def roll_next_move(self, rng: random.Random) -> str:
+        if self.last_move is None or self.last_move == "__ENTRY__":
+            return self._branch(rng, "*")
+        if self.last_move == "MANDIBLES":
+            return "ENRAGE"
+        return self._branch(rng, "*")
+
+    @classmethod
+    def spawn(cls, rng: random.Random, ascension: int = 0):
+        m = super().spawn(rng, ascension)
+        m.next_move = m._branch(rng, "*")
+        m.last_move = None
+        return m
+
+
+# Bowlbug family (Hive Bowlbugs encounters).
+class BowlbugRock(_TableMonster):
+    # BowlbugRock.cs: HP 45-48 (A8 46-49). HEADBUTT(15/16) -> DIZZY(stun) ->
+    # HEADBUTT. Modeled as HEADBUTT -> DIZZY(no-op) -> HEADBUTT.
+    MNAME = "Bowlbug Rock"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 45, 48, 46, 49
+    START = "HEADBUTT"
+    MOVES = {
+        "HEADBUTT": _Move("HEADBUTT", dmg=(15, 16), next="DIZZY"),
+        "DIZZY": _Move("DIZZY", next="HEADBUTT"),
+    }
+
+
+class BowlbugEgg(_TableMonster):
+    # BowlbugEgg.cs: HP 21-22 (A8 23-24). BITE(7/8 + 7/8 block) self-loop.
+    MNAME = "Bowlbug Egg"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 21, 22, 23, 24
+    START = "BITE"
+    MOVES = {
+        "BITE": _Move("BITE", dmg=(7, 8), block=(7, 8), next="BITE"),
+    }
+
+
+class BowlbugNectar(_TableMonster):
+    # BowlbugNectar.cs: HP 35-38 (A8 36-39). THRASH(3) -> BUFF(+15/16 Str) ->
+    # THRASH2(3) self-loop.
+    MNAME = "Bowlbug Nectar"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 35, 38, 36, 39
+    START = "THRASH"
+    MOVES = {
+        "THRASH": _Move("THRASH", dmg=(3, 3), next="BUFF"),
+        "BUFF": _Move("BUFF", self_strength=(15, 16), next="THRASH2"),
+        "THRASH2": _Move("THRASH2", dmg=(3, 3), next="THRASH2"),
+    }
+
+
+class BowlbugSilk(_TableMonster):
+    # BowlbugSilk.cs: HP 40-43 (A8 41-44). TOXIC_SPIT(Weak1) -> THRASH(4/5 x2)
+    # -> TOXIC_SPIT (loop). Starts at TOXIC_SPIT.
+    MNAME = "Bowlbug Silk"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 40, 43, 41, 44
+    START = "TOXIC_SPIT"
+    MOVES = {
+        "TOXIC_SPIT": _Move("TOXIC_SPIT", debuffs=(("weak", 1),),
+                            next="THRASH"),
+        "THRASH": _Move("THRASH", dmg=(4, 5), hits=2, next="TOXIC_SPIT"),
+    }
+
+
+# --- Glory normals ---------------------------------------------------------
+
+class Axebot(_TableMonster):
+    # Axebot.cs: HP 40-44 (A8 42-46). BOOT_UP(+10 blk +1 Str) -> RAND
+    # ONE_TWO(5/6 x2) w2 / SHARPEN(+4 Str) CannotRepeat / HAMMER_UPPERCUT(8/10
+    # + Weak1 Frail1) w2.
+    MNAME = "Axebot"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 40, 44, 42, 46
+    START = "BOOT_UP"
+    MOVES = {
+        "BOOT_UP": _Move("BOOT_UP", block=(10, 10), self_strength=(1, 1)),
+        "ONE_TWO": _Move("ONE_TWO", dmg=(5, 6), hits=2),
+        "SHARPEN": _Move("SHARPEN", self_strength=(4, 4)),
+        "HAMMER_UPPERCUT": _Move("HAMMER_UPPERCUT", dmg=(8, 10),
+                                 debuffs=(("weak", 1), ("frail", 1))),
+    }
+    RAND = {"*": [("ONE_TWO", 2.0, False), ("SHARPEN", 1.0, True),
+                  ("HAMMER_UPPERCUT", 2.0, False)]}
+
+    def roll_next_move(self, rng: random.Random) -> str:
+        if self.last_move is None:
+            return self.START
+        return self._branch(rng, "*")
+
+
+class SlimedBerserker(_TableMonster):
+    # SlimedBerserker.cs: HP 266 (A8 276). VOMIT_ICHOR(status10) ->
+    # FURIOUS_PUMMELING(4/5 x4) -> LEECHING_HUG(Weak3 + self Str3) ->
+    # SMOTHER(30/33) -> VOMIT_ICHOR (loop).
+    MNAME = "Slimed Berserker"
+    HP, HP_A8 = 266, 276
+    START = "VOMIT_ICHOR"
+    MOVES = {
+        "VOMIT_ICHOR": _Move("VOMIT_ICHOR", status=("wound", "discard", 10),
+                             next="FURIOUS_PUMMELING"),
+        "FURIOUS_PUMMELING": _Move("FURIOUS_PUMMELING", dmg=(4, 5), hits=4,
+                                   next="LEECHING_HUG"),
+        "LEECHING_HUG": _Move("LEECHING_HUG", debuffs=(("weak", 3),),
+                              self_strength=(3, 3), next="SMOTHER"),
+        "SMOTHER": _Move("SMOTHER", dmg=(30, 33), next="VOMIT_ICHOR"),
+    }
+
+
+class OwlMagistrate(_TableMonster):
+    # OwlMagistrate.cs: HP 234 (A8 243). SCRUTINY(16/17) -> PECK_ASSAULT(4 x6)
+    # -> JUDICIAL_FLIGHT(Soar; sim +1 Str proxy) -> VERDICT(33/36 + Vuln4) ->
+    # SCRUTINY (loop).
+    MNAME = "Owl Magistrate"
+    HP, HP_A8 = 234, 243
+    START = "SCRUTINY"
+    MOVES = {
+        "SCRUTINY": _Move("SCRUTINY", dmg=(16, 17), next="PECK_ASSAULT"),
+        "PECK_ASSAULT": _Move("PECK_ASSAULT", dmg=(4, 4), hits=6,
+                              next="JUDICIAL_FLIGHT"),
+        "JUDICIAL_FLIGHT": _Move("JUDICIAL_FLIGHT", self_strength=(1, 1),
+                                 next="VERDICT"),
+        "VERDICT": _Move("VERDICT", dmg=(33, 36), debuffs=(("vulnerable", 4),),
+                         next="SCRUTINY"),
+    }
+
+
+class PunchConstruct(_TableMonster):
+    # PunchConstruct.cs: HP 55 (A8 60). Spawns Artifact 1 (cosmetic).
+    # READY(+10 blk) -> STRONG_PUNCH(14/16) -> FAST_PUNCH(5/6 x2 + Weak1) ->
+    # READY (loop).
+    MNAME = "Punch Construct"
+    HP, HP_A8 = 55, 60
+    START = "READY"
+    MOVES = {
+        "READY": _Move("READY", block=(10, 10), next="STRONG_PUNCH"),
+        "STRONG_PUNCH": _Move("STRONG_PUNCH", dmg=(14, 16), next="FAST_PUNCH"),
+        "FAST_PUNCH": _Move("FAST_PUNCH", dmg=(5, 6), hits=2,
+                            debuffs=(("weak", 1),), next="READY"),
+    }
+
+
+class TheLost(_TableMonster):
+    # TheLost.cs: HP 93 (A8 99). DEBILITATING_SMOG(steal 2 Str: self +2 Str
+    # + player Weak proxy) -> EYE_LASERS(4/5 x2) -> SMOG (loop).
+    MNAME = "The Lost"
+    HP, HP_A8 = 93, 99
+    START = "DEBILITATING_SMOG"
+    MOVES = {
+        "DEBILITATING_SMOG": _Move("DEBILITATING_SMOG", self_strength=(2, 2),
+                                   debuffs=(("weak", 1),), next="EYE_LASERS"),
+        "EYE_LASERS": _Move("EYE_LASERS", dmg=(4, 5), hits=2,
+                            next="DEBILITATING_SMOG"),
+    }
+
+
+class TheForgotten(_TableMonster):
+    # TheForgotten.cs: HP 106 (A8 111). MIASMA(steal Dex: +8 blk + Frail proxy)
+    # -> DREAD(13/15) -> MIASMA (loop).
+    MNAME = "The Forgotten"
+    HP, HP_A8 = 106, 111
+    START = "MIASMA"
+    MOVES = {
+        "MIASMA": _Move("MIASMA", block=(8, 8), debuffs=(("frail", 1),),
+                        next="DREAD"),
+        "DREAD": _Move("DREAD", dmg=(13, 15), next="MIASMA"),
+    }
+
+
+# --- Knights (Glory KnightsElite trio) -------------------------------------
+
+class FlailKnight(_TableMonster):
+    # FlailKnight.cs: HP 101 (A8 108). Start RAM(15/17); RAND WAR_CHANT(+3 Str)
+    # CannotRepeat / FLAIL(9/10 x2) w2 / RAM(15/17) w2.
+    MNAME = "Flail Knight"
+    HP, HP_A8 = 101, 108
+    START = "RAM"
+    MOVES = {
+        "WAR_CHANT": _Move("WAR_CHANT", self_strength=(3, 3)),
+        "FLAIL": _Move("FLAIL", dmg=(9, 10), hits=2),
+        "RAM": _Move("RAM", dmg=(15, 17)),
+    }
+    RAND = {"*": [("WAR_CHANT", 1.0, True), ("FLAIL", 2.0, False),
+                  ("RAM", 2.0, False)]}
+
+    def roll_next_move(self, rng: random.Random) -> str:
+        if self.last_move is None:
+            return self.START
+        return self._branch(rng, "*")
+
+
+class SpectralKnight(_TableMonster):
+    # SpectralKnight.cs: HP 93 (A8 97). HEX(debuff~Weak2) -> SOUL_SLASH(15/17)
+    # -> RAND SOUL_SLASH(15/17) w2 / SOUL_FLAME(3/4 x3) CannotRepeat.
+    MNAME = "Spectral Knight"
+    HP, HP_A8 = 93, 97
+    START = "HEX"
+    MOVES = {
+        "HEX": _Move("HEX", debuffs=(("weak", 2),), next="SOUL_SLASH"),
+        "SOUL_SLASH": _Move("SOUL_SLASH", dmg=(15, 17)),
+        "SOUL_FLAME": _Move("SOUL_FLAME", dmg=(3, 4), hits=3),
+    }
+    RAND = {"*": [("SOUL_SLASH", 2.0, False), ("SOUL_FLAME", 1.0, True)]}
+
+    def roll_next_move(self, rng: random.Random) -> str:
+        last = self.last_move
+        if last is None:
+            return self.START
+        if last == "HEX":
+            return "SOUL_SLASH"
+        return self._branch(rng, "*")
+
+
+class MagiKnight(_TableMonster):
+    # MagiKnight.cs: HP 82 (A8 89). POWER_SHIELD(6/7 + 5/9 blk) -> DAMPEN
+    # (debuff~Weak2) -> SPEAR(10/11) -> PREP(+blk) -> MAGIC_BOMB(35/40) ->
+    # SPEAR (loop).
+    MNAME = "Magi Knight"
+    HP, HP_A8 = 82, 89
+    START = "POWER_SHIELD"
+    MOVES = {
+        "POWER_SHIELD": _Move("POWER_SHIELD", dmg=(6, 7), block=(5, 9),
+                              next="DAMPEN"),
+        "DAMPEN": _Move("DAMPEN", debuffs=(("weak", 2),), next="SPEAR"),
+        "SPEAR": _Move("SPEAR", dmg=(10, 11), next="PREP"),
+        "PREP": _Move("PREP", block=(9, 9), next="MAGIC_BOMB"),
+        "MAGIC_BOMB": _Move("MAGIC_BOMB", dmg=(35, 40), next="SPEAR"),
+    }
+
+
+# --- Decimillipede segments (Hive DecimillipedeElite, 3 segments) ----------
+# DecimillipedeSegment.cs: each segment HP 40-46 (A8 46-52). WRITHE(5/6 x2) ->
+# CONSTRICT(8/9 + Weak1) -> BULK(6/7 + Str) -> WRITHE (loop). The Front /
+# Middle / Back start at staggered indices (StarterMoveIdx % 3). Reattach /
+# Doom mechanics (segments revive each other) are cosmetic-complex and omitted;
+# each segment fights as an independent monster, which combat already supports.
+
+class DecimillipedeSegment(_TableMonster):
+    MNAME = "Decimillipede Segment"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 40, 46, 46, 52
+    START = "WRITHE"
+    MOVES = {
+        "WRITHE": _Move("WRITHE", dmg=(5, 6), hits=2, next="CONSTRICT"),
+        "CONSTRICT": _Move("CONSTRICT", dmg=(8, 9), debuffs=(("weak", 1),),
+                           next="BULK"),
+        "BULK": _Move("BULK", dmg=(6, 7), self_strength=(1, 1), next="WRITHE"),
+    }
+
+
+class ScrollOfBiting(_TableMonster):
+    # ScrollOfBiting.cs: HP 31-38 (A8 32-39). CHOMP(14/16) -> MORE_TEETH(+2
+    # Str) -> CHEW(5/6 x2) -> RAND{CHOMP CannotRepeat, CHEW w2}. PaperCuts is
+    # cosmetic. Different scrolls start at staggered indices.
+    MNAME = "Scroll of Biting"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 31, 38, 32, 39
+    START = "CHOMP"
+    MOVES = {
+        "CHOMP": _Move("CHOMP", dmg=(14, 16), next="MORE_TEETH"),
+        "MORE_TEETH": _Move("MORE_TEETH", self_strength=(2, 2), next="CHEW"),
+        "CHEW": _Move("CHEW", dmg=(5, 6), hits=2),
+    }
+    RAND = {"CHEW": [("CHOMP", 1.0, True), ("CHEW", 2.0, False)]}
+
+
+class DevotedSculptor(_TableMonster):
+    # DevotedSculptor.cs: HP 162 (A8 172). FORBIDDEN_INCANTATION(Ritual; sim:
+    # +2 Str proxy per turn) -> SAVAGE(12/15) self-loop.
+    MNAME = "Devoted Sculptor"
+    HP, HP_A8 = 162, 172
+    START = "FORBIDDEN_INCANTATION"
+    MOVES = {
+        "FORBIDDEN_INCANTATION": _Move("FORBIDDEN_INCANTATION",
+                                       self_strength=(2, 2), next="SAVAGE"),
+        "SAVAGE": _Move("SAVAGE", dmg=(12, 15), next="SAVAGE"),
+    }
+
+
+class BygoneEffigy(_TableMonster):
+    # BygoneEffigy.cs (Overgrowth elite): HP 127 (A8 132). INITIAL_SLEEP(no-op)
+    # -> WAKE(+10 Str) -> SLASHES(13/15) self-loop. Slow power cosmetic.
+    MNAME = "Bygone Effigy"
+    HP, HP_A8 = 127, 132
+    START = "INITIAL_SLEEP"
+    MOVES = {
+        "INITIAL_SLEEP": _Move("INITIAL_SLEEP", next="WAKE"),
+        "WAKE": _Move("WAKE", self_strength=(10, 10), next="SLASHES"),
+        "SLASHES": _Move("SLASHES", dmg=(13, 15), next="SLASHES"),
+    }
+
+
+class Byrdonis(_TableMonster):
+    # Byrdonis.cs (Overgrowth elite): HP 81-84 (A8 90). Territorial cosmetic.
+    # SWOOP(17/19) -> PECK(3/4 x3) -> SWOOP (loop). Starts at SWOOP.
+    MNAME = "Byrdonis"
+    HP_MIN, HP_MAX, HP_MIN_A8, HP_MAX_A8 = 81, 84, 90, 90
+    START = "SWOOP"
+    MOVES = {
+        "SWOOP": _Move("SWOOP", dmg=(17, 19), next="PECK"),
+        "PECK": _Move("PECK", dmg=(3, 4), hits=3, next="SWOOP"),
+    }
+
+
+class Fabricator(_TableMonster):
+    # Fabricator.cs (Glory normal): HP 150 (A8 155). FABRICATE(summon; sim: +3
+    # Str proxy) / FABRICATING_STRIKE(18/21 + summon) random, then
+    # DISINTEGRATE(11/13). Modeled as a fixed FABRICATING_STRIKE -> DISINTEGRATE
+    # -> FABRICATE loop (the damage-relevant moves) for determinism.
+    MNAME = "Fabricator"
+    HP, HP_A8 = 150, 155
+    START = "FABRICATING_STRIKE"
+    MOVES = {
+        "FABRICATING_STRIKE": _Move("FABRICATING_STRIKE", dmg=(18, 21),
+                                    self_strength=(3, 3), next="DISINTEGRATE"),
+        "DISINTEGRATE": _Move("DISINTEGRATE", dmg=(11, 13), next="FABRICATE"),
+        "FABRICATE": _Move("FABRICATE", self_strength=(3, 3),
+                           next="FABRICATING_STRIKE"),
+    }
+
+
+# ===========================================================================
+# MULTI-MONSTER GROUP FACTORIES
+# ===========================================================================
+
+def spawn_slimes_normal(rng, ascension: int = 0) -> list[Monster]:
+    """SlimesNormal: TwigSlimeM + LeafSlimeM + 2 small slimes (one Leaf, one
+    Twig, order RNG'd). SlimesNormal.cs GenerateMonsters."""
+    flag = _rng_random(rng) < 0.5
+    small_a = LeafSlimeS if flag else TwigSlimeS
+    small_b = TwigSlimeS if flag else LeafSlimeS
+    return [
+        TwigSlimeM.spawn(rng, ascension=ascension),
+        LeafSlimeM.spawn(rng, ascension=ascension),
+        small_a.spawn(rng, ascension=ascension),
+        small_b.spawn(rng, ascension=ascension),
+    ]
+
+
+def spawn_slimes_weak(rng, ascension: int = 0) -> list[Monster]:
+    """SlimesWeak: 2 distinct small slimes + 1 medium slime. SlimesWeak.cs."""
+    smalls = [LeafSlimeS, TwigSlimeS]
+    first = rng.choice(smalls)
+    second = LeafSlimeS if first is TwigSlimeS else TwigSlimeS
+    medium = rng.choice([LeafSlimeM, TwigSlimeM])
+    return [
+        first.spawn(rng, ascension=ascension),
+        medium.spawn(rng, ascension=ascension),
+        second.spawn(rng, ascension=ascension),
+    ]
+
+
+def spawn_inklets_normal(rng, ascension: int = 0) -> list[Monster]:
+    """InkletsNormal: 3 Inklets (middle one uses the PiercingGaze branch).
+    InkletsNormal.cs."""
+    a = Inklet.spawn(rng, ascension=ascension)
+    a.name = "Inklet (1)"
+    mid = Inklet.spawn(rng, ascension=ascension)
+    mid.name = "Inklet (Middle)"
+    mid.next_move = "PIERCING_GAZE"
+    b = Inklet.spawn(rng, ascension=ascension)
+    b.name = "Inklet (3)"
+    return [a, mid, b]
+
+
+def spawn_ruby_raiders_normal(rng, ascension: int = 0) -> list[Monster]:
+    """RubyRaidersNormal: 3 distinct raiders sampled without repeat (each has
+    valid count 1). RubyRaidersNormal.cs."""
+    raiders = [AxeRubyRaider, AssassinRubyRaider, BruteRubyRaider,
+               CrossbowRubyRaider, TrackerRubyRaider]
+    chosen = _rng_sample(rng, raiders, 3)
+    return [c.spawn(rng, ascension=ascension) for c in chosen]
+
+
+def spawn_chompers_normal(rng, ascension: int = 0) -> list[Monster]:
+    """ChompersNormal: 2 Chompers. ChompersNormal.cs."""
+    a = Chomper.spawn(rng, ascension=ascension)
+    a.name = "Chomper (1)"
+    b = Chomper.spawn(rng, ascension=ascension)
+    b.name = "Chomper (2)"
+    return [a, b]
+
+
+def spawn_tunneler_normal(rng, ascension: int = 0) -> list[Monster]:
+    """TunnelerNormal: 1 Chomper + 1 Tunneler. TunnelerNormal.cs."""
+    return [Chomper.spawn(rng, ascension=ascension),
+            Tunneler.spawn(rng, ascension=ascension)]
+
+
+def spawn_exoskeletons_normal(rng, ascension: int = 0) -> list[Monster]:
+    """ExoskeletonsNormal: 4 Exoskeletons. ExoskeletonsNormal.cs."""
+    out = []
+    for i in range(4):
+        e = Exoskeleton.spawn(rng, ascension=ascension)
+        e.name = f"Exoskeleton ({i + 1})"
+        out.append(e)
+    return out
+
+
+def spawn_exoskeletons_weak(rng, ascension: int = 0) -> list[Monster]:
+    """ExoskeletonsWeak: 3 Exoskeletons. ExoskeletonsWeak.cs."""
+    out = []
+    for i in range(3):
+        e = Exoskeleton.spawn(rng, ascension=ascension)
+        e.name = f"Exoskeleton ({i + 1})"
+        out.append(e)
+    return out
+
+
+def spawn_bowlbugs_normal(rng, ascension: int = 0) -> list[Monster]:
+    """BowlbugsNormal: 1 BowlbugRock + 2 of {Egg, Silk, Nectar}.
+    BowlbugsNormal.cs."""
+    bugs = [BowlbugEgg, BowlbugSilk, BowlbugNectar]
+    picks = [rng.choice(bugs) for _ in range(2)]
+    return [BowlbugRock.spawn(rng, ascension=ascension)] + \
+           [p.spawn(rng, ascension=ascension) for p in picks]
+
+
+def spawn_bowlbugs_weak(rng, ascension: int = 0) -> list[Monster]:
+    """BowlbugsWeak: 1 BowlbugRock + 1 of {Egg, Nectar}. BowlbugsWeak.cs."""
+    other = rng.choice([BowlbugEgg, BowlbugNectar])
+    return [BowlbugRock.spawn(rng, ascension=ascension),
+            other.spawn(rng, ascension=ascension)]
+
+
+def spawn_axebots_normal(rng, ascension: int = 0) -> list[Monster]:
+    """AxebotsNormal: 2 Axebots (front/back). AxebotsNormal.cs."""
+    a = Axebot.spawn(rng, ascension=ascension)
+    a.name = "Axebot (Front)"
+    b = Axebot.spawn(rng, ascension=ascension)
+    b.name = "Axebot (Back)"
+    return [a, b]
+
+
+def spawn_construct_menagerie_normal(rng, ascension: int = 0) -> list[Monster]:
+    """ConstructMenagerieNormal: PunchConstruct + 2 CubexConstructs.
+    ConstructMenagerieNormal.cs."""
+    out = [PunchConstruct.spawn(rng, ascension=ascension)]
+    for i in range(2):
+        c = CubexConstruct.spawn(rng, ascension=ascension)
+        c.name = f"Cubex Construct ({i + 1})"
+        out.append(c)
+    return out
+
+
+def spawn_lost_and_forgotten_normal(rng, ascension: int = 0) -> list[Monster]:
+    """TheLostAndForgottenNormal: TheLost + TheForgotten.
+    TheLostAndForgottenNormal.cs."""
+    return [TheLost.spawn(rng, ascension=ascension),
+            TheForgotten.spawn(rng, ascension=ascension)]
+
+
+def spawn_decimillipede_elite(rng, ascension: int = 0) -> list[Monster]:
+    """DecimillipedeElite: 3 segments (front/middle/back) starting at staggered
+    move indices. DecimillipedeElite.cs / DecimillipedeSegment.cs."""
+    cycle = ["WRITHE", "CONSTRICT", "BULK"]
+    out = []
+    for i, label in enumerate(("Front", "Middle", "Back")):
+        seg = DecimillipedeSegment.spawn(rng, ascension=ascension)
+        seg.name = f"Decimillipede ({label})"
+        seg.next_move = cycle[i % 3]  # StarterMoveIdx % 3
+        out.append(seg)
+    return out
+
+
+def spawn_knights_elite(rng, ascension: int = 0) -> list[Monster]:
+    """KnightsElite: FlailKnight + SpectralKnight + MagiKnight.
+    KnightsElite.cs."""
+    return [FlailKnight.spawn(rng, ascension=ascension),
+            SpectralKnight.spawn(rng, ascension=ascension),
+            MagiKnight.spawn(rng, ascension=ascension)]
+
+
+def spawn_slithering_strangler_normal(rng, ascension: int = 0) -> list[Monster]:
+    """SlitheringStranglerNormal: 1 Strangler + a secondary group (Jaxfruit /
+    medium slime / 2 small slimes). SlitheringStranglerNormal.cs."""
+    kind = rng.choice(["jaxfruit", "medium", "smalls"])
+    extras: list[Monster] = []
+    if kind == "jaxfruit":
+        extras = [SnappingJaxfruit.spawn(rng, ascension=ascension)]
+    elif kind == "medium":
+        med = rng.choice([LeafSlimeM, TwigSlimeM])
+        extras = [med.spawn(rng, ascension=ascension)]
+    else:
+        for _ in range(2):
+            sm = rng.choice([LeafSlimeS, TwigSlimeS])
+            extras.append(sm.spawn(rng, ascension=ascension))
+    return extras + [SlitheringStrangler.spawn(rng, ascension=ascension)]
+
+
+def spawn_snapping_jaxfruit_normal(rng, ascension: int = 0) -> list[Monster]:
+    """SnappingJaxfruitNormal: 1 Jaxfruit + 1 Flyconid.
+    SnappingJaxfruitNormal.cs."""
+    return [SnappingJaxfruit.spawn(rng, ascension=ascension),
+            Flyconid.spawn(rng, ascension=ascension)]
+
+
+def spawn_flyconid_normal(rng, ascension: int = 0) -> list[Monster]:
+    """FlyconidNormal: 1 medium slime + 1 Flyconid. FlyconidNormal.cs."""
+    med = rng.choice([LeafSlimeM, TwigSlimeM])
+    return [med.spawn(rng, ascension=ascension),
+            Flyconid.spawn(rng, ascension=ascension)]
+
+
+def _spawn_scrolls(rng, ascension: int, n: int) -> list[Monster]:
+    """n Scrolls of Biting at staggered starting moves (CHOMP / CHEW /
+    MORE_TEETH cycle the StarterMoveIdx)."""
+    starts = ["CHOMP", "CHEW", "MORE_TEETH"]
+    out = []
+    for i in range(n):
+        s = ScrollOfBiting.spawn(rng, ascension=ascension)
+        s.name = f"Scroll of Biting ({i + 1})"
+        s.next_move = starts[i % 3]
+        out.append(s)
+    return out
+
+
+def spawn_scrolls_normal(rng, ascension: int = 0) -> list[Monster]:
+    """ScrollsOfBitingNormal: 4 Scrolls of Biting. ScrollsOfBitingNormal.cs."""
+    return _spawn_scrolls(rng, ascension, 4)
+
+
+def spawn_scrolls_weak(rng, ascension: int = 0) -> list[Monster]:
+    """ScrollsOfBitingWeak: 3 Scrolls of Biting. ScrollsOfBitingWeak.cs."""
+    return _spawn_scrolls(rng, ascension, 3)

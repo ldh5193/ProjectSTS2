@@ -11,26 +11,69 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .monsters import (
+    Axebot,
+    BygoneEffigy,
+    Byrdonis,
     CeremonialBeast,
+    Chomper,
+    CubexConstruct,
+    DevotedSculptor,
     Doormaker,
+    Fabricator,
     Entomancer,
+    Flyconid,
     FrogKnight,
+    FuzzyWurmCrawler,
     GlobeHead,
+    HunterKiller,
     InfestedPrism,
     LagavulinMatriarch,
+    LouseProgenitor,
+    Mawler,
     MechaKnight,
     Monster,
+    Myte,
     NibbitWeak,
+    Ovicopter,
+    OwlMagistrate,
+    PunchConstruct,
     Queen,
+    ShrinkerBeetle,
+    SlimedBerserker,
     SludgeSpinnerWeak,
+    SlumberingBeetle,
     SoulFysh,
     SoulNexus,
     SpinyToad,
     TestSubject,
     TheInsatiable,
+    TheObscura,
+    ThievingHopper,
+    Tunneler,
     Vantom,
+    VineShambler,
     WaterfallGiant,
+    spawn_axebots_normal,
+    spawn_bowlbugs_normal,
+    spawn_bowlbugs_weak,
+    spawn_chompers_normal,
+    spawn_construct_menagerie_normal,
+    spawn_decimillipede_elite,
+    spawn_exoskeletons_normal,
+    spawn_exoskeletons_weak,
+    spawn_flyconid_normal,
+    spawn_inklets_normal,
+    spawn_knights_elite,
+    spawn_lost_and_forgotten_normal,
     spawn_nibbits_normal,
+    spawn_ruby_raiders_normal,
+    spawn_scrolls_normal,
+    spawn_scrolls_weak,
+    spawn_slimes_normal,
+    spawn_slimes_weak,
+    spawn_slithering_strangler_normal,
+    spawn_snapping_jaxfruit_normal,
+    spawn_tunneler_normal,
 )
 from .rng import Rng
 
@@ -262,6 +305,30 @@ _FACTORY_BY_ID = {
     # Act 3 (Glory) common normals (solo).
     "GlobeHeadNormal": GlobeHead.spawn,
     "FrogKnightNormal": FrogKnight.spawn,
+    # --- Phase 8 roster expansion: solo normals/weaks ---------------------
+    # Overgrowth solo encounters.
+    "FuzzyWurmCrawlerWeak": FuzzyWurmCrawler.spawn,
+    "ShrinkerBeetleWeak": ShrinkerBeetle.spawn,
+    "MawlerNormal": Mawler.spawn,
+    "VineShamblerNormal": VineShambler.spawn,
+    "CubexConstructNormal": CubexConstruct.spawn,
+    # Hive solo encounters.
+    "TunnelerWeak": Tunneler.spawn,
+    "ThievingHopperWeak": ThievingHopper.spawn,
+    "HunterKillerNormal": HunterKiller.spawn,
+    "OvicopterNormal": Ovicopter.spawn,
+    "SlumberingBeetleNormal": SlumberingBeetle.spawn,
+    "TheObscuraNormal": TheObscura.spawn,
+    "MytesNormal": Myte.spawn,
+    "LouseProgenitorNormal": LouseProgenitor.spawn,
+    # Glory solo encounters.
+    "SlimedBerserkerNormal": SlimedBerserker.spawn,
+    "OwlMagistrateNormal": OwlMagistrate.spawn,
+    "FabricatorNormal": Fabricator.spawn,
+    "DevotedSculptorWeak": DevotedSculptor.spawn,
+    # Overgrowth elites (solo).
+    "BygoneEffigyElite": BygoneEffigy.spawn,
+    "ByrdonisElite": Byrdonis.spawn,
 }
 
 # Multi-monster encounters return a list[Monster]. Used by Cycle F's
@@ -269,6 +336,30 @@ _FACTORY_BY_ID = {
 # single-monster table when both are defined.
 _MULTI_FACTORY_BY_ID = {
     "NibbitsNormal": spawn_nibbits_normal,
+    # --- Phase 8 roster expansion: multi-monster groups -------------------
+    # Overgrowth groups.
+    "SlimesNormal": spawn_slimes_normal,
+    "SlimesWeak": spawn_slimes_weak,
+    "InkletsNormal": spawn_inklets_normal,
+    "RubyRaidersNormal": spawn_ruby_raiders_normal,
+    "SnappingJaxfruitNormal": spawn_snapping_jaxfruit_normal,
+    "FlyconidNormal": spawn_flyconid_normal,
+    "SlitheringStranglerNormal": spawn_slithering_strangler_normal,
+    # Hive groups.
+    "ChompersNormal": spawn_chompers_normal,
+    "ExoskeletonsNormal": spawn_exoskeletons_normal,
+    "ExoskeletonsWeak": spawn_exoskeletons_weak,
+    "BowlbugsNormal": spawn_bowlbugs_normal,
+    "BowlbugsWeak": spawn_bowlbugs_weak,
+    "DecimillipedeElite": spawn_decimillipede_elite,
+    # Glory groups.
+    "AxebotsNormal": spawn_axebots_normal,
+    "ConstructMenagerieNormal": spawn_construct_menagerie_normal,
+    "TheLostAndForgottenNormal": spawn_lost_and_forgotten_normal,
+    "TunnelerNormal": spawn_tunneler_normal,
+    "KnightsElite": spawn_knights_elite,
+    "ScrollsOfBitingNormal": spawn_scrolls_normal,
+    "ScrollsOfBitingWeak": spawn_scrolls_weak,
 }
 
 
