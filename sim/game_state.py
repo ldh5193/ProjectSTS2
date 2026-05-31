@@ -156,6 +156,9 @@ class RunState:
     relics: list[RelicInstance] = field(default_factory=list)
     potions: list[Optional[PotionInstance]] = field(default_factory=lambda: [None, None, None])
     max_potion_slots: int = 3
+    # Self-adjusting potion-reward odds (decompiled PotionRewardOdds: base 0.4,
+    # drifts ±0.1 toward the 0.5 target each combat). Persists across the run.
+    potion_reward_odds: float = 0.4
 
     # Per-act maps; index = act-1.
     maps: list[Optional[RunMap]] = field(default_factory=lambda: [None, None, None])

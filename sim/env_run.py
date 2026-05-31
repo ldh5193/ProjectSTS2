@@ -500,6 +500,17 @@ class RunEnv(gym.Env):
         rs = self.rs
         assert rs is not None
         view: dict[str, Any] = {"state_type": rs.state_type.value}
+        # Belt loadout — one entry per slot, None for empty. Carries
+        # can_use_in_combat so _potion_mask only offers drinkable potions in
+        # combat (real potion ids now; see sim/potions.py POTION_REGISTRY).
+        from .potions import can_use_in_combat as _can_use_pot
+        _potions_view = [
+            None if p is None else {
+                "id": p.id,
+                "can_use_in_combat": _can_use_pot(p.id),
+            }
+            for p in (getattr(rs, "potions", None) or [])
+        ]
         if rs.in_combat() and rs.combat is not None:
             cs = rs.combat
             alive = cs.alive_monsters()
@@ -527,10 +538,18 @@ class RunEnv(gym.Env):
                     }
                     for i, c in enumerate(cs.hand)
                 ],
+                "potions": _potions_view,
+                "max_potion_slots": rs.max_potion_slots,
             }
         if rs.state_type is StateType.MAP:
             opts = self._reachable_map_nodes_cached()
             view["map"] = {"options": [{"x": n.x, "floor": n.floor} for n in opts]}
+            # Map: expose belt so _potion_mask can offer discard-only slots
+            # (between-room loadout management).
+            view["player"] = {
+                "potions": _potions_view,
+                "max_potion_slots": rs.max_potion_slots,
+            }
         if rs.state_type is StateType.CARD_REWARD:
             # Post-combat reward: mask reads view.card_reward.cards,
             # decode emits select_card_reward / skip_card_reward.

@@ -245,15 +245,10 @@ _CARD_BASE_COST = {
     CardRarity.BASIC: 50,
     CardRarity.ANCIENT: 150,
 }
-# Potion base prices by rarity (MerchantPotionEntry.GetCost). The L1 potion
-# pool (FIRE/BLOCK/ENERGY) is all common-tier; price ~50 +/- jitter, which
-# lands inside the requested 50-75 window once the rare/uncommon options are
-# unavailable. We bias the jitter band up slightly to reach ~50-65.
-_POTION_BASE_COST = 50
-
-# L1 potion pool — same three commons used for combat drops (run_engine
-# _step_combat) so the shop can't grant a potion the engine can't apply.
-_SHOP_POTION_POOL = ("FIRE_POTION", "BLOCK_POTION", "ENERGY_POTION")
+# Potion prices/pool now live in sim/potions.py (POTION_SHOP_BASE_COST by
+# rarity + the rarity-weighted roll_potion draw). The old fixed FIRE/BLOCK/
+# ENERGY proxy pool and flat base cost were removed when the real potion
+# system landed.
 
 # Default relic merchant cost when a registry entry has merchant_cost=0
 # (boss/event relics aren't normally shop-stocked; keep them buyable but
@@ -348,11 +343,21 @@ def _stock_shop(rs: RunState) -> dict:
         })
         idx += 1
 
-    # ---- Potions: 2 (PopulatePotionEntries stocks 3; L1 pool is small) ----
+    # ---- Potions: 2 real pooled potions (MerchantInventory.PopulatePotionEntries
+    # draws via PotionFactory; price = MerchantPotionEntry.GetCost by rarity
+    # rare 100 / uncommon 75 / common 50, × NextFloat(0.95, 1.05) jitter). ----
+    from .potions import roll_potion, potion_rarity, POTION_SHOP_BASE_COST
+    seen_potions: set[str] = set()
     for _ in range(2):
-        pid = _SHOP_POTION_POOL[rng.next_int(0, len(_SHOP_POTION_POOL))]
-        # Common-tier base 50; jitter biased to the 50-65 window requested.
-        price = int(round(_POTION_BASE_COST * rng.next_float(1.0, 1.30)))
+        pid = roll_potion(rng)
+        # De-dupe within a single shop (best-effort; small pool tolerance).
+        for _retry in range(4):
+            if pid not in seen_potions:
+                break
+            pid = roll_potion(rng)
+        seen_potions.add(pid)
+        base = POTION_SHOP_BASE_COST.get(potion_rarity(pid), 50)
+        price = int(round(base * rng.next_float(0.95, 1.05)))
         items.append({
             "index": idx,
             "category": "potion",
@@ -530,32 +535,25 @@ def _step_combat(rs: RunState, body: dict, res: StepResult) -> StepResult:
                 cs.target_index = tgt
         cs.play_card(idx)
     elif action == "use_potion":
-        # L1 potion effects — applied in-combat. Per-floor diagnostic
-        # showed 0 potion usage across 30 episodes because the action
-        # had no handler. Sim now drops potions from combat (40-100%)
-        # so the policy has something to use.
+        # Real POTION effects (sim/potions.py POTION_REGISTRY). Routes the
+        # potion through its decompiled effect (block/damage/energy/draw/
+        # powers/heal/…) against the chosen enemy slot. Belt slot is freed
+        # whether or not the id is recognised.
+        from .potions import apply_potion
         slot = body.get("slot", -1)
         if not (0 <= slot < len(rs.potions)) or rs.potions[slot] is None:
             res.invalid_action = True
             res.reason = f"no potion in slot {slot}"
             return res
         pid = rs.potions[slot].id
-        if pid == "FIRE_POTION":
-            # 20 damage to selected enemy (or first alive).
-            alive = cs.alive_monsters()
-            if alive:
-                tgt = body.get("target")
-                t_idx = tgt if isinstance(tgt, int) and 0 <= tgt < len(alive) else 0
-                alive[t_idx].take_damage(20, source="potion")
-        elif pid == "BLOCK_POTION":
-            cs.player.block = getattr(cs.player, "block", 0) + 12
-        elif pid == "ENERGY_POTION":
-            cs.player.energy = getattr(cs.player, "energy", 0) + 2
-        else:
-            # Unknown potion id — consume harmlessly. (Defensive: future
-            # potion pool expansion lands here.)
-            pass
+        tgt = body.get("target")
+        t_idx = tgt if isinstance(tgt, int) else 0
+        apply_potion(rs, cs, pid, t_idx)
         rs.potions[slot] = None
+        # Re-sync combat-side player HP into the run HP after heals
+        # (Blood/Fairy/Fruit Juice) so the run sees the post-heal value.
+        rs.hp = cs.player.hp
+        rs.max_hp = cs.player.max_hp
     elif action == "discard_potion":
         slot = body.get("slot", -1)
         if not (0 <= slot < len(rs.potions)) or rs.potions[slot] is None:
@@ -574,25 +572,28 @@ def _step_combat(rs: RunState, body: dict, res: StepResult) -> StepResult:
         rs.hp = cs.player.hp  # carry over post-combat HP
         # Fire relic after-combat-victory hooks (Burning Blood, Black Blood, …).
         trigger_after_combat_victory(rs)
-        # STS2 potion drop: 40% on regular monsters, 100% on elite/boss
-        # (decompiled MegaCrit.Sts2.Core.Models.PotionPools — base rate
-        # is RNG-driven, dropping from the active pool). L1 simplifies
-        # to fixed rates per room_type with a placeholder potion id.
-        # Per-floor diagnostic on e01_best showed 0 potions across 30
-        # episodes — sim had no drop source besides Wellspring event.
-        _pdrop_rate = {
-            StateType.MONSTER: 0.40,
-            StateType.ELITE: 1.00,
-            StateType.BOSS: 1.00,
-        }.get(rs.state_type, 0.0)
-        if _pdrop_rate > 0:
+        # STS2 potion drop — faithful PotionRewardOdds + PotionFactory draw.
+        # (decompiled MegaCrit.Sts2.Core.Odds.PotionRewardOdds + Factories.
+        # PotionFactory.CreateRandomPotion). Base odds 0.4, self-adjusting
+        # ±0.1 toward 0.5; Elite rooms add eliteBonus*0.5 = 0.125 to the
+        # acceptance threshold. The CurrentValue persists across the run.
+        # When a drop fires, the potion is a rarity-weighted draw from the
+        # SharedPotionPool (Rare<=0.10, Uncommon<=0.35, else Common) — NOT a
+        # fixed FIRE/BLOCK/ENERGY proxy. Bosses grant a boss relic (handled
+        # below), not a random potion, so they don't roll here.
+        if rs.state_type in (StateType.MONSTER, StateType.ELITE):
+            from .potions import roll_potion
             _rng = _encounter_rng(rs)
-            roll = _rng.next_double()
-            if roll < _pdrop_rate:
-                # L1 potion pool — three common potions. Index by RNG.
-                _potion_pool = ["FIRE_POTION", "BLOCK_POTION", "ENERGY_POTION"]
-                pidx = _rng.next_int(0, len(_potion_pool))
-                rs.add_potion(_potion_pool[pidx])
+            current = float(getattr(rs, "potion_reward_odds", 0.4))
+            num = _rng.next_float()
+            # Drift CurrentValue toward the 0.5 target (PotionRewardOdds.Roll).
+            if num < current:
+                rs.potion_reward_odds = current - 0.1
+            else:
+                rs.potion_reward_odds = current + 0.1
+            elite_bonus = 0.25 if rs.state_type is StateType.ELITE else 0.0
+            if num < current + elite_bonus * 0.5:
+                rs.add_potion(roll_potion(_rng))
         # Combat gold reward (decompiled EncounterModel.cs:42-78): monster
         # 10-20, elite 35-45, boss 100. A3 Poverty cuts combat gold x0.75
         # (AscensionHelper). Previously the sim granted ZERO combat gold,
