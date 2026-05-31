@@ -571,7 +571,11 @@ class RunEnv(gym.Env):
             view["state_type"] = "rest_site"  # match the live mod's emitted value
             view["rest_site"] = {
                 "options": [
-                    {"index": i, "id": o["id"], "is_enabled": o["is_enabled"]}
+                    # Use the option's own `index` (sparse slots: cook=4,
+                    # lift=5) so the action-space mask/decode hit the right
+                    # choose_rest_option slot. Fall back to enumerate order.
+                    {"index": int(o.get("index", i)), "id": o["id"],
+                     "is_enabled": o["is_enabled"]}
                     for i, o in enumerate(rs.pending_rest_options)
                 ],
                 "can_proceed": False,  # picks must happen before proceed

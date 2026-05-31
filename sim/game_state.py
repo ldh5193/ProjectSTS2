@@ -255,9 +255,19 @@ class RunState:
             self.state_type = StateType.GAME_OVER
         return actual
 
+    def heal_multiplier(self) -> float:
+        """A2 WearyTraveler multiplies heal-type effects by 0.8 (decompiled
+        AncientEventModel.BeforeEventStarted: `amount *= 0.8m` when
+        HasAscension(WearyTraveler)). The decompiled WearyTraveler reduces
+        rest-site / Neow / event heals; combat heals (BloodVial etc.) route
+        through CreatureCmd.Heal which is NOT reduced, so combat sync paths
+        that set rs.hp directly bypass this multiplier by design."""
+        return 0.8 if int(self.ascension) >= int(Ascension.WEARY_TRAVELER) else 1.0
+
     def heal(self, amount: int) -> int:
         before = self.hp
-        self.hp = min(self.max_hp, self.hp + max(amount, 0))
+        amount = int(max(amount, 0) * self.heal_multiplier())
+        self.hp = min(self.max_hp, self.hp + amount)
         return self.hp - before
 
     def lose_max_hp(self, amount: int) -> int:
@@ -341,6 +351,9 @@ def _apply_ascension_effects(rs: RunState) -> None:
     boss room generation, etc.).
     """
     level = int(rs.ascension)
+    # A2 WearyTraveler has NO start-of-run effect — it's applied at heal
+    # time via RunState.heal_multiplier() (rest-site / Neow / event heals
+    # x0.8). See RunState.heal. Listed here for completeness.
     if level >= int(Ascension.TIGHT_BELT):
         rs.max_potion_slots = max(0, rs.max_potion_slots - 1)
         rs.potions = rs.potions[: rs.max_potion_slots] + \

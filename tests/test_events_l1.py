@@ -30,7 +30,9 @@ def _new_rs(act: int = 1, floor: int = 1, gold: int = 200, hp: int = 60,
 
 
 def test_registry_has_ten_events():
-    assert len(EVENT_REGISTRY) == 10
+    # Phase 8 expanded the event registry from the original 10 toward the
+    # full decompiled set. The contract is now "at least the original 10".
+    assert len(EVENT_REGISTRY) >= 10
 
 
 def test_brain_leech_share_adds_card():

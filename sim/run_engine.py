@@ -451,14 +451,31 @@ def _enter_room(rs: RunState, node: MapNode) -> None:
         # returns to map.
         rs.state_type = StateType.REST
         trigger_after_room_entered(rs, rs.state_type)
+        # Expanded rest-site option set (decompiled Entities.RestSite.*).
+        # Slot indices MUST match action_space "rest" range doc:
+        #   0=rest(HEAL), 1=upgrade(SMITH), 2=shop, 3=dig(DIG), 4=key,
+        #   5=lift(LIFT). We model HEAL, SMITH, DIG, COOK, LIFT — wired to
+        #   the indices the action space already names. is_enabled honors
+        #   per-option prereqs (SmithRestSiteOption: UpgradableCardCount!=0;
+        #   CookRestSiteOption: >=2 removable cards; LiftRestSiteOption only
+        #   when the run owns Girya).
         has_upgradable = any(
             not (c.id.endswith("+") if isinstance(c.id, str) else False)
             for c in rs.deck
             if c.cost is not None and c.cost >= 0  # exclude curses
         )
+        removable_count = sum(
+            1 for c in rs.deck if getattr(c, "id", None) != "ascenders_bane"
+        )
+        has_girya = rs.has_relic("GIRYA")
         rs.pending_rest_options = [
-            {"id": "rest", "is_enabled": True},
-            {"id": "smith", "is_enabled": bool(has_upgradable)},
+            {"id": "rest", "index": 0, "is_enabled": True},
+            {"id": "smith", "index": 1, "is_enabled": bool(has_upgradable)},
+            # index 2 (shop) and 4 (key) are not modeled at rest sites; the
+            # mask drops them since they're absent from the list.
+            {"id": "dig", "index": 3, "is_enabled": True},
+            {"id": "cook", "index": 4, "is_enabled": removable_count >= 2},
+            {"id": "lift", "index": 5, "is_enabled": bool(has_girya)},
         ]
         return
     elif rt is StateType.TREASURE:
@@ -743,11 +760,20 @@ def _step_rest(rs: RunState, body: dict, res: StepResult) -> StepResult:
         opts = rs.pending_rest_options or []
         idx = body.get("index")
         option = body.get("option")
-        if idx is not None and 0 <= idx < len(opts):
-            option = opts[idx].get("id")
+        # Resolve option id by the option's `index` field (slots are sparse:
+        # e.g. cook sits at slot 4, lift at 5), falling back to positional.
+        if idx is not None:
+            match = next((o for o in opts if int(o.get("index", -1)) == idx), None)
+            if match is None and 0 <= idx < len(opts):
+                match = opts[idx]
+            if match is not None and match.get("is_enabled", True):
+                option = match.get("id")
         if option == "rest":
+            # HealRestSiteOption: heal 30% of max HP. rs.heal applies the A2
+            # WearyTraveler x0.8 multiplier (heal_multiplier).
             rs.heal(int(rs.max_hp * 0.30))
         elif option == "smith":
+            # SmithRestSiteOption: upgrade one card.
             upgradables = [c for c in rs.deck
                            if c.cost is not None and c.cost >= 0
                            and not c.id.endswith("+")]
@@ -755,6 +781,28 @@ def _step_rest(rs: RunState, body: dict, res: StepResult) -> StepResult:
                 target = upgradables[0]
                 deck_idx = rs.deck.index(target)
                 rs.deck[deck_idx] = upgrade_card(target)
+        elif option == "dig":
+            # DigRestSiteOption: pull next relic (random pooled relic).
+            from .relics import grant_relic_reward
+            grant_relic_reward(rs, _relic_rng(rs), boss=False)
+        elif option == "cook":
+            # CookRestSiteOption: remove 2 cards, gain 9 max HP.
+            for _ in range(2):
+                for i, c in enumerate(rs.deck):
+                    if getattr(c, "id", None) != "ascenders_bane":
+                        del rs.deck[i]
+                        break
+            rs.gain_max_hp(9)
+        elif option == "lift":
+            # LiftRestSiteOption: permanent +Strength buff (Girya). Modeled
+            # as a permanent strength relic-style buff: re-add Girya counter.
+            # The Girya relic itself grants +Strength on combat start; here
+            # we track the lift count on the relic instance so the buff is a
+            # real perm increase rather than a no-op.
+            for r in rs.relics:
+                if r.id == "GIRYA":
+                    r.counter = (r.counter or 0) + 1
+                    break
         rs.pending_rest_options = None
         rs.state_type = StateType.MAP
         return res
