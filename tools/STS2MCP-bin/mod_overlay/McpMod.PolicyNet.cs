@@ -22,11 +22,14 @@ namespace STS2_MCP;
 
 public static partial class McpMod
 {
-    // v4 obs layout (2026-05-27): adds boss/relic identity, intent damage
-    // absolute values, distance dims, per-option tag features, shop info,
-    // map lookahead. See notes/ARCHITECTURE_V2.md + sim/env_run.py::_obs.
-    // 256 (v3) -> 384 (v4 Phase 3).
-    public const int PolicyObsDim = 384;
+    // v4.4 obs layout (2026-05, Phase 7F+G): adds boss/relic identity,
+    // intent damage absolute values, distance dims, per-option tag
+    // features, shop info, map lookahead, deck functional profile, and the
+    // per-item shop block. See sim/env_run.py::_build_obs (OBS_DIM=504).
+    // History: 256 (v3) -> 384 (v4 Phase 3) -> 504 (v4.4 Phase 7F+G).
+    // IMPORTANT: must equal sim/env_run.py OBS_DIM. See McpMod.ObsBuilder.cs
+    // for the full per-block index map. UNVERIFIED until built in Unity.
+    public const int PolicyObsDim = 504;
     public const int PolicyActionDim = 300;
 
     private static InferenceSession? _policySession;

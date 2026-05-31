@@ -1,12 +1,69 @@
-// ObsBuilder — turn the live mod state dictionary into the 64-d float
+// ObsBuilder — turn the live mod state dictionary into the float
 // observation vector that the trained MaskablePPO policy expects.
 //
-// One-to-one port of scripts/play_live.py:_build_obs_from_live so the
-// embedded inference path produces the *same* features the sidecar
-// would have. Keep the two in sync.
+// ============================================================================
+// !!! UNVERIFIED until built in Unity. Validate obs parity against a known
+// !!! game state (dump the live `state` dict, run sim/env_run._build_obs on
+// !!! the equivalent RunState, diff index-by-index) BEFORE trusting in-game
+// !!! inference. This file was hand-ported and CANNOT be compiled/tested here.
+// ============================================================================
 //
-// Source dict shape is whatever McpMod.StateBuilder.BuildGameState()
-// produces — same one /api/v1/singleplayer JSON-serializes.
+// Authoritative source mirrored EXACTLY: sim/env_run.py::RunEnv._obs
+// (a.k.a. _build_obs) at OBS_DIM = 504 (v4.4, Phase 7F+G, 2026-05).
+// Keep the two in lockstep — renumbering ANY block invalidates the trained
+// policy because the obs field order is part of the policy contract.
+//
+// Source dict shape is whatever the mod's BuildGameState() produces — the
+// same one /api/v1/singleplayer JSON-serializes.
+//
+// ---------------------------------------------------------------------------
+// FULL INDEX MAP (cursor 0..503). Numbers are [start, end) half-open ranges.
+// "py" refers to sim/env_run.py line ranges of the matching block.
+//   [0,    4)   Vitals (4)                              py 580-585
+//   [4,   20)   State-type one-hot (16)                 py 587-590
+//   [20,  21)   Ascension normalized (1)                py 592-594
+//   [21,  26)   Deck composition by rarity (5)          py 596-613
+//   [26,  27)   Relic count (1)                         py 615-616
+//   [27,  30)   Pile sizes draw/discard/exhaust (3)     py 619-626
+//   [30,  38)   In-combat core features (8)             py 628-644
+//   [38,  43)   Player powers (5)                       py 646-651
+//   [43,  46)   Monster #1 powers (3)                   py 653-660
+//   [46,  48)   Monster #1 intent is_atk/strength (2)   py 662-673
+//   [48,  56)   Monster #2/#3 minimal (4 each = 8)      py 675-690
+//   [56, 186)   Hand identity (10 × (12+1) = 130)       py 692-711
+//   [186,246)   Card-reward identity (5 × 12 = 60)      py 713-727
+//   [246,247)   Map options count (1)                   py 729-732
+//   [247,250)   Potion slot presence (3)                py 734-741
+//   [250,259)   Boss identity (9: act×type one-hot)     py 747-754
+//   [259,276)   Relic identity by category (17)         py 756-771
+//   [276,279)   Intent damage absolute (3, per enemy)   py 773-795
+//   [279,280)   Max-hp absolute (1)                     py 797-801
+//   [280,282)   Distance dims to_act_boss/to_victory(2) py 803-820
+//   [282,285)   Energy abs + block log + overflow (3)   py 822-830
+//   [285,288)   Enemy count one-hot (3)                 py 832-837
+//   [288,352)   Event option tags (8 × 8 = 64)          py 839-858
+//   [352,356)   Shop info (4)                           py 860-869
+//   [356,362)   Map lookahead room-type ratios (6)      py 871-893
+//   [362,376)   Deck functional profile (12 mean + 2)   py 904-921
+//   [376,381)   Compact shop-buy summary (5)            py 923-960
+//   [381,499)   Per-item shop block (90+24+4 = 118)     py 962-1042
+//                 [381,471) 6 card slots  × 15
+//                 [471,495) 4 relic slots × 6
+//                 [495,499) 2 potion slots × 2
+//   [499,504)   Pad to clean OBS_DIM (5)                py 1043-1046
+//   TOTAL = 504  (asserted in Python at py 1048)
+// ---------------------------------------------------------------------------
+//
+// PARITY RISKS (live `state` dict does NOT cleanly expose these — see the
+// // TODO(parity) tags inline). The Python computes them from full RunState:
+//   * Relic categories: live player.relics[] only has id/name, no category.
+//     We map id->category via the relic-category JSON if present, else a
+//     lowercase-id substring heuristic, else "misc".
+//   * Enemy intent damage: live enemies expose a free-form `intents` string,
+//     not a numeric intent_damage(). We parse a leading integer / fall back
+//     to ~6 on an attack token, matching the Python's own fallback path.
+//   * Shop item card_id / relic_id / relic rarity: read from the item dict
+//     when present (card_id|id, relic_id|id, rarity), else degrade per slot.
 
 using System;
 using System.Collections.Generic;
@@ -69,13 +126,80 @@ public static partial class McpMod
         return total;
     }
 
+    // RELIC_CATEGORIES — mirrors sim/relics.py RELIC_CATEGORIES (17 buckets,
+    // same order). Used by the v4 relic-identity block. The index of a relic's
+    // category in this array is the bucket it increments.
+    private static readonly string[] _RelicCategories =
+    {
+        "heal_combat", "block_start", "vuln_start", "weak_start",
+        "draw_card", "thorns", "strength", "dexterity",
+        "energy", "gold", "max_hp", "status_immune",
+        "heal_rest", "heal_boss", "aoe_damage", "card_pick",
+        "misc",
+    };
+
+    // Relic categories the Phase 7F shop block treats as "scaling-ish"
+    // persistent power. Mirrors _SCALING_RELIC_CATS in sim/env_run.py.
+    private static readonly HashSet<string> _ScalingRelicCats =
+        new(StringComparer.OrdinalIgnoreCase) { "strength", "thorns", "block_start", "dexterity" };
+
+    // Relic rarity -> 0..1 rank. Mirrors _RELIC_RARITY_RANK in env_run.py.
+    private static float RelicRarityRank(string rarity) => rarity.ToLowerInvariant() switch
+    {
+        "starter"  => 0.0f,
+        "common"   => 0.2f,
+        "uncommon" => 0.4f,
+        "rare"     => 0.6f,
+        "event"    => 0.7f,
+        "shop"     => 0.8f,
+        "boss"     => 1.0f,
+        _          => 0.2f,
+    };
+
     /// <summary>
-    /// Build the 256-d float observation vector matching the trained env.
-    /// v3 layout — must match sim/env_run.py::_obs exactly. v3 adds 12-dim
-    /// card identity vectors per hand slot (×10) and per card_reward slot
-    /// (×5), replacing v2's 30-dim "cost/type/can_play" hand block and the
-    /// 3-dim "count + attack share" reward block. See sim/card_catalog.py
-    /// ::card_features for the per-card feature layout.
+    /// Resolve a relic id to its RELIC_CATEGORIES index (0..16), mirroring
+    /// sim/relics.relic_category_index. The precompiled mod's BuildGameState
+    /// does NOT emit a relic `category` field, so this is best-effort: if the
+    /// relic dict carries an explicit "category" we trust it; otherwise we
+    /// substring-match the lowercased relic id against category tokens; on no
+    /// match we return the "misc" bucket. TODO(parity): once BuildGameState
+    /// emits relic categories (or we ship a relic_categories.json next to the
+    /// DLL like card_features.json), replace this heuristic with the table.
+    /// </summary>
+    private static int RelicCategoryIndex(Dictionary<string, object?>? relic)
+    {
+        string explicitCat = AsString(relic, "category", "");
+        if (!string.IsNullOrEmpty(explicitCat))
+        {
+            int ix = Array.IndexOf(_RelicCategories, explicitCat.ToLowerInvariant());
+            if (ix >= 0) return ix;
+        }
+        string id = AsString(relic, "id", "").ToLowerInvariant();
+        // Substring heuristics — rough, ordered to match the most specific
+        // buckets first. Mirrors the *intent* of sim/relics category tags.
+        if (id.Contains("energy") || id.Contains("kunai") || id.Contains("cube")) return 8;   // energy
+        if (id.Contains("thorn") || id.Contains("spike")) return 5;                            // thorns
+        if (id.Contains("strength") || id.Contains("vajra") || id.Contains("girya")) return 6; // strength
+        if (id.Contains("dexterity") || id.Contains("glove")) return 7;                        // dexterity
+        if (id.Contains("gold") || id.Contains("coin") || id.Contains("purse")) return 9;      // gold
+        if (id.Contains("max_hp") || id.Contains("maxhp") || id.Contains("heart")) return 10;  // max_hp
+        if (id.Contains("block")) return 1;                                                    // block_start
+        if (id.Contains("vuln")) return 2;                                                     // vuln_start
+        if (id.Contains("weak")) return 3;                                                     // weak_start
+        if (id.Contains("draw")) return 4;                                                     // draw_card
+        if (id.Contains("heal") || id.Contains("blood")) return 0;                             // heal_combat
+        return Array.IndexOf(_RelicCategories, "misc");                                        // misc (16)
+    }
+
+    /// <summary>
+    /// Build the 504-d float observation vector matching the trained env.
+    /// v4.4 layout — must match sim/env_run.py::_obs (OBS_DIM=504) exactly.
+    /// See the FULL INDEX MAP at the top of this file for the per-block
+    /// cursor layout and the Python line references. See sim/card_catalog.py
+    /// ::card_features for the 12-dim per-card feature layout.
+    ///
+    /// UNVERIFIED until built in Unity — validate obs parity with a known
+    /// state before trusting in-game inference.
     /// </summary>
     internal static float[] BuildObs(Dictionary<string, object?> state)
     {
@@ -106,8 +230,12 @@ public static partial class McpMod
             v[cursor + i] = _StateTypeOrder[i] == st ? 1f : 0f;
         cursor += _StateTypeOrder.Length;
 
-        // Ascension placeholder (1) — trained at A0; live mod could surface real value later.
-        v[cursor] = 0f;
+        // Ascension level normalized (1) — sim py 592-594: ascension / 10.
+        // The policy is now trained on an A0/A5/A10 mixture, so this dim is
+        // load-bearing. TODO(parity): reads run.ascension; if BuildGameState
+        // omits it, this defaults to 0 (the A0 value) rather than zeroing a
+        // meaningful signal.
+        v[cursor] = Math.Min(1f, ToInt(run, "ascension", 0) / 10f);
         cursor += 1;
 
         // Deck composition by rarity (5)
@@ -312,20 +440,47 @@ public static partial class McpMod
             v[cursor + (int)(act - 1) * 3] = 1f;
         cursor += 9;
 
-        // v4: Relic identity by category (17 dim). The mod state JSON
-        // doesn't yet expose per-relic categories — fill zero for now
-        // and let the policy work off relic count (already encoded).
-        // Phase 5 follow-up: mirror sim/relics RELIC_CATEGORIES table.
+        // v4: Relic identity by category (17 dim: count per RELIC_CATEGORIES
+        // bucket, normalized by 5). Mirrors sim/env_run.py py 756-771.
+        // TODO(parity): live player.relics[] carries no `category` field, so
+        // RelicCategoryIndex falls back to a lowercased-id substring heuristic
+        // (see helper). Buckets may diverge from the sim's authoritative
+        // relic_category() for relics the heuristic misclassifies; counts that
+        // land in the wrong bucket still sum to the same total relic count.
+        {
+            var relicList = AsList(player, "relics");
+            var catCounts = new float[_RelicCategories.Length];
+            foreach (var rObj in relicList)
+            {
+                var rd = rObj as Dictionary<string, object?>;
+                if (rd == null) continue;
+                catCounts[RelicCategoryIndex(rd)] += 1f;
+            }
+            for (int i = 0; i < _RelicCategories.Length; i++)
+                v[cursor + i] = Math.Min(1f, catCounts[i] / 5f);  // 5 in a bucket = saturation
+        }
         cursor += 17;
 
-        // v4: Intent damage absolute (3 dim, per enemy slot).
-        // The mod state's `intents` field is a free-form string; for
-        // L1 we encode "is attacking" by checking known attack tokens.
-        var v4Enemies = AsList(battle, "enemies");
+        // v4: Intent damage absolute (3 dim, per enemy slot). Mirrors
+        // sim/env_run.py py 773-795, normalized by max_hp. Python iterates
+        // alive_monsters() (hp>0) so we filter to alive to keep slot ordering
+        // identical (the live battle.enemies list is also typically alive-only,
+        // but we filter defensively so a corpse never shifts the slots).
+        // TODO(parity): the sim reads monster.intent_damage() (exact expected
+        // damage). The live mod exposes only a free-form `intents` string, so
+        // we parse a leading integer (e.g. "ATTACK 12") and fall back to ~6 on
+        // an attack token — exactly the Python's own no-helper fallback (py
+        // 788-793). Per-enemy damage will differ from the sim when the live
+        // string carries no number; this is a known parity gap, not a zeroed
+        // block.
+        var v4Alive = new List<Dictionary<string, object?>>();
+        foreach (var eObj in AsList(battle, "enemies"))
+            if (eObj is Dictionary<string, object?> ed0 && ToFloat(ed0, "hp", 0f) > 0f)
+                v4Alive.Add(ed0);
         for (int slot = 0; slot < 3; slot++)
         {
-            if (slot >= v4Enemies.Count) break;
-            if (v4Enemies[slot] is not Dictionary<string, object?> ed) continue;
+            if (slot >= v4Alive.Count) break;
+            var ed = v4Alive[slot];
             string intent = AsString(ed, "intents", "").ToUpperInvariant();
             if (string.IsNullOrEmpty(intent)) intent = AsString(ed, "intent", "").ToUpperInvariant();
             float dmg = 0f;
@@ -334,7 +489,7 @@ public static partial class McpMod
                 if (intent.Contains(tok)) { isAttacking = true; break; }
             if (isAttacking)
             {
-                dmg = 6f;  // L1 placeholder when intent.damage isn't exposed
+                dmg = 6f;  // matches Python fallback when intent_damage() absent
                 // Parse a leading integer if present (e.g., "ATTACK 12").
                 var parts = intent.Split(' ', '\t', ':', '-');
                 foreach (var p in parts)
@@ -384,15 +539,11 @@ public static partial class McpMod
         }
         cursor += 3;
 
-        // v4: Enemy count one-hot (3 dim).
+        // v4: Enemy count one-hot (3 dim). Mirrors sim py 832-837: clamps the
+        // alive-monster count to 1..3 and sets that one-hot slot.
         if (st == "monster" || st == "elite" || st == "boss")
         {
-            int aliveCount = 0;
-            foreach (var e in v4Enemies)
-            {
-                if (e is Dictionary<string, object?> ed
-                    && ToFloat(ed, "hp", 0f) > 0f) aliveCount++;
-            }
+            int aliveCount = v4Alive.Count;
             int n = Math.Min(3, Math.Max(1, aliveCount));
             v[cursor + (n - 1)] = 1f;
         }
@@ -424,27 +575,42 @@ public static partial class McpMod
         }
         cursor += 8 * 8;
 
-        // v4 Phase 3: Shop info (4 dim).
+        // v4 Phase 3: Shop info (4 dim). Mirrors sim/env_run.py py 860-869:
+        //   0: has_pending_shop flag
+        //   1: card_removal_cost / (gold + cost)
+        //   2: removal_used flag
+        //   3: deck_size / 30
         if (st == "shop")
         {
             var shop = AsDict(state, "shop");
             var items = AsList(shop, "items");
-            if (items.Count > 0)
+            if (items.Count > 0 || shop.Count > 0)
             {
                 v[cursor + 0] = 1f;
+                float removalCost = ToFloat(shop, "card_removal_cost", 75f);
+                bool sawRemovalItem = false;
                 foreach (var it in items)
                 {
                     if (it is Dictionary<string, object?> id
                         && AsString(id, "category", "") == "card_removal")
                     {
-                        float price = ToFloat(id, "price", 75f);
-                        float curGold = ToFloat(player, "gold", 0f);
-                        v[cursor + 1] = Math.Min(1f, price / Math.Max(1f, curGold + price));
+                        removalCost = ToFloat(id, "price", removalCost);
+                        sawRemovalItem = true;
                         break;
                     }
                 }
+                // Use the per-item removal price when present, else the shop's
+                // card_removal_cost field (Python reads pending_shop["card_removal_cost"]).
+                float curGold = ToFloat(player, "gold", 0f);
+                v[cursor + 1] = Math.Min(1f, removalCost / Math.Max(1f, curGold + removalCost));
+                // [2] removal_used: not always exposed by the live mod — read
+                // shop.removal_used if present, else leave 0. // TODO(parity)
+                v[cursor + 2] = AsBool(shop, "removal_used") ? 1f : 0f;
+                // [3] deck size normalized — reuse the deck size computed for
+                // the rarity block above (Python uses len(rs.deck)).
+                v[cursor + 3] = Math.Min(1f, deckSize / 30f);
+                _ = sawRemovalItem;  // suppress unused warning; kept for clarity
             }
-            // removal_used and deck_size are not always in mod state; leave zero.
         }
         cursor += 4;
 
@@ -480,6 +646,168 @@ public static partial class McpMod
             }
         }
         cursor += 6;
+        // cursor == 362 here (matches Python py 893 end-of-map-lookahead).
+
+        // ===== Deck functional profile (14 dim) — sim py 904-921 =====
+        // 12 dims: element-wise MEAN of the 12-d card_features over the whole
+        // deck; +2 dims: normalized deck TOTALS for damage (feat idx 4) and
+        // block (feat idx 5). `profileCards` was collected above from
+        // deck+draw+discard+hand+exhaust — the live equivalent of rs.deck.
+        // Card-id parity: LookupCardFeatures returns all-zero for unknown ids,
+        // matching the Python card_features fallback.
+        {
+            int deckN = profileCards.Count;
+            if (deckN > 0)
+            {
+                var featSum = new float[CardFeatureDim];
+                foreach (var c in profileCards)
+                {
+                    var feats = LookupCardFeatures(AsString(c, "id", ""));
+                    for (int k = 0; k < CardFeatureDim; k++) featSum[k] += feats[k];
+                }
+                for (int k = 0; k < CardFeatureDim; k++)
+                    v[cursor + k] = featSum[k] / deckN;            // element-wise mean
+                v[cursor + CardFeatureDim + 0] = Math.Min(1f, featSum[4] / 200f);  // damage total
+                v[cursor + CardFeatureDim + 1] = Math.Min(1f, featSum[5] / 150f);  // block total
+            }
+        }
+        cursor += CardFeatureDim + 2;  // 14
+
+        // ===== Compact shop-buy summary (5 dim) — sim py 923-960 =====
+        //   0: gold / 300
+        //   1: # affordable+stocked cards  / 7
+        //   2: # affordable+stocked relics / 3
+        //   3: has an affordable+stocked energy relic (flag)
+        //   4: any affordable+stocked card (flag)
+        // Zero on every non-shop state so it never perturbs combat/map obs.
+        if (st == "shop")
+        {
+            var shop = AsDict(state, "shop");
+            var items = AsList(shop, "items");
+            int affCards = 0;
+            int affRelics = 0;
+            float hasEnergyRelic = 0f;
+            float anyCardAff = 0f;
+            foreach (var itObj in items)
+            {
+                if (itObj is not Dictionary<string, object?> it) continue;
+                if (!(AsBool(it, "is_stocked") && AsBool(it, "can_afford"))) continue;
+                string cat = AsString(it, "category", "");
+                if (cat == "card")
+                {
+                    affCards++;
+                    anyCardAff = 1f;
+                }
+                else if (cat == "relic")
+                {
+                    affRelics++;
+                    // TODO(parity): the live item dict does not expose the
+                    // relic's sim category; approximate "energy relic" via the
+                    // category-index heuristic on the relic id.
+                    var probe = new Dictionary<string, object?>
+                    {
+                        ["id"] = AsString(it, "relic_id", AsString(it, "id", "")),
+                        ["category"] = it.TryGetValue("relic_category", out var rc) ? rc : null,
+                    };
+                    if (RelicCategoryIndex(probe) == 8 /* energy bucket */) hasEnergyRelic = 1f;
+                }
+            }
+            v[cursor + 0] = Math.Min(1f, gold / 300f);
+            v[cursor + 1] = Math.Min(1f, affCards / 7f);
+            v[cursor + 2] = Math.Min(1f, affRelics / 3f);
+            v[cursor + 3] = hasEnergyRelic;
+            v[cursor + 4] = anyCardAff;
+        }
+        cursor += 5;  // cursor == 381
+
+        // ===== Per-item shop block (118 dim) — sim py 962-1042 =====
+        // Layout (cursor starts at 381):
+        //   Shop CARD slots:  6 × 15 = 90  -> [381, 471)
+        //     per slot: card_features(card_id) [12] + price/200 [1]
+        //               + can_afford [1] + is_stocked [1]
+        //   Shop RELIC slots: 4 × 6  = 24  -> [471, 495)
+        //     per slot: is_energy_cat [1], is_scaling-ish [1], rarity 0..1 [1],
+        //               price/300 [1], can_afford [1], is_stocked [1]
+        //   Shop POTION slots: 2 × 2 = 4   -> [495, 499)
+        //     per slot: present(is_stocked) [1], can_afford [1]
+        // Items are bucketed by `category` in encounter order; card_removal is
+        // ignored here (covered by the 4-dim Shop info block). Zero on every
+        // non-shop state.
+        const int ShopCardSlots = 6;
+        const int ShopRelicSlots = 4;
+        const int ShopPotionSlots = 2;
+        const int ShopCardDim = CardFeatureDim + 3;  // 15
+        const int ShopRelicDim = 6;
+        const int ShopPotionDim = 2;
+        int cardBase = cursor;
+        int relicBase = cardBase + ShopCardSlots * ShopCardDim;
+        int potionBase = relicBase + ShopRelicSlots * ShopRelicDim;
+        if (st == "shop")
+        {
+            var shop = AsDict(state, "shop");
+            var items = AsList(shop, "items");
+            int cardSlot = 0, relicSlot = 0, potionSlot = 0;
+            foreach (var itObj in items)
+            {
+                if (itObj is not Dictionary<string, object?> it) continue;
+                string cat = AsString(it, "category", "");
+                if (cat == "card" && cardSlot < ShopCardSlots)
+                {
+                    int basei = cardBase + cardSlot * ShopCardDim;
+                    // TODO(parity): card id field — prefer "card_id", fall back
+                    // to "id". Unknown ids yield a zero feature vector (matches
+                    // Python card_features fallback).
+                    var feats = LookupCardFeatures(AsString(it, "card_id", AsString(it, "id", "")));
+                    for (int j = 0; j < CardFeatureDim; j++) v[basei + j] = feats[j];
+                    v[basei + CardFeatureDim + 0] = Math.Min(1f, ToFloat(it, "price", 0f) / 200f);
+                    v[basei + CardFeatureDim + 1] = AsBool(it, "can_afford") ? 1f : 0f;
+                    v[basei + CardFeatureDim + 2] = AsBool(it, "is_stocked") ? 1f : 0f;
+                    cardSlot++;
+                }
+                else if (cat == "relic" && relicSlot < ShopRelicSlots)
+                {
+                    int basei = relicBase + relicSlot * ShopRelicDim;
+                    // TODO(parity): the live item dict carries no sim relic
+                    // category/rarity. Approximate category via the id
+                    // heuristic; read "rarity" if present else default common.
+                    var probe = new Dictionary<string, object?>
+                    {
+                        ["id"] = AsString(it, "relic_id", AsString(it, "id", "")),
+                        ["category"] = it.TryGetValue("relic_category", out var rc) ? rc : null,
+                    };
+                    int catIx = RelicCategoryIndex(probe);
+                    string rcat = (catIx >= 0 && catIx < _RelicCategories.Length)
+                        ? _RelicCategories[catIx] : "misc";
+                    string rrar = AsString(it, "rarity", "common");
+                    v[basei + 0] = rcat == "energy" ? 1f : 0f;
+                    v[basei + 1] = _ScalingRelicCats.Contains(rcat) ? 1f : 0f;
+                    v[basei + 2] = RelicRarityRank(rrar);
+                    v[basei + 3] = Math.Min(1f, ToFloat(it, "price", 0f) / 300f);
+                    v[basei + 4] = AsBool(it, "can_afford") ? 1f : 0f;
+                    v[basei + 5] = AsBool(it, "is_stocked") ? 1f : 0f;
+                    relicSlot++;
+                }
+                else if (cat == "potion" && potionSlot < ShopPotionSlots)
+                {
+                    int basei = potionBase + potionSlot * ShopPotionDim;
+                    v[basei + 0] = AsBool(it, "is_stocked") ? 1f : 0f;
+                    v[basei + 1] = AsBool(it, "can_afford") ? 1f : 0f;
+                    potionSlot++;
+                }
+            }
+        }
+        cursor += ShopCardSlots * ShopCardDim
+                + ShopRelicSlots * ShopRelicDim
+                + ShopPotionSlots * ShopPotionDim;  // +118 -> cursor == 499
+
+        // Pad to a clean OBS_DIM = 504 (sim py 1043-1046). 5 unused dims.
+        cursor += 5;  // cursor == 504
+
+        // Parity guard — must equal PolicyObsDim (504). Mirrors the Python
+        // `assert cursor == OBS_DIM`. Kept as a debug check; in release the
+        // array length already pins the size.
+        System.Diagnostics.Debug.Assert(cursor == PolicyObsDim,
+            $"obs cursor {cursor} != PolicyObsDim {PolicyObsDim}");
 
         // Defensive clip to [0, 1] — mirrors numpy.clip in env_run.py.
         for (int i = 0; i < v.Length; i++)
