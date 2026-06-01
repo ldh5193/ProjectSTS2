@@ -74,12 +74,47 @@ class Character(str, Enum):
 
 
 # Starting stats per character (decompiled/MegaCrit.Sts2.Core.Models.Characters/*.cs).
-# Only Ironclad is wired for the first slice.
+# Phase 9.0: all five real characters parametrized (StartHP from each
+# character file; StartGold is the universal 99). Deprived (debug fixture,
+# Deprived.cs StartingHp => 1000) is included so the env can construct it.
 _CHARACTER_STARTING_HP: dict[Character, int] = {
-    Character.IRONCLAD: 80,
+    Character.IRONCLAD: 80,      # Ironclad.cs
+    Character.SILENT: 70,        # Silent.cs
+    Character.DEFECT: 75,        # Defect.cs
+    Character.NECROBINDER: 66,   # Necrobinder.cs
+    Character.REGENT: 75,        # Regent.cs
+    Character.DEPRIVED: 1000,    # Deprived.cs (debug sandbox)
 }
 _CHARACTER_STARTING_GOLD: dict[Character, int] = {
     Character.IRONCLAD: 99,
+    Character.SILENT: 99,
+    Character.DEFECT: 99,
+    Character.NECROBINDER: 99,
+    Character.REGENT: 99,
+    Character.DEPRIVED: 99,
+}
+# Starting relic per character (each character file's StartingRelics[0]).
+# Phase 9.0: the non-Ironclad starting relics are registered as minimal TODO
+# stubs in sim/relics.py (no fabricated effects); see _CHARACTER_RELIC_TODO.
+_CHARACTER_STARTING_RELIC: dict[Character, str | None] = {
+    Character.IRONCLAD: "BURNING_BLOOD",     # Ironclad.cs (fully implemented)
+    Character.SILENT: "RING_OF_THE_SNAKE",   # Silent.cs       TODO(P9.1)
+    Character.DEFECT: "CRACKED_CORE",        # Defect.cs       TODO(P9.2)
+    Character.NECROBINDER: "BOUND_PHYLACTERY",  # Necrobinder.cs TODO(P9.3)
+    Character.REGENT: "DIVINE_RIGHT",        # Regent.cs       TODO(P9.4)
+    Character.DEPRIVED: None,                # Deprived.cs: no starting relic
+}
+# Standard base energy (CharacterModel.MaxEnergy => 3 for all five; Deprived
+# is 100 but that is a debug fixture we never train).
+_CHARACTER_MAX_ENERGY: dict[Character, int] = {
+    Character.IRONCLAD: 3, Character.SILENT: 3, Character.DEFECT: 3,
+    Character.NECROBINDER: 3, Character.REGENT: 3, Character.DEPRIVED: 100,
+}
+# Base orb-slot count (CharacterModel.BaseOrbSlotCount => 0; Defect => 3).
+# P9.0 only stores the count on RunState — the orb queue mechanic is P9.2.
+_CHARACTER_ORB_SLOTS: dict[Character, int] = {
+    Character.IRONCLAD: 0, Character.SILENT: 0, Character.DEFECT: 3,
+    Character.NECROBINDER: 0, Character.REGENT: 0, Character.DEPRIVED: 0,
 }
 
 
@@ -152,6 +187,13 @@ class RunState:
     max_hp: int = 0
     gold: int = 0
 
+    # Per-character resource config (Phase 9.0 scaffold). max_energy is the
+    # base 3 for all five real characters; orb_slots is Defect=3, else 0 — it
+    # only sizes the (P9.2) orb queue. These are set by new_run from the
+    # character tables and read by combat setup / the obs v5 tail.
+    max_energy: int = 3
+    orb_slots: int = 0
+
     deck: list[CardDef] = field(default_factory=list)
     relics: list[RelicInstance] = field(default_factory=list)
     potions: list[Optional[PotionInstance]] = field(default_factory=lambda: [None, None, None])
@@ -223,17 +265,30 @@ class RunState:
             # No seed: use 0; training pipeline should override.
             run_seed_uint = 0
 
+        # Per-character starting setup (Phase 9.0). Ironclad stays byte-for-byte
+        # identical to the previous hard-coded path; the other four use the
+        # tables above + scaffold starting decks. A non-Ironclad starting relic
+        # is granted as a minimal stub (relics.py registers a faithful no-fab
+        # placeholder) so new_run never crashes; full effects are TODO(P9.x).
+        start_hp = _CHARACTER_STARTING_HP.get(character, 70)
+        start_relic = _CHARACTER_STARTING_RELIC.get(character)
+        relics: list[RelicInstance] = []
+        if start_relic is not None:
+            relics.append(RelicInstance(id=start_relic))
+
         rs = cls(
             character=character,
             ascension=Ascension(ascension),
             run_seed=run_seed_uint,
             run_seed_string=run_seed_string,
             state_type=StateType.MENU,
-            max_hp=_CHARACTER_STARTING_HP.get(character, 70),
-            hp=_CHARACTER_STARTING_HP.get(character, 70),
+            max_hp=start_hp,
+            hp=start_hp,
             gold=_CHARACTER_STARTING_GOLD.get(character, 99),
-            deck=list(build_starting_deck()) if character is Character.IRONCLAD else [],
-            relics=[RelicInstance(id="BURNING_BLOOD")] if character is Character.IRONCLAD else [],
+            max_energy=_CHARACTER_MAX_ENERGY.get(character, 3),
+            orb_slots=_CHARACTER_ORB_SLOTS.get(character, 0),
+            deck=list(build_starting_deck(character.value)),
+            relics=relics,
             run_rng=RunRngSet(run_seed_uint),
             player_rng=PlayerRngSet(run_seed_uint),
         )

@@ -79,19 +79,115 @@ def resolve_device(name: str) -> str:
         return "cpu"
 
 
+# ---------------------------------------------------------------------------
+# Warm-start obs-dim padding (Phase 9.0: obs v4.4 504 -> v5 560).
+# ---------------------------------------------------------------------------
+#
+# A v4.4 Ironclad checkpoint has a policy whose first linear layer expects a
+# 504-dim input. The v5 env emits 560 dims (the new char/orb/star/osty/poison
+# tail is APPENDED, so dims [0..504) are unchanged). To reuse such a
+# checkpoint we zero-pad every first-layer weight matrix whose in_features ==
+# old_obs_dim out to new_obs_dim, leaving the rest of the network untouched.
+# Because the new tail dims are 0 for Ironclad and the padded weights are 0,
+# the warm-started policy produces bit-identical logits on Ironclad obs at
+# step 0 — it then learns to use the new dims. Non-matching layers are left
+# alone (idempotent + safe on an already-560 checkpoint).
+
+def pad_state_dict_for_obs_change(state_dict, old_obs_dim: int, new_obs_dim: int):
+    """Return a copy of `state_dict` with every 2-D weight whose trailing
+    dimension == old_obs_dim zero-padded (on the right) to new_obs_dim.
+
+    This targets the policy/value MLP's first linear layer (in_features ==
+    obs_dim) without needing to know SB3's exact key names. No-op if
+    new_obs_dim <= old_obs_dim or nothing matches (so re-running is safe)."""
+    import torch  # local import: training-only dependency
+
+    if new_obs_dim <= old_obs_dim:
+        return dict(state_dict)
+    out = {}
+    pad = new_obs_dim - old_obs_dim
+    for k, v in state_dict.items():
+        if hasattr(v, "ndim") and v.ndim == 2 and v.shape[1] == old_obs_dim:
+            zeros = torch.zeros(v.shape[0], pad, dtype=v.dtype, device=v.device)
+            out[k] = torch.cat([v, zeros], dim=1)
+        else:
+            out[k] = v
+    return out
+
+
+def warm_start_load(init_from, env, *, old_obs_dim: int, new_obs_dim: int,
+                    **ppo_kwargs):
+    """Load a MaskablePPO checkpoint into a (possibly larger-obs) `env`,
+    zero-padding the input layer if the checkpoint's obs dim differs.
+
+    Tries a plain `MaskablePPO.load` first (works when obs dims match). On the
+    shape-mismatch path it builds a fresh model on `env`, then copies the old
+    parameters in with the first layer zero-padded out to new_obs_dim."""
+    # net_arch is only meaningful for the fresh-model fallback; MaskablePPO.load
+    # rebuilds the net from the checkpoint and rejects net_arch as a kwarg.
+    net_arch = ppo_kwargs.pop("net_arch", None)
+    try:
+        return MaskablePPO.load(init_from, env=env, **ppo_kwargs)
+    except (ValueError, RuntimeError, AssertionError) as exc:
+        # Shape mismatch on the input layer — pad and graft.
+        print(f"warm_start: direct load failed ({type(exc).__name__}: {exc}); "
+              f"zero-padding obs {old_obs_dim}->{new_obs_dim}", flush=True)
+        old = MaskablePPO.load(init_from, device=ppo_kwargs.get("device", "auto"))
+        old_sd = old.policy.state_dict()
+        padded = pad_state_dict_for_obs_change(old_sd, old_obs_dim, new_obs_dim)
+        # Build a fresh model whose policy matches the NEW obs space, then load
+        # the padded weights (strict=False tolerates any head re-init).
+        policy_kwargs = {"net_arch": net_arch} if net_arch else {}
+        model = MaskablePPO(
+            "MlpPolicy", env, policy_kwargs=policy_kwargs, **ppo_kwargs,
+        )
+        model.policy.load_state_dict(padded, strict=False)
+        return model
+
+
 def make_env(ascension: int = 10,
              ascension_mix: dict[int, float] | None = None,
-             reward_config: RewardConfig | None = None) -> ActionMasker:
+             reward_config: RewardConfig | None = None,
+             character=None) -> ActionMasker:
+    # character: a sim.game_state.Character (or None -> RunEnv default Ironclad).
+    # Phase 9.0 wires the per-character env; multi-character per-episode
+    # sampling (a --characters set) is P9.7. For now a single character is
+    # fixed per env.
+    from sim.game_state import Character
+    kwargs = {}
+    if character is not None:
+        kwargs["character"] = character
     env = RunEnv(ascension=ascension, ascension_mixture=ascension_mix,
-                 reward_config=reward_config)
+                 reward_config=reward_config, **kwargs)
     return ActionMasker(env, _mask_fn)
+
+
+def parse_characters(s: str | None):
+    """Parse a --characters CSV (e.g. 'ironclad,silent') into a list of
+    Character enums. Empty/None -> [Ironclad]. Phase 9.0 only USES the first
+    one (single fixed character per run); the full set is reserved for the
+    P9.7 character-conditioned curriculum."""
+    from sim.game_state import Character
+    if not s:
+        return [Character.IRONCLAD]
+    out = []
+    for part in s.split(","):
+        part = part.strip().lower()
+        if not part:
+            continue
+        try:
+            out.append(Character(part))
+        except ValueError:
+            raise SystemExit(f"unknown character in --characters: {part!r}")
+    return out or [Character.IRONCLAD]
 
 
 def make_vec_env(n_envs: int,
                  ascension: int,
                  ascension_mix: dict[int, float] | None,
                  reward_config: RewardConfig,
-                 use_subproc: bool = False):
+                 use_subproc: bool = False,
+                 character=None):
     """Build a (Subproc|Dummy)VecEnv of n_envs ActionMasker-wrapped RunEnv.
 
     DummyVecEnv runs envs in-process sequentially but still gives PPO
@@ -100,7 +196,7 @@ def make_vec_env(n_envs: int,
     """
     def _factory():
         return make_env(ascension=ascension, ascension_mix=ascension_mix,
-                        reward_config=reward_config)
+                        reward_config=reward_config, character=character)
     fns = [_factory for _ in range(n_envs)]
     if use_subproc and n_envs > 1:
         return SubprocVecEnv(fns)
@@ -364,6 +460,9 @@ def main() -> None:
     parser.add_argument("--lr-final", type=float, default=1e-5)
     parser.add_argument("--net-arch", type=str, default="1024,1024")
     parser.add_argument("--init-from", type=Path, default=None)
+    parser.add_argument("--characters", type=str, default="",
+                        help="CSV of characters (e.g. ironclad,silent). Phase "
+                             "9.0 uses the first; default ironclad.")
     parser.add_argument("--reward-preset", type=str, default="shape_damage")
     parser.add_argument("--out", type=Path, default=Path("models/v3/run.zip"))
     parser.add_argument("--best-out", type=Path, default=None)
@@ -390,21 +489,30 @@ def main() -> None:
         initial_mix = parse_ascension_mix(args.ascension_mix)
 
     device = resolve_device(args.device)
+    characters = parse_characters(args.characters)
+    train_character = characters[0]  # P9.0: single fixed character per run
     env = make_vec_env(args.n_envs, args.ascension, initial_mix,
-                       reward_cfg, use_subproc=args.subproc)
+                       reward_cfg, use_subproc=args.subproc,
+                       character=train_character)
 
     tb = str(args.tensorboard) if args.tensorboard else None
     lr = make_lr_schedule(args.lr_init, args.lr_final)
 
     if args.init_from is not None:
-        model = MaskablePPO.load(args.init_from, env=env, device=device,
-                                 ent_coef=args.ent_coef,
-                                 n_steps=args.n_steps,
-                                 batch_size=args.batch_size,
-                                 n_epochs=args.n_epochs,
-                                 gae_lambda=args.gae_lambda,
-                                 gamma=args.gamma,
-                                 learning_rate=lr)
+        # Phase 9.0: obs grew 504 (v4.4) -> 560 (v5). warm_start_load tries a
+        # plain load (matching dims) and falls back to zero-padding the input
+        # layer when a 504-dim Ironclad checkpoint is grafted onto the 560-dim
+        # v5 obs (the new tail is 0 for Ironclad, so logits are unchanged at
+        # step 0). Pass net_arch so the fresh fallback model matches the CLI.
+        from sim.env_run import OBS_DIM, OBS_DIM_V4_4
+        model = warm_start_load(
+            args.init_from, env,
+            old_obs_dim=OBS_DIM_V4_4, new_obs_dim=OBS_DIM,
+            device=device, ent_coef=args.ent_coef, n_steps=args.n_steps,
+            batch_size=args.batch_size, n_epochs=args.n_epochs,
+            gae_lambda=args.gae_lambda, gamma=args.gamma, learning_rate=lr,
+            net_arch=net_arch,
+        )
         model.tensorboard_log = tb
         print(f"warm-started from {args.init_from}", flush=True)
     else:

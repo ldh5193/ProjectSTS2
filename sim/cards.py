@@ -966,9 +966,141 @@ IRONCLAD_LIBRARY: tuple[CardDef, ...] = (
 )
 
 
-def build_starting_deck() -> list[CardDef]:
+# ===========================================================================
+# Phase 9.0 — per-character starting decks (SCAFFOLD).
+# ===========================================================================
+#
+# Basic Strike/Defend for every character are faithful (STS2 basics are the
+# universal 6-dmg Strike / 5-block Defend, decompiled from each character's
+# Strike<Char>.cs / Defend<Char>.cs). The *signature* starter cards
+# (Neutralize, Survivor, Zap, Dualcast, Bodyguard, Unleash, FallingStar,
+# Venerate) depend on primitives NOT yet built (poison/discard, orbs,
+# osty, stars) — they are registered here as minimal faithful-shaped STUBS so
+# new_run() can build a deck and the env can be reset/stepped, but their full
+# effects are TODO(P9.1-P9.4). Each stub is tagged below. DO NOT treat these
+# stubs as fidelity-complete.
+
+# -- Silent (Silent.cs:40-54) -- 5 Strike, 5 Defend, 1 Neutralize, 1 Survivor.
+STRIKE_SILENT = CardDef(
+    id="strike_silent", name="Strike", cost=1, type=CardType.ATTACK, count=5,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=6, scaling=STRIKE_SCALING),),
+)
+DEFEND_SILENT = CardDef(
+    id="defend_silent", name="Defend", cost=1, type=CardType.SKILL, count=5,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=5),),
+)
+# TODO(P9.1): Neutralize = 0-cost, 3 dmg + apply 1 Weak (needs Silent tuning);
+# Survivor = 1-cost, 8 block + discard a card. Stubbed to their block/dmg shell.
+NEUTRALIZE = CardDef(
+    id="neutralize", name="Neutralize", cost=0, type=CardType.ATTACK, count=1,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=3, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+                    power_id="weak", amount=1),),
+)
+SURVIVOR = CardDef(
+    id="survivor", name="Survivor", cost=1, type=CardType.SKILL, count=1,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=8),),
+    # TODO(P9.1): also "discard a card" — needs the discard-choice primitive.
+)
+SILENT_STARTING_DECK = (STRIKE_SILENT, DEFEND_SILENT, NEUTRALIZE, SURVIVOR)
+
+# -- Defect (Defect.cs:38-50) -- 4 Strike, 4 Defend, 1 Zap, 1 Dualcast.
+STRIKE_DEFECT = CardDef(
+    id="strike_defect", name="Strike", cost=1, type=CardType.ATTACK, count=4,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=6, scaling=STRIKE_SCALING),),
+)
+DEFEND_DEFECT = CardDef(
+    id="defend_defect", name="Defend", cost=1, type=CardType.SKILL, count=4,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=5),),
+)
+# TODO(P9.2): Zap = channel a Lightning orb; Dualcast = evoke front orb twice.
+# Both need the orb primitive — registered as inert 1-cost SKILL stubs so the
+# deck builds; they currently do nothing on play.
+ZAP = CardDef(
+    id="zap", name="Zap", cost=1, type=CardType.SKILL, count=1, effects=(),
+)
+DUALCAST = CardDef(
+    id="dualcast", name="Dualcast", cost=1, type=CardType.SKILL, count=1, effects=(),
+)
+DEFECT_STARTING_DECK = (STRIKE_DEFECT, DEFEND_DEFECT, ZAP, DUALCAST)
+
+# -- Necrobinder (Necrobinder.cs:45-57) -- 4 Strike, 4 Defend, 1 Bodyguard, 1 Unleash.
+STRIKE_NECROBINDER = CardDef(
+    id="strike_necrobinder", name="Strike", cost=1, type=CardType.ATTACK, count=4,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=6, scaling=STRIKE_SCALING),),
+)
+DEFEND_NECROBINDER = CardDef(
+    id="defend_necrobinder", name="Defend", cost=1, type=CardType.SKILL, count=4,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=5),),
+)
+# TODO(P9.3): Bodyguard = summon Osty (5 HP); Unleash = attack for Osty's HP.
+# Both need the Osty minion primitive — inert SKILL/ATTACK stubs for now.
+BODYGUARD = CardDef(
+    id="bodyguard", name="Bodyguard", cost=1, type=CardType.SKILL, count=1, effects=(),
+)
+UNLEASH = CardDef(
+    id="unleash", name="Unleash", cost=1, type=CardType.ATTACK, count=1, effects=(),
+)
+NECROBINDER_STARTING_DECK = (STRIKE_NECROBINDER, DEFEND_NECROBINDER,
+                             BODYGUARD, UNLEASH)
+
+# -- Regent (Regent.cs:38-50) -- 4 Strike, 4 Defend, 1 FallingStar, 1 Venerate.
+STRIKE_REGENT = CardDef(
+    id="strike_regent", name="Strike", cost=1, type=CardType.ATTACK, count=4,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=6, scaling=STRIKE_SCALING),),
+)
+DEFEND_REGENT = CardDef(
+    id="defend_regent", name="Defend", cost=1, type=CardType.SKILL, count=4,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=5),),
+)
+# TODO(P9.4): FallingStar (star-cost 2) and Venerate (star generation) need the
+# Star resource primitive — inert stubs for now.
+FALLING_STAR = CardDef(
+    id="falling_star", name="Falling Star", cost=1, type=CardType.ATTACK, count=1,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=6, scaling=STRIKE_SCALING),),
+)
+VENERATE = CardDef(
+    id="venerate", name="Venerate", cost=1, type=CardType.SKILL, count=1, effects=(),
+)
+REGENT_STARTING_DECK = (STRIKE_REGENT, DEFEND_REGENT, FALLING_STAR, VENERATE)
+
+
+# Per-character starting-deck registry. Keyed by the Character enum *value*
+# string (avoids importing game_state here and the resulting import cycle).
+_STARTING_DECKS_BY_CHAR: dict[str, tuple[CardDef, ...]] = {
+    "ironclad": IRONCLAD_STARTING_DECK,
+    "silent": SILENT_STARTING_DECK,
+    "defect": DEFECT_STARTING_DECK,
+    "necrobinder": NECROBINDER_STARTING_DECK,
+    "regent": REGENT_STARTING_DECK,
+    "deprived": (),   # Deprived = debug fixture: empty deck (Deprived.cs).
+}
+
+# All Phase-9.0 scaffold starter cards (for catalog registration).
+_P9_SCAFFOLD_CARDS: tuple[CardDef, ...] = (
+    STRIKE_SILENT, DEFEND_SILENT, NEUTRALIZE, SURVIVOR,
+    STRIKE_DEFECT, DEFEND_DEFECT, ZAP, DUALCAST,
+    STRIKE_NECROBINDER, DEFEND_NECROBINDER, BODYGUARD, UNLEASH,
+    STRIKE_REGENT, DEFEND_REGENT, FALLING_STAR, VENERATE,
+)
+
+
+def build_starting_deck(character: str = "ironclad") -> list[CardDef]:
+    """Build the starting deck for `character` (the Character enum value
+    string). Defaults to Ironclad for backward compatibility — existing
+    callers that pass nothing keep the Ironclad deck byte-for-byte.
+
+    P9.0: Ironclad is fully faithful; the other four use the scaffold
+    starting decks above (faithful basics + TODO-stubbed signature cards)."""
+    starters = _STARTING_DECKS_BY_CHAR.get(character, IRONCLAD_STARTING_DECK)
     deck: list[CardDef] = []
-    for c in IRONCLAD_STARTING_DECK:
+    for c in starters:
         deck.extend([c] * c.count)
     return deck
 

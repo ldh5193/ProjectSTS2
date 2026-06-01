@@ -9,9 +9,10 @@ from sim.game_state import Character
 
 
 def test_obs_dim_v4():
-    """v4 bumped from 256 (v3) → 384 (Phase 3) → 504 (Phase 7F+G shop block)."""
+    """obs bumped 256 (v3) → 384 (Phase 3) → 504 (Phase 7F+G shop block)
+    → 560 (Phase 9.0 v5 multi-character additive tail)."""
     assert OBS_DIM >= 320  # at least Phase 2 worth
-    assert OBS_DIM == 504  # current layout (Phase 7F+G per-item shop block)
+    assert OBS_DIM == 560  # current layout (Phase 9.0 obs v5)
     assert OBS_DIM_V3 == 256
 
 

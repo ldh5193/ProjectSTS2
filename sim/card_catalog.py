@@ -343,6 +343,15 @@ _IMPLEMENTED: dict[str, CardDef] = {
     CASCADE.id: CASCADE,
 }
 
+# Phase 9.0 scaffold: register the per-character starting cards (Strike/Defend
+# basics + TODO-stubbed signature starters for Silent/Defect/Necrobinder/Regent)
+# so CARDS[<id>] resolves for obs/reward/deck paths. These are NOT in the _META
+# reward pools (RARITY_OF) — they only enter a deck via the character's starting
+# deck, exactly like the Ironclad basics today.
+from .cards import _P9_SCAFFOLD_CARDS as _P9_SCAFFOLD_CARDS  # noqa: E402
+for _scaf in _P9_SCAFFOLD_CARDS:
+    _IMPLEMENTED.setdefault(_scaf.id, _scaf)
+
 
 def _build_registry() -> tuple[dict[str, CardDef], dict[str, CardRarity]]:
     by_id: dict[str, CardDef] = {}
@@ -475,3 +484,50 @@ def card_features(card_id: str) -> list[float]:
 IRONCLAD_COMMON = ids_by_rarity(CardRarity.COMMON)        # 20
 IRONCLAD_UNCOMMON = ids_by_rarity(CardRarity.UNCOMMON)    # 36
 IRONCLAD_RARE = ids_by_rarity(CardRarity.RARE)            # 25
+
+
+# ===========================================================================
+# Phase 9.0 — per-character card-reward POOL registry (SCAFFOLD).
+# ===========================================================================
+#
+# Keyed by the Character enum *value* string. Each entry is a per-rarity
+# dict the reward generator draws from. Ironclad is fully populated (today's
+# pools); the other four are EMPTY (their 88-card pools land in P9.1-P9.4).
+# An empty pool makes generate_card_reward fall back to the Ironclad pool so
+# the env never produces an empty / crashing reward during scaffold training
+# (a character with no cards yet still gets *a* reward) — flagged TODO(P9.x).
+#
+# When a character's cards are implemented, fill its dict with that
+# character's COMMON/UNCOMMON/RARE id lists (e.g. SILENT_COMMON = ...).
+CHARACTER_CARD_POOLS: dict[str, dict[CardRarity, list[str]]] = {
+    "ironclad": {
+        CardRarity.COMMON: list(IRONCLAD_COMMON),
+        CardRarity.UNCOMMON: list(IRONCLAD_UNCOMMON),
+        CardRarity.RARE: list(IRONCLAD_RARE),
+    },
+    # TODO(P9.1): Silent 88 cards.
+    "silent": {CardRarity.COMMON: [], CardRarity.UNCOMMON: [], CardRarity.RARE: []},
+    # TODO(P9.2): Defect 88 cards.
+    "defect": {CardRarity.COMMON: [], CardRarity.UNCOMMON: [], CardRarity.RARE: []},
+    # TODO(P9.3): Necrobinder 88 cards.
+    "necrobinder": {CardRarity.COMMON: [], CardRarity.UNCOMMON: [], CardRarity.RARE: []},
+    # TODO(P9.4): Regent 88 cards.
+    "regent": {CardRarity.COMMON: [], CardRarity.UNCOMMON: [], CardRarity.RARE: []},
+    # Deprived (debug): borrows nothing real; falls back to Ironclad.
+    "deprived": {CardRarity.COMMON: [], CardRarity.UNCOMMON: [], CardRarity.RARE: []},
+}
+
+
+def character_card_pool(character: str) -> dict[CardRarity, list[str]]:
+    """Return the per-rarity card-reward pool for `character` (Character enum
+    value string). Falls back to the Ironclad pool when the character's pool
+    is unregistered or still empty (scaffold), so the reward path always has
+    cards to draw — TODO(P9.x) replace the fallback once each pool is filled."""
+    pool = CHARACTER_CARD_POOLS.get(character)
+    if pool is None:
+        pool = CHARACTER_CARD_POOLS["ironclad"]
+    # If every rarity is empty (scaffold characters), fall back to Ironclad's.
+    if not any(pool.get(r) for r in (CardRarity.COMMON, CardRarity.UNCOMMON,
+                                     CardRarity.RARE)):
+        return CHARACTER_CARD_POOLS["ironclad"]
+    return pool

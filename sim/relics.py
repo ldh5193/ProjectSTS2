@@ -2059,6 +2059,35 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
         # RunState.add_relic.
         category="max_hp",
     ),
+    # --- Phase 9.0 scaffold: non-Ironclad STARTING relics --------------------
+    # Registered so they're catalogued (obs category, breadth) and new_run can
+    # grant them without crashing. rarity="starter" keeps them OUT of every
+    # reward pool. NO fabricated effects — each has a TODO for the real effect
+    # to be ported when the character's batch lands. DO NOT add a hook here
+    # without the decompile.
+    "RING_OF_THE_SNAKE": RelicDef(
+        id="RING_OF_THE_SNAKE", name="Ring of the Snake", rarity="starter",
+        category="draw_card",
+        # TODO(P9.1): RingOfTheSnake.cs — draw 2 extra cards on combat start.
+    ),
+    "CRACKED_CORE": RelicDef(
+        id="CRACKED_CORE", name="Cracked Core", rarity="starter",
+        category="misc",
+        # TODO(P9.2): CrackedCore.cs — channel 1 Lightning orb on combat start
+        # (needs the orb primitive).
+    ),
+    "BOUND_PHYLACTERY": RelicDef(
+        id="BOUND_PHYLACTERY", name="Bound Phylactery", rarity="starter",
+        category="misc",
+        # TODO(P9.3): BoundPhylactery.cs — Necrobinder osty/summon starter
+        # (needs the Osty primitive).
+    ),
+    "DIVINE_RIGHT": RelicDef(
+        id="DIVINE_RIGHT", name="Divine Right", rarity="starter",
+        category="misc",
+        # TODO(P9.4): DivineRight.cs — Regent star starter (needs the Star
+        # resource primitive).
+    ),
 }
 
 
@@ -2298,6 +2327,32 @@ _IRONCLAD_POOL_IDS: frozenset[str] = frozenset({
     "BRIMSTONE", "BURNING_BLOOD", "CHARONS_ASHES", "DEMON_TONGUE", "PAPER_PHROG",
     "RED_SKULL", "RUINED_HELMET", "SELF_FORMING_CLAY",
 })
+# Phase 9.0 scaffold: per-character character-specific relic pools (8 each in
+# the decompile, *RelicPool.cs). Only Ironclad is populated; the other four
+# are empty until their batches (P9.1-P9.4) port their 8 relics. The reward
+# path draws from the shared rarity-tiered pool, so empty character pools just
+# mean "no character-exclusive relic dropped yet" — never a crash.
+_SILENT_POOL_IDS: frozenset[str] = frozenset()       # TODO(P9.1)
+_DEFECT_POOL_IDS: frozenset[str] = frozenset()       # TODO(P9.2)
+_NECROBINDER_POOL_IDS: frozenset[str] = frozenset()  # TODO(P9.3)
+_REGENT_POOL_IDS: frozenset[str] = frozenset()       # TODO(P9.4)
+
+# Character-keyed registry of the character-exclusive relic pools (by Character
+# enum value string). Used by the (future) character-aware relic-drop path.
+_CHARACTER_RELIC_POOL_IDS: dict[str, frozenset[str]] = {
+    "ironclad": _IRONCLAD_POOL_IDS,
+    "silent": _SILENT_POOL_IDS,
+    "defect": _DEFECT_POOL_IDS,
+    "necrobinder": _NECROBINDER_POOL_IDS,
+    "regent": _REGENT_POOL_IDS,
+    "deprived": _IRONCLAD_POOL_IDS,  # Deprived borrows the Ironclad pool.
+}
+
+
+def character_relic_pool_ids(character: str) -> frozenset[str]:
+    """Character-exclusive relic pool ids for `character` (Character enum
+    value string). Empty for the scaffold characters until P9.1-P9.4."""
+    return _CHARACTER_RELIC_POOL_IDS.get(character, _IRONCLAD_POOL_IDS)
 _EVENT_POOL_IDS: frozenset[str] = frozenset({
     "ARCANE_SCROLL", "BLACK_BLOOD", "BLESSED_ANTLER", "BRILLIANT_SCARF",
     "CROSSBOW", "CURSED_PEARL", "DARKSTONE_PERIAPT", "DIAMOND_DIADEM",

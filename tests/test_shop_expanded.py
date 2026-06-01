@@ -245,8 +245,11 @@ def test_potion_purchase_fails_when_belt_full():
 
 
 def test_obs_dim_unchanged():
+    # Phase 9.0 bumped OBS_DIM 504 -> 560 (obs v5 additive tail). The shop
+    # block sits at the same absolute indices; only the trailing char/orb/
+    # star/osty/poison tail is new.
     from sim.env_run import OBS_DIM, RunEnv
-    assert OBS_DIM == 504
+    assert OBS_DIM == 560
     env = RunEnv(ascension=0)
     obs, _ = env.reset(seed=3)
-    assert obs.shape == (504,)
+    assert obs.shape == (560,)

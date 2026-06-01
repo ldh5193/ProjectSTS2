@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 
 from sim.card_catalog import CARD_FEATURE_DIM, card_features
-from sim.env_run import OBS_DIM, RunEnv
+from sim.env_run import OBS_DIM, OBS_DIM_V4_4, RunEnv
 from sim.game_state import Character, MapNode, RunState, StateType
 from sim.run_engine import _enter_room
 
@@ -32,7 +32,10 @@ _SHOP_BLOCK = (_SHOP_CARD_SLOTS * _SHOP_CARD_DIM
                + _SHOP_RELIC_SLOTS * _SHOP_RELIC_DIM
                + _SHOP_POTION_SLOTS * _SHOP_POTION_DIM
                + _SHOP_PAD)                  # + pad
-_CARD_BASE = OBS_DIM - _SHOP_BLOCK           # 504 - 123 = 381
+# The shop block ends at the v4.4 prefix length (504), not OBS_DIM. Phase 9.0
+# appended the obs v5 char/orb/star tail AFTER 504, leaving the shop block at
+# the same absolute indices.
+_CARD_BASE = OBS_DIM_V4_4 - _SHOP_BLOCK      # 504 - 123 = 381
 _RELIC_BASE = _CARD_BASE + _SHOP_CARD_SLOTS * _SHOP_CARD_DIM   # 471
 _POTION_BASE = _RELIC_BASE + _SHOP_RELIC_SLOTS * _SHOP_RELIC_DIM  # 495
 
@@ -52,10 +55,12 @@ def _env_in_shop(gold: int = 1000, seed: int = 42) -> RunEnv:
 
 
 def test_obs_dim_is_504():
-    assert OBS_DIM == 504
+    # Phase 9.0: OBS_DIM is now 560 (obs v5); the v4.4 prefix is 504.
+    assert OBS_DIM == 560
+    assert OBS_DIM_V4_4 == 504
     env = RunEnv(ascension=0)
     obs, _ = env.reset(seed=1)
-    assert obs.shape == (504,)
+    assert obs.shape == (560,)
 
 
 def test_shop_card_block_nonzero_and_matches_offer():
@@ -107,5 +112,7 @@ def test_non_shop_state_leaves_shop_block_zero():
     env = RunEnv(ascension=0)
     obs, _ = env.reset(seed=7)
     assert env.rs.state_type is not StateType.SHOP
-    block = obs[_CARD_BASE:OBS_DIM]
+    # Bound the slice to the v4.4 prefix (504): the obs v5 tail past 504 holds
+    # the character one-hot, which is legitimately nonzero (Ironclad bit set).
+    block = obs[_CARD_BASE:OBS_DIM_V4_4]
     assert np.count_nonzero(block) == 0, "shop block nonzero outside a shop"

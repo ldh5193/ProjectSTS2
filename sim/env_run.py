@@ -42,8 +42,38 @@ from .run_engine import (
 )
 
 
-OBS_DIM = 504  # v4.4 (Phase 7F+G, 2026-05). +118 per-item shop block (rounded to 504); was 384.
+# OBS_VERSION 5 (Phase 9.0, 2026-06-01): multi-character scaffold.
+# v4.4 was 504. v5 appends an ADDITIVE TAIL [504..560) for the new
+# characters (one-hot, stars, orb queue, focus, osty, per-enemy poison).
+# CRITICAL: the existing [0..504) layout is byte-identical — the tail is
+# all-zero for Ironclad, so v4.4 Ironclad checkpoints/tests stay valid and
+# can warm-start into v5 by zero-padding the policy's input layer.
+OBS_VERSION = 5
+OBS_DIM = 560  # v5 (Phase 9.0, 2026-06). 504 (v4.4) + 56 char/orb/star/osty/poison tail.
+OBS_DIM_V4_4 = 504  # the v4.4 byte-identical prefix length (Ironclad-complete)
 OBS_DIM_V3 = 256  # legacy export for the v3-layout-only tests
+
+# --- obs v5 additive tail layout (absolute indices) -----------------------
+# Built by _obs() AFTER the v4.4 cursor reaches OBS_DIM_V4_4 (504). All dims
+# normalize to [0, 1] like the rest. Ironclad leaves the whole tail at 0.
+#   [504 .. 510)  character one-hot: ironclad, silent, defect, necrobinder,
+#                 regent, (pad)                                          6 dims
+#   [510 .. 511)  star resource: stars / 10                             1 dim
+#   [511 .. 521)  orb queue: 10 slots, each = orb_type_id / 5 (0=empty) 10 dims
+#   [521 .. 531)  orb evoke-value: 10 slots, each = evoke_val / 30      10 dims
+#   [531 .. 532)  orb capacity / 10                                     1 dim
+#   [532 .. 533)  focus / 10                                            1 dim
+#   [533 .. 537)  osty: present, osty_hp/40, osty_block/40, (pad)       4 dims
+#   [537 .. 541)  poison on each of up to 4 enemies / 20               4 dims
+#   [541 .. 560)  pad to a clean OBS_DIM = 560                         19 dims
+# P9.1-P9.4 fill these slots with real values; P9.0 leaves them all 0 (the
+# slots exist so the obs shape is stable across the campaign).
+_OBS_TAIL_BASE = OBS_DIM_V4_4          # 504
+_OBS_CHAR_ONEHOT = 6                    # [504..510)
+_CHARACTER_OBS_ORDER = (
+    Character.IRONCLAD, Character.SILENT, Character.DEFECT,
+    Character.NECROBINDER, Character.REGENT,
+)
 
 # Per-episode hard truncation cap (insurance against a non-terminating state
 # hanging eval/training). Far above any legitimate run: random play dies in
@@ -1116,13 +1146,58 @@ class RunEnv(gym.Env):
                    + _SHOP_POTION_SLOTS * _SHOP_POTION_DIM)
         # The pre-block cursor was 381 (the 5-dim summary ended at 381;
         # OBS_DIM=384 carried 3 unused slack dims). 381 + 118 = 499, so pad
-        # 5 dims to round to a clean OBS_DIM = 504.
-        cursor += 5  # pad to a clean OBS_DIM (504)
+        # 5 dims to round to the v4.4 prefix length 504.
+        cursor += 5  # pad to the v4.4 prefix (504)
 
+        # The v4.4 layout MUST end exactly at OBS_DIM_V4_4 (504) so v4.4
+        # Ironclad checkpoints/tests stay byte-identical.
+        assert cursor == OBS_DIM_V4_4, \
+            f"v4.4 obs cursor {cursor} != OBS_DIM_V4_4 {OBS_DIM_V4_4}"
+
+        # ---- obs v5 additive tail [504..560) ------------------------------
+        # P9.0 scaffold: only the character one-hot carries a value; the
+        # orb/star/osty/poison slots stay 0 until P9.1-P9.4 implement the
+        # mechanics. Writing the tail here keeps the obs a strict superset of
+        # v4.4 (Ironclad tail == 0).
+        cursor = self._write_v5_tail(v, cursor)
         assert cursor == OBS_DIM, f"obs cursor {cursor} != OBS_DIM {OBS_DIM}"
 
         v.clip(0.0, 1.0, out=v)
         return v
+
+    def _write_v5_tail(self, v: np.ndarray, cursor: int) -> int:
+        """Write the obs v5 character/orb/star/osty/poison tail in-place.
+
+        cursor enters at OBS_DIM_V4_4 (504) and returns OBS_DIM (560). For
+        P9.0 (scaffold) only the character one-hot is populated; all the
+        mechanic slots (stars/orbs/focus/osty/poison) are left at 0 — they
+        get real values in P9.1-P9.4. The slots exist now so OBS_DIM is
+        stable for the whole multi-character campaign.
+        """
+        rs = self.rs
+        base = cursor  # 504
+        # [504..510) character one-hot (6 dims; index 5 is pad/unused).
+        for i, ch in enumerate(_CHARACTER_OBS_ORDER):
+            if rs is not None and rs.character is ch:
+                v[base + i] = 1.0
+        cursor += _OBS_CHAR_ONEHOT          # -> 510
+        # [510..511) stars / 10        TODO(P9.4 Regent stars)
+        cursor += 1                          # -> 511
+        # [511..521) orb-queue type ids / 5     TODO(P9.2 Defect orbs)
+        cursor += 10                         # -> 521
+        # [521..531) orb evoke values / 30      TODO(P9.2 Defect orbs)
+        cursor += 10                         # -> 531
+        # [531..532) orb capacity / 10          TODO(P9.2 Defect orbs)
+        cursor += 1                          # -> 532
+        # [532..533) focus / 10                 TODO(P9.2 Defect focus)
+        cursor += 1                          # -> 533
+        # [533..537) osty present/hp/block/pad  TODO(P9.3 Necrobinder osty)
+        cursor += 4                          # -> 537
+        # [537..541) per-enemy poison / 20      TODO(P9.1 Silent poison)
+        cursor += 4                          # -> 541
+        # [541..560) pad to a clean OBS_DIM = 560.
+        cursor += 19                         # -> 560
+        return cursor
 
     # -- reward -------------------------------------------------------------
 

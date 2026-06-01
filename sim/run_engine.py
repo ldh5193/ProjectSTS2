@@ -663,7 +663,8 @@ def _step_combat(rs: RunState, body: dict, res: StepResult) -> StepResult:
         rs.pending_card_reward = [
             (upgrade_card(CARDS[ch.card_id]) if ch.upgraded else CARDS[ch.card_id])
             for ch in generate_card_reward(_encounter_rng(rs), source,
-                                           act=rs.act, ascension=int(rs.ascension))
+                                           act=rs.act, ascension=int(rs.ascension),
+                                           character=rs.character.value)
         ]
         was_boss = rs.state_type is StateType.BOSS
         rs.state_type = StateType.CARD_REWARD

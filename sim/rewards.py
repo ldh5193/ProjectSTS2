@@ -15,6 +15,7 @@ from .card_catalog import (
     IRONCLAD_COMMON,
     IRONCLAD_RARE,
     IRONCLAD_UNCOMMON,
+    character_card_pool,
 )
 from .rng import Rng
 
@@ -93,6 +94,9 @@ class RarityRoller:
         return picked
 
 
+# Default (Ironclad) pool — kept for backward compatibility with callers that
+# don't pass a character. Phase 9.0 makes the active pool selectable per
+# character via `character_card_pool`.
 _POOL_BY_RARITY: dict[CardRarity, list[str]] = {
     CardRarity.COMMON: list(IRONCLAD_COMMON),
     CardRarity.UNCOMMON: list(IRONCLAD_UNCOMMON),
@@ -108,6 +112,7 @@ def generate_card_reward(
     ascension: int = 0,
     count: int = 3,
     roller: RarityRoller | None = None,
+    character: str = "ironclad",
 ) -> list[CardRewardChoice]:
     """Generate a 3-card reward (or `count`) for the given encounter source.
 
@@ -115,11 +120,17 @@ def generate_card_reward(
     act 3 -> 50% (non-rare only). `roller` lets callers share offset state
     across multiple rewards in the same run; if None, a fresh local
     roller is used (offset starts at -0.05 each call).
+
+    `character` (Character enum value string) selects the card pool. Phase
+    9.0: Ironclad is fully populated; the other characters fall back to the
+    Ironclad pool until their cards land (P9.1-P9.4) — see
+    `card_catalog.character_card_pool`.
     """
     if source not in RARITY_ODDS:
         raise ValueError(f"unknown reward source: {source!r}")
     if roller is None:
         roller = RarityRoller(ascension=ascension)
+    pool_by_rarity = character_card_pool(character)
     table = _rarity_table(source, ascension)
     upgrade_scale = (UPGRADE_SCALING_SCARCITY if ascension >= 7
                      else UPGRADE_SCALING_STD)
@@ -127,14 +138,14 @@ def generate_card_reward(
     seen: set[str] = set()
     for _ in range(count):
         rarity = roller.roll(rng, table)
-        pool = [c for c in _POOL_BY_RARITY[rarity] if c not in seen]
+        pool = [c for c in pool_by_rarity[rarity] if c not in seen]
         if not pool:
             # Bag exhausted at this rarity within the reward; fall back to
             # whichever pool still has unseen cards (game's pool is large
             # enough that this almost never triggers for count=3, but the
             # safety net keeps generate_card_reward total over count).
             for fallback in (CardRarity.COMMON, CardRarity.UNCOMMON, CardRarity.RARE):
-                pool = [c for c in _POOL_BY_RARITY[fallback] if c not in seen]
+                pool = [c for c in pool_by_rarity[fallback] if c not in seen]
                 if pool:
                     rarity = fallback
                     break
