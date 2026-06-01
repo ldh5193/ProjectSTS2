@@ -624,14 +624,25 @@ class CombatState:
             return
         if eff.op is EffectOp.AUTO_PLAY_FROM_DRAW:
             # Havoc/Cascade: play the top of draw pile, then exhaust it. Cascade
-            # is X-cost, so it repeats once per energy spent (self._x_value).
-            repeat = self._x_value if self._x_value else 1
-            for _ in range(max(1, repeat)):
-                if not self.draw_pile:
-                    break
-                c = self.draw_pile.pop()
-                self._resolve_effects(c)
-                self._exhaust_card(c)
+            # is X-cost, so it repeats once per energy spent (self._x_value);
+            # its upgrade adds eff.amount (+1) extra plays. Havoc is fixed at 1.
+            if self._x_value:
+                repeat = self._x_value + (eff.amount or 0)
+            else:
+                repeat = 1
+            # Auto-played cards resolve as their own plays and must NOT inherit
+            # Cascade's X-value (which would wrongly multi-hit their attacks).
+            saved_x = self._x_value
+            self._x_value = 0
+            try:
+                for _ in range(max(1, repeat)):
+                    if not self.draw_pile:
+                        break
+                    c = self.draw_pile.pop()
+                    self._resolve_effects(c)
+                    self._exhaust_card(c)
+            finally:
+                self._x_value = saved_x
             return
         if eff.op is EffectOp.HEAL:
             self.player.heal(eff.amount)

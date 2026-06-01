@@ -270,6 +270,53 @@ def test_newly_implemented_no_longer_placeholders():
     assert ffeed[1] == 1.0  # is_attack
 
 
+# --------------------------------------------------------------------------
+# Cascade (X-cost auto-play from draw pile) — Phase 8B.13
+# --------------------------------------------------------------------------
+
+def test_cascade_is_x_cost_and_implemented():
+    from sim.cards import CASCADE
+    assert CASCADE.cost == X_COST
+    assert is_implemented("cascade")
+
+
+def _combat_one_clean_monster(seed: int = 0) -> CombatState:
+    def one(rng):
+        return [Monster(name="Dummy", hp=200, max_hp=200)]
+    cs = CombatState.new_combat(seed=seed, monsters_factory=one)
+    cs.start_player_turn()
+    cs.hand.clear()
+    return cs
+
+
+def test_cascade_auto_plays_x_cards_from_draw():
+    from sim.cards import CASCADE, STRIKE_IRONCLAD
+    cs = _combat_one_clean_monster()
+    # Stack the draw pile with 3 Strikes (top = last element).
+    cs.draw_pile = [STRIKE_IRONCLAD, STRIKE_IRONCLAD, STRIKE_IRONCLAD]
+    cs.hand = [CASCADE]
+    cs.player.energy = 2
+    hp0 = cs.monster.hp
+    cs.play_card(0)
+    # 2 energy -> auto-play 2 Strikes (6 each) = 12 damage; energy fully spent.
+    assert cs.monster.hp == hp0 - 12
+    assert cs.player.energy == 0
+    # Two Strikes consumed from draw and exhausted; one remains.
+    assert len(cs.draw_pile) == 1
+
+
+def test_cascade_upgrade_plays_one_more():
+    from sim.cards import CASCADE, STRIKE_IRONCLAD, upgrade_card
+    cs = _combat_one_clean_monster()
+    cs.draw_pile = [STRIKE_IRONCLAD] * 4
+    cs.hand = [upgrade_card(CASCADE)]
+    cs.player.energy = 1
+    hp0 = cs.monster.hp
+    cs.play_card(0)
+    # 1 energy + upgrade(+1) -> 2 Strikes auto-played = 12 damage.
+    assert cs.monster.hp == hp0 - 12
+
+
 def test_x_cost_card_features_safe():
     # X-cost cards must not crash card_features (cost sentinel -1 -> 0 norm).
     from sim.card_catalog import card_features

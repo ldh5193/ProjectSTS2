@@ -381,6 +381,14 @@ WHIRLWIND = CardDef(  # Whirlwind.cs: X-cost, 5 dmg to ALL, hits == energy spent
     ),
 )
 
+CASCADE = CardDef(  # Cascade.cs: X-cost; auto-play X cards from draw top (+1 upgraded)
+    id="cascade", name="Cascade", cost=X_COST, type=CardType.SKILL, count=0,
+    effects=(
+        # amount = extra plays added on top of the X energy spent (upgrade -> +1).
+        Effect(op=EffectOp.AUTO_PLAY_FROM_DRAW, target=Target.SELF, amount=0),
+    ),
+)
+
 ASHEN_STRIKE = CardDef(  # AshenStrike.cs: 6 + 3 per exhausted card; exhausts
     id="ashen_strike", name="Ashen Strike", cost=1, type=CardType.ATTACK, count=0,
     exhaust=True,
@@ -813,6 +821,7 @@ PHASE8_CARDS = (
     INFERNO, JUGGLING, STAMPEDE, VICIOUS,
     AGGRESSION, CRIMSON_MANTLE, CRUELTY, HELLRAISER, ONE_TWO_PUNCH,
     PRIMAL_FORCE, STOKE, THRASH, UNMOVABLE, GIANT_ROCK,
+    CASCADE,
 )
 
 
@@ -1062,6 +1071,7 @@ _UPGRADE_DELTAS: dict[str, tuple[tuple, ...]] = {
     "sword_boomerang": (("dmg", 0),),   # +1 hit (RepeatVar) not modeled as stat
     "true_grit": (("block", 2),),       # 7 -> 9
     "whirlwind": (("dmg", 3),),         # 5 -> 8
+    "cascade": (("auto_play", 1),),     # Cascade.cs: upgraded plays +1 card
     "ashen_strike": (("dmg", 1),),      # ExtraDamage 3 -> 4 (per-card; +1 base)
     "bully": (("dmg", 1),),             # ExtraDamage 2 -> 3 (per-vuln; +1 base)
     "burning_pact": (("draw", 1),),     # 2 -> 3
@@ -1134,6 +1144,8 @@ def _apply_delta(effects: tuple[Effect, ...], delta: tuple) -> tuple[Effect, ...
         elif kind == "energy" and eff.op is EffectOp.ENERGY_GAIN:
             new_eff = _replace(eff, amount=eff.amount + delta[1])
         elif kind == "heal" and eff.op is EffectOp.HEAL:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "auto_play" and eff.op is EffectOp.AUTO_PLAY_FROM_DRAW:
             new_eff = _replace(eff, amount=eff.amount + delta[1])
         elif kind == "block" and eff.op is EffectOp.GAIN_BLOCK_IF_EXHAUSTED:
             new_eff = _replace(eff, amount=eff.amount + delta[1])

@@ -19,6 +19,7 @@ from .cards import (
     ARMAMENTS,
     ASHEN_STRIKE,
     BARRICADE,
+    CASCADE,
     COLOSSUS,
     CRIMSON_MANTLE,
     CRUELTY,
@@ -214,6 +215,7 @@ _META: list[tuple[str, str, int, CardType, CardRarity]] = [
     # --- Rare (25) ---
     ("aggression", "Aggression", 1, CardType.POWER, CardRarity.RARE),
     ("barricade", "Barricade", 3, CardType.POWER, CardRarity.RARE),
+    ("cascade", "Cascade", -1, CardType.SKILL, CardRarity.RARE),  # X-cost
     ("brand", "Brand", 1, CardType.SKILL, CardRarity.RARE),
     ("conflagration", "Conflagration", 2, CardType.ATTACK, CardRarity.RARE),
     ("crimson_mantle", "Crimson Mantle", 1, CardType.POWER, CardRarity.RARE),
@@ -338,6 +340,7 @@ _IMPLEMENTED: dict[str, CardDef] = {
     THRASH.id: THRASH,
     UNMOVABLE.id: UNMOVABLE,
     GIANT_ROCK.id: GIANT_ROCK,
+    CASCADE.id: CASCADE,
 }
 
 
