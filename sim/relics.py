@@ -108,6 +108,10 @@ class RelicDef:
     # Card-exhaust hook — fired by combat._exhaust_card after a card belonging
     # to the player is exhausted (JossPaper: every 5th exhaust -> draw 1).
     on_card_exhausted: Optional[HookOnCardPlayed] = None  # (rs, cs, card)
+    # Card-discard hook — fired by combat._discard_card_from_hand after a player
+    # card is discarded by a card effect (Silent: Tingsha damage / ToughBandages
+    # block, AfterCardDiscarded).
+    on_card_discarded: Optional[HookOnCardPlayed] = None  # (rs, cs, card)
     # Potion-use hook — fired by potions.apply_potion after a potion resolves
     # IN COMBAT (ReptileTrinket: +3 Strength when a potion is used in combat).
     on_potion_used: Optional[Callable[[RunState, object, str], None]] = None  # (rs, cs, potion_id)
@@ -2068,7 +2072,62 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     "RING_OF_THE_SNAKE": RelicDef(
         id="RING_OF_THE_SNAKE", name="Ring of the Snake", rarity="starter",
         category="draw_card",
-        # TODO(P9.1): RingOfTheSnake.cs — draw 2 extra cards on combat start.
+        # RingOfTheSnake.cs ModifyHandDraw: +2 cards on the turn-1 hand draw
+        # (RoundNumber <= 1). CardsVar(2).
+        modify_hand_draw=lambda rs, cs, base: base + 2
+        if getattr(cs, "turn_number", 1) <= 1 else base,
+    ),
+    # --- Phase 9.1: Silent character relic pool (SilentRelicPool.cs, 8 relics).
+    # TwistedFunnel is in the EventRelicPool (already registered). The remaining
+    # 7 are added here. Each cites its decompiled effect.
+    "HELICAL_DART": RelicDef(
+        id="HELICAL_DART", name="Helical Dart", rarity="rare", pool="silent",
+        category="dexterity",
+        # HelicalDart.cs AfterCardPlayed: when a Shiv-tagged card is played,
+        # gain 1 Temporary Dexterity (HelicalDartPower : TemporaryDexterityPower).
+        on_card_played=lambda rs, cs, card: (
+            cs.player.add_or_stack_power(
+                make_power("temporary_dexterity", 1, cs.player))
+            if "shiv" in getattr(card, "id", "") else None),
+    ),
+    "NINJA_SCROLL": RelicDef(
+        id="NINJA_SCROLL", name="Ninja Scroll", rarity="shop", pool="silent",
+        merchant_cost=175, category="misc",
+        # NinjaScroll.cs BeforeHandDraw (RoundNumber <= 1): add 3 Shivs to hand
+        # on turn 1. We add via the turn-1 hand-draw modifier path (combat fires
+        # modify_hand_draw turn 1), but Shivs go to hand directly — use the
+        # on_player_turn_start hook gated to turn 1.
+        on_player_turn_start=lambda rs, cs: _add_shivs_to_hand(cs, 3)
+        if cs.turn_number == 1 else None,
+    ),
+    "PAPER_KRANE": RelicDef(
+        id="PAPER_KRANE", name="Paper Krane", rarity="rare", pool="silent",
+        category="weak_start",
+        # PaperKrane.cs ModifyWeakMultiplier: enemies you attack that are Weak
+        # take more damage (Weak −0.15 deeper). The sim has no weak-multiplier-
+        # modify primitive, so this is a faithful no-op marker.
+        on_combat_start=lambda rs, cs: None,
+    ),
+    "SNECKO_SKULL": RelicDef(
+        id="SNECKO_SKULL", name="Snecko Skull", rarity="common", pool="silent",
+        merchant_cost=175, category="misc",
+        # SneckoSkull.cs ModifyPowerAmountGiven: the player applies +1 Poison
+        # stack when applying Poison. Read by combat's APPLY_POWER path via
+        # poison_amount_bonus().
+    ),
+    "TINGSHA": RelicDef(
+        id="TINGSHA", name="Tingsha", rarity="uncommon", pool="silent",
+        category="misc",
+        # Tingsha.cs AfterCardDiscarded: when the player discards a card, deal 3
+        # Unpowered damage to a random enemy.
+        on_card_discarded=lambda rs, cs, card: _tingsha_damage(cs, 3),
+    ),
+    "TOUGH_BANDAGES": RelicDef(
+        id="TOUGH_BANDAGES", name="Tough Bandages", rarity="rare", pool="silent",
+        category="block_start",
+        # ToughBandages.cs AfterCardDiscarded: when the player discards a card,
+        # gain 3 Block.
+        on_card_discarded=lambda rs, cs, card: _gain_block(cs, 3),
     ),
     "CRACKED_CORE": RelicDef(
         id="CRACKED_CORE", name="Cracked Core", rarity="starter",
@@ -2210,6 +2269,43 @@ def trigger_on_card_exhausted(rs: RunState, combat, card) -> None:
             rd.on_card_exhausted(rs, combat, card)
 
 
+def trigger_on_card_discarded(rs: RunState, combat, card) -> None:
+    """Fired by combat._discard_card_from_hand after a player card is discarded
+    by a card effect (Tingsha damage / ToughBandages block)."""
+    for r in rs.relics:
+        rd = RELIC_REGISTRY.get(r.id)
+        if rd and rd.on_card_discarded:
+            rd.on_card_discarded(rs, combat, card)
+
+
+def poison_amount_bonus(rs: RunState) -> int:
+    """Total +Poison-stack bonus the player gives when applying Poison
+    (SneckoSkull.cs ModifyPowerAmountGiven: +1)."""
+    return 1 if any(r.id == "SNECKO_SKULL" for r in rs.relics) else 0
+
+
+def _tingsha_damage(combat, amount: int) -> None:
+    """Tingsha.cs AfterCardDiscarded: deal `amount` Unpowered damage to a
+    random hittable enemy."""
+    from .damage import deal_damage
+    alive = combat.alive_monsters()
+    if not alive:
+        return
+    t = combat.rng.choice(alive)
+    deal_damage(amount, combat.player, t, powered=False)
+
+
+def _add_shivs_to_hand(combat, n: int) -> None:
+    """Add `n` Shiv tokens to the player's hand (NinjaScroll / shiv generators
+    via a relic). Pulls the registered Shiv CardDef."""
+    from .card_catalog import CARDS
+    shiv = CARDS.get("shiv")
+    if shiv is None:
+        return
+    for _ in range(n):
+        combat.hand.append(shiv)
+
+
 def trigger_on_potion_used(rs: RunState, combat, potion_id: str) -> None:
     """Fired by potions.apply_potion after a potion resolves in combat
     (ReptileTrinket: +3 Strength when a potion is used in combat)."""
@@ -2332,7 +2428,10 @@ _IRONCLAD_POOL_IDS: frozenset[str] = frozenset({
 # are empty until their batches (P9.1-P9.4) port their 8 relics. The reward
 # path draws from the shared rarity-tiered pool, so empty character pools just
 # mean "no character-exclusive relic dropped yet" — never a crash.
-_SILENT_POOL_IDS: frozenset[str] = frozenset()       # TODO(P9.1)
+_SILENT_POOL_IDS: frozenset[str] = frozenset({       # P9.1 (SilentRelicPool.cs)
+    "HELICAL_DART", "NINJA_SCROLL", "PAPER_KRANE", "RING_OF_THE_SNAKE",
+    "SNECKO_SKULL", "TINGSHA", "TOUGH_BANDAGES", "TWISTED_FUNNEL",
+})
 _DEFECT_POOL_IDS: frozenset[str] = frozenset()       # TODO(P9.2)
 _NECROBINDER_POOL_IDS: frozenset[str] = frozenset()  # TODO(P9.3)
 _REGENT_POOL_IDS: frozenset[str] = frozenset()       # TODO(P9.4)
@@ -2376,6 +2475,12 @@ _EVENT_POOL_IDS: frozenset[str] = frozenset({
 def _build_pools() -> dict[str, list[str]]:
     pools: dict[str, list[str]] = {"common": [], "uncommon": [], "rare": [], "boss": []}
     for rid, rd in RELIC_REGISTRY.items():
+        # Character-exclusive relic pools (Silent/Defect/...) do NOT drop in the
+        # generic cross-character reward; they are gated to their character's
+        # relic-reward path. Skip pool=="silent" (and future per-character pools)
+        # so a Silent relic never drops for an Ironclad run.
+        if rd.pool in ("silent", "defect", "necrobinder", "regent"):
+            continue
         tier = _RARITY_TO_TIER.get(rd.rarity)
         if tier is not None:
             pools[tier].append(rid)

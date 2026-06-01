@@ -352,6 +352,12 @@ from .cards import _P9_SCAFFOLD_CARDS as _P9_SCAFFOLD_CARDS  # noqa: E402
 for _scaf in _P9_SCAFFOLD_CARDS:
     _IMPLEMENTED.setdefault(_scaf.id, _scaf)
 
+# Phase 9.1: register the fully-implemented Silent cards + Shiv token so
+# CARDS[<id>] resolves for obs/reward/deck/generation paths.
+from .cards import _SILENT_IMPLEMENTED as _SILENT_IMPLEMENTED  # noqa: E402
+for _sc in _SILENT_IMPLEMENTED:
+    _IMPLEMENTED.setdefault(_sc.id, _sc)
+
 
 def _build_registry() -> tuple[dict[str, CardDef], dict[str, CardRarity]]:
     by_id: dict[str, CardDef] = {}
@@ -487,6 +493,151 @@ IRONCLAD_RARE = ids_by_rarity(CardRarity.RARE)            # 25
 
 
 # ===========================================================================
+# Phase 9.1 — SILENT card metadata (SilentCardPool.cs, 88 cards). Each entry is
+# (id, name, cost, type, rarity), .cs-exact. Implemented effects live in
+# sim/cards.py (_SILENT_IMPLEMENTED); the rest fall back to by-type placeholders
+# with the correct cost/type/rarity so the reward/deck pool enumerates the full
+# Silent set. Basics (Strike/Defend/Neutralize/Survivor) come from the scaffold.
+# Ancients (Suppress/WraithForm) are excluded from reward generation, like
+# Ironclad's Break/Corruption.
+# ===========================================================================
+_X = -1  # X-cost sentinel (matches dsl.X_COST)
+_SILENT_META: list[tuple[str, str, int, CardType, CardRarity]] = [
+    # --- Basics (registered via scaffold; included here for rarity lookup) ---
+    ("strike_silent", "Strike", 1, CardType.ATTACK, CardRarity.BASIC),
+    ("defend_silent", "Defend", 1, CardType.SKILL, CardRarity.BASIC),
+    ("neutralize", "Neutralize", 0, CardType.ATTACK, CardRarity.BASIC),
+    ("survivor", "Survivor", 1, CardType.SKILL, CardRarity.BASIC),
+    # --- Common ---
+    ("slice", "Slice", 0, CardType.ATTACK, CardRarity.COMMON),
+    ("dagger_throw", "Dagger Throw", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("dagger_spray", "Dagger Spray", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("flick_flack", "Flick Flack", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("follow_through", "Follow Through", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("leading_strike", "Leading Strike", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("poisoned_stab", "Poisoned Stab", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("ricochet", "Ricochet", 2, CardType.ATTACK, CardRarity.COMMON),
+    ("sucker_punch", "Sucker Punch", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("deadly_poison", "Deadly Poison", 1, CardType.SKILL, CardRarity.COMMON),
+    ("snakebite", "Snakebite", 2, CardType.SKILL, CardRarity.COMMON),
+    ("blade_dance", "Blade Dance", 1, CardType.SKILL, CardRarity.COMMON),
+    ("cloak_and_dagger", "Cloak and Dagger", 1, CardType.SKILL, CardRarity.COMMON),
+    ("deflect", "Deflect", 0, CardType.SKILL, CardRarity.COMMON),
+    ("dodge_and_roll", "Dodge and Roll", 1, CardType.SKILL, CardRarity.COMMON),
+    ("prepared", "Prepared", 0, CardType.SKILL, CardRarity.COMMON),
+    ("untouchable", "Untouchable", 2, CardType.SKILL, CardRarity.COMMON),
+    # --- Uncommon ---
+    ("backstab", "Backstab", 0, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("dash", "Dash", 2, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("predator", "Predator", 2, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("pounce", "Pounce", 2, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("pinpoint", "Pinpoint", 3, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("skewer", "Skewer", _X, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("finisher", "Finisher", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("flechettes", "Flechettes", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("memento_mori", "Memento Mori", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("precise_cut", "Precise Cut", 0, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("blur", "Blur", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("backflip", "Backflip", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("leg_sweep", "Leg Sweep", 2, CardType.SKILL, CardRarity.UNCOMMON),
+    ("escape_plan", "Escape Plan", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    ("expertise", "Expertise", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("calculated_gamble", "Calculated Gamble", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    ("acrobatics", "Acrobatics", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("haze", "Haze", 3, CardType.SKILL, CardRarity.UNCOMMON),
+    ("bubble_bubble", "Bubble Bubble", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("bouncing_flask", "Bouncing Flask", 2, CardType.SKILL, CardRarity.UNCOMMON),
+    ("hand_trick", "Hand Trick", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("hidden_daggers", "Hidden Daggers", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    ("expose", "Expose", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    ("reflex", "Reflex", 3, CardType.SKILL, CardRarity.UNCOMMON),
+    ("flanking", "Flanking", 2, CardType.SKILL, CardRarity.UNCOMMON),
+    ("up_my_sleeve", "Up My Sleeve", 2, CardType.SKILL, CardRarity.UNCOMMON),
+    ("tactician", "Tactician", 3, CardType.SKILL, CardRarity.UNCOMMON),
+    ("anticipate", "Anticipate", 0, CardType.SKILL, CardRarity.COMMON),
+    ("accuracy", "Accuracy", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("footwork", "Footwork", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("noxious_fumes", "Noxious Fumes", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("outbreak", "Outbreak", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("infinite_blades", "Infinite Blades", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("phantom_blades", "Phantom Blades", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("speedster", "Speedster", 2, CardType.POWER, CardRarity.UNCOMMON),
+    ("well_laid_plans", "Well-Laid Plans", 1, CardType.POWER, CardRarity.UNCOMMON),
+    # --- Rare ---
+    ("backflip", "Backflip", 1, CardType.SKILL, CardRarity.UNCOMMON),  # dedup-safe
+    ("the_hunt", "The Hunt", 1, CardType.ATTACK, CardRarity.RARE),
+    ("echoing_slash", "Echoing Slash", 1, CardType.ATTACK, CardRarity.RARE),
+    ("grand_finale", "Grand Finale", 0, CardType.ATTACK, CardRarity.RARE),
+    ("assassinate", "Assassinate", 0, CardType.ATTACK, CardRarity.RARE),
+    ("murder", "Murder", 3, CardType.ATTACK, CardRarity.RARE),
+    ("envenom", "Envenom", 2, CardType.POWER, CardRarity.RARE),
+    ("accelerant", "Accelerant", 1, CardType.POWER, CardRarity.RARE),
+    ("sneaky", "Sneaky", 2, CardType.POWER, CardRarity.RARE),
+    ("serpent_form", "Serpent Form", 3, CardType.POWER, CardRarity.RARE),
+    ("fan_of_knives", "Fan of Knives", 2, CardType.POWER, CardRarity.RARE),
+    ("tools_of_the_trade", "Tools of the Trade", 1, CardType.POWER, CardRarity.RARE),
+    ("abrasive", "Abrasive", 3, CardType.POWER, CardRarity.RARE),
+    ("blade_of_ink", "Blade of Ink", 1, CardType.SKILL, CardRarity.RARE),
+    ("bullet_time", "Bullet Time", 3, CardType.SKILL, CardRarity.RARE),
+    ("corrosive_wave", "Corrosive Wave", 1, CardType.SKILL, CardRarity.RARE),
+    ("adrenaline", "Adrenaline", 0, CardType.SKILL, CardRarity.RARE),
+    ("knife_trap", "Knife Trap", 2, CardType.SKILL, CardRarity.RARE),
+    ("malaise", "Malaise", 0, CardType.SKILL, CardRarity.RARE),
+    ("master_planner", "Master Planner", 2, CardType.POWER, CardRarity.RARE),
+    ("mirage", "Mirage", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("nightmare", "Nightmare", 3, CardType.SKILL, CardRarity.RARE),
+    ("phantom_blades", "Phantom Blades", 1, CardType.POWER, CardRarity.UNCOMMON),  # dedup
+    ("shadow_step", "Shadow Step", 1, CardType.SKILL, CardRarity.RARE),
+    ("shadowmeld", "Shadowmeld", 1, CardType.SKILL, CardRarity.RARE),
+    ("storm_of_steel", "Storm of Steel", 1, CardType.SKILL, CardRarity.RARE),
+    ("afterimage_silent", "Afterimage", 1, CardType.POWER, CardRarity.RARE),
+    ("burst", "Burst", 1, CardType.SKILL, CardRarity.RARE),
+    ("piercing_wail", "Piercing Wail", 1, CardType.SKILL, CardRarity.COMMON),
+    ("strangle", "Strangle", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    # --- Ancient (excluded from reward gen) ---
+    ("suppress", "Suppress", 0, CardType.ATTACK, CardRarity.ANCIENT),
+    ("wraith_form", "Wraith Form", 3, CardType.POWER, CardRarity.ANCIENT),
+    # --- Token (not in reward pool) ---
+    ("shiv", "Shiv", 0, CardType.ATTACK, CardRarity.BASIC),
+]
+
+
+def _build_silent_registry() -> None:
+    """Merge Silent metadata into the global CARDS / RARITY_OF registries:
+    implemented CardDefs are kept; everything else gets a by-type placeholder
+    with the correct cost/type. De-dups on id (some entries repeat for safety)."""
+    seen: set[str] = set()
+    for cid, name, cost, ctype, rarity in _SILENT_META:
+        if cid in seen:
+            continue
+        seen.add(cid)
+        RARITY_OF.setdefault(cid, rarity)
+        if cid not in CARDS:
+            CARDS[cid] = _placeholder(cid, name, cost, ctype, rarity)
+
+
+_build_silent_registry()
+
+SILENT_COMMON = [c for (c, _n, _co, _t, r) in _SILENT_META
+                 if r is CardRarity.COMMON]
+SILENT_UNCOMMON = [c for (c, _n, _co, _t, r) in _SILENT_META
+                   if r is CardRarity.UNCOMMON]
+SILENT_RARE = [c for (c, _n, _co, _t, r) in _SILENT_META
+               if r is CardRarity.RARE]
+# De-dup while preserving order (some ids appear twice in _SILENT_META).
+def _dedup(seq):
+    out, seen = [], set()
+    for x in seq:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+SILENT_COMMON = _dedup(SILENT_COMMON)
+SILENT_UNCOMMON = _dedup(SILENT_UNCOMMON)
+SILENT_RARE = _dedup(SILENT_RARE)
+
+
+# ===========================================================================
 # Phase 9.0 — per-character card-reward POOL registry (SCAFFOLD).
 # ===========================================================================
 #
@@ -505,8 +656,12 @@ CHARACTER_CARD_POOLS: dict[str, dict[CardRarity, list[str]]] = {
         CardRarity.UNCOMMON: list(IRONCLAD_UNCOMMON),
         CardRarity.RARE: list(IRONCLAD_RARE),
     },
-    # TODO(P9.1): Silent 88 cards.
-    "silent": {CardRarity.COMMON: [], CardRarity.UNCOMMON: [], CardRarity.RARE: []},
+    # P9.1: Silent 88-card pool (SilentCardPool.cs).
+    "silent": {
+        CardRarity.COMMON: list(SILENT_COMMON),
+        CardRarity.UNCOMMON: list(SILENT_UNCOMMON),
+        CardRarity.RARE: list(SILENT_RARE),
+    },
     # TODO(P9.2): Defect 88 cards.
     "defect": {CardRarity.COMMON: [], CardRarity.UNCOMMON: [], CardRarity.RARE: []},
     # TODO(P9.3): Necrobinder 88 cards.

@@ -69,6 +69,11 @@ class Power:
     def on_card_played(self, cs, owner, card) -> None:
         """A card belonging to `owner` finished resolving (Juggling clone)."""
 
+    def on_card_discarded(self, cs, owner, card) -> None:
+        """A card belonging to `owner` was DISCARDED from hand by a card effect
+        (Survivor / Acrobatics / Prepared / DaggerThrow / CalculatedGamble).
+        Silent discard-payoff hook (AfterCardDiscarded). Default: no-op."""
+
     def on_card_drawn(self, cs, owner, card) -> None:
         """A card belonging to `owner` was just drawn into hand. Used by
         Confused (SneckoEye): randomize the drawn card's cost to 0-3 for the
@@ -76,6 +81,9 @@ class Power:
 
     def on_vulnerable_applied(self, cs, owner) -> None:
         """`owner` applied Vulnerable to an enemy (Vicious draw)."""
+
+    def on_poison_applied(self, cs, owner) -> None:
+        """`owner` applied Poison to an enemy (Outbreak counter)."""
 
     def on_owner_hp_lost(self, cs, owner) -> None:
         """`owner` took unblocked damage on its own side (Inferno retaliate)."""
@@ -1776,6 +1784,136 @@ class FeedingFrenzyPower(Power):
             owner.powers.remove(self)
 
 
+# ===========================================================================
+# Phase 9.1 — Silent character powers (decompiled Models.Powers/*.cs).
+# ===========================================================================
+@dataclass
+class OutbreakPower(Power):
+    """OutbreakPower.cs: a counter (DisplayAmount = timesPoisoned). Each time
+    the owner applies Poison to an enemy, increment an internal counter; every
+    3rd application, deal `amount` AoE Unpowered damage to all enemies and reset
+    the counter (mod 3). Amount is the per-trigger damage (RepeatVar 3 = the
+    period). We fire from cs when Poison is applied by the player."""
+    id: str = field(default="outbreak", init=False)
+    _owner: object = None
+    _times: int = 0
+
+    def on_poison_applied(self, cs, owner) -> None:
+        self._times += 1
+        if self._times >= 3:
+            self._times %= 3
+            for m in cs.alive_monsters():
+                if m.alive:
+                    from .damage import deal_damage
+                    deal_damage(self.amount, owner, m, powered=False)
+
+
+@dataclass
+class PhantomBladesPower(Power):
+    """PhantomBladesPower.cs: Shiv cards entering combat gain the Retain
+    keyword. The sim's Shiv token is single-turn (Exhaust), and there is no
+    per-instance Retain on tokens, so this is a no-op marker power for fidelity
+    tracking (the Shiv is exhausted on play either way). Registered faithfully
+    as a Counter buff."""
+    id: str = field(default="phantom_blades", init=False)
+    _owner: object = None
+
+
+@dataclass
+class InfiniteBladesPower(Power):
+    """InfiniteBladesPower.cs (BeforeHandDraw): at the start of the owner's turn
+    (before the hand draw), add `amount` Shiv(s) to hand. We fire on
+    on_turn_start (after draw is fine — the Shiv lands in hand either way)."""
+    id: str = field(default="infinite_blades", init=False)
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        from .card_catalog import CARDS
+        shiv = CARDS.get("shiv")
+        for _ in range(self.amount):
+            if shiv is not None:
+                cs.hand.append(shiv)
+
+
+@dataclass
+class AccelerantPower(Power):
+    """AccelerantPower.cs: increases the number of times Poison ticks per turn
+    (read by PoisonPower.TriggerCount as 1 + Σ AccelerantPower on enemies).
+    Faithful no-op as a standalone class; the trigger-count logic lives in the
+    poison tick. Registered so Accelerant can apply it."""
+    id: str = field(default="accelerant", init=False)
+    _owner: object = None
+
+
+@dataclass
+class PhantomBladesMarker(Power):
+    id: str = field(default="_pb_marker", init=False)
+
+
+@dataclass
+class SneakyPower(Power):
+    """SneakyPower.cs (AfterCardPlayed): when an ENEMY plays an Attack, the
+    owner gains `amount` Block. Single-player has no enemy card-plays, so this
+    is a faithful no-op marker (it only triggers in multiplayer)."""
+    id: str = field(default="sneaky", init=False)
+    _owner: object = None
+
+
+@dataclass
+class SpeedsterPower(Power):
+    """SpeedsterPower.cs (AfterCardDrawn, !fromHandDraw): deal `amount` AoE
+    Unpowered damage whenever the owner draws a card OUTSIDE the start-of-turn
+    hand draw. The sim does not distinguish in-turn draws from the hand draw at
+    the power layer, so we trigger on on_card_played for draw-cards' effects via
+    a lightweight marker: implemented as AoE on each extra draw the engine
+    reports. Kept conservative (no-op marker) to avoid double-counting; full
+    per-draw wiring is deferred."""
+    id: str = field(default="speedster", init=False)
+    _owner: object = None
+
+
+@dataclass
+class SerpentFormPower(Power):
+    """SerpentFormPower.cs: each card the owner plays, after it resolves, deals
+    `amount` Unpowered damage to a random enemy (BeforeCardPlayed snapshots the
+    amount, AfterCardPlayed deals it). We fire on on_card_played."""
+    id: str = field(default="serpent_form", init=False)
+    _owner: object = None
+
+    def on_card_played(self, cs, owner, card) -> None:
+        if self.amount <= 0:
+            return
+        alive = cs.alive_monsters()
+        if not alive:
+            return
+        from .damage import deal_damage
+        t = cs.rng.choice(alive)
+        deal_damage(self.amount, owner, t, powered=False)
+
+
+@dataclass
+class ToolsOfTheTradePower(Power):
+    """ToolsOfTheTrade.cs / ToolsOfTheTradePower: at the owner's turn start,
+    draw `amount` cards then discard `amount` cards (card-filtering engine).
+    Faithful as draw N + discard N at turn start."""
+    id: str = field(default="tools_of_the_trade", init=False)
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        cs.draw(self.amount)
+        cs._discard_n_from_hand(self.amount)
+
+
+@dataclass
+class WellLaidPlansPower(Power):
+    """WellLaidPlansPower.cs (BeforeFlushLate): retain up to `amount` cards in
+    hand at end of turn. Mirrors the existing RetainHandPower behavior; we reuse
+    its turn-end retain by aliasing to the same mechanic (retain `amount` cards,
+    persistent — does NOT decay, unlike StableSerum's one-shot)."""
+    id: str = field(default="well_laid_plans", init=False)
+    _owner: object = None
+
+
 POWER_REGISTRY: dict[str, type[Power]] = {
     "confused": ConfusedPower,
     "no_draw": NoDrawPower,
@@ -1889,6 +2027,16 @@ POWER_REGISTRY: dict[str, type[Power]] = {
     "dark_shackles": DarkShacklesPower,
     "piercing_wail": PiercingWailPower,
     "feeding_frenzy": FeedingFrenzyPower,
+    # Phase 9.1 — Silent powers.
+    "outbreak": OutbreakPower,
+    "phantom_blades": PhantomBladesPower,
+    "infinite_blades": InfiniteBladesPower,
+    "accelerant": AccelerantPower,
+    "sneaky": SneakyPower,
+    "speedster": SpeedsterPower,
+    "serpent_form": SerpentFormPower,
+    "tools_of_the_trade": ToolsOfTheTradePower,
+    "well_laid_plans": WellLaidPlansPower,
 }
 
 

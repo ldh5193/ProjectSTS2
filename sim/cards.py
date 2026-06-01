@@ -990,8 +990,7 @@ DEFEND_SILENT = CardDef(
     id="defend_silent", name="Defend", cost=1, type=CardType.SKILL, count=5,
     effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=5),),
 )
-# TODO(P9.1): Neutralize = 0-cost, 3 dmg + apply 1 Weak (needs Silent tuning);
-# Survivor = 1-cost, 8 block + discard a card. Stubbed to their block/dmg shell.
+# Neutralize (Neutralize.cs): 0-cost, 3 dmg + 1 Weak (upgrade +1 dmg / +1 Weak).
 NEUTRALIZE = CardDef(
     id="neutralize", name="Neutralize", cost=0, type=CardType.ATTACK, count=1,
     effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
@@ -999,10 +998,11 @@ NEUTRALIZE = CardDef(
              Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
                     power_id="weak", amount=1),),
 )
+# Survivor (Survivor.cs): 1-cost, Block 8 + discard 1 card (upgrade block+3).
 SURVIVOR = CardDef(
     id="survivor", name="Survivor", cost=1, type=CardType.SKILL, count=1,
-    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=8),),
-    # TODO(P9.1): also "discard a card" — needs the discard-choice primitive.
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=8),
+             Effect(op=EffectOp.DISCARD_CARDS, target=Target.SELF, amount=1),),
 )
 SILENT_STARTING_DECK = (STRIKE_SILENT, DEFEND_SILENT, NEUTRALIZE, SURVIVOR)
 
@@ -1088,6 +1088,380 @@ _P9_SCAFFOLD_CARDS: tuple[CardDef, ...] = (
     STRIKE_DEFECT, DEFEND_DEFECT, ZAP, DUALCAST,
     STRIKE_NECROBINDER, DEFEND_NECROBINDER, BODYGUARD, UNLEASH,
     STRIKE_REGENT, DEFEND_REGENT, FALLING_STAR, VENERATE,
+)
+
+
+# ===========================================================================
+# Phase 9.1 — SILENT full card library (decompiled Models.Cards/*.cs, 88 cards
+# in SilentCardPool.cs + the Shiv token). Costs / damage / block / poison /
+# weak / draw / upgrade are .cs-exact. Cards needing an absent primitive land
+# as faithful by-type placeholders (correct cost/type/rarity) and are flagged.
+# ===========================================================================
+
+# --- Shiv token (Shiv.cs): 0-cost Attack, 4 dmg, Exhaust; upgrade +2 dmg.
+SHIV = CardDef(
+    id="shiv", name="Shiv", cost=0, type=CardType.ATTACK, count=0, exhaust=True,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=4, scaling=STRIKE_SCALING),),
+)
+
+# --- Common attacks ---------------------------------------------------------
+SLICE = CardDef(  # Slice.cs: 0-cost, 6 dmg (upg +3)
+    id="slice", name="Slice", cost=0, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=6, scaling=STRIKE_SCALING),),
+)
+DAGGER_THROW = CardDef(  # DaggerThrow.cs: 1-cost, 9 dmg, draw 1, discard 1 (upg +3 dmg)
+    id="dagger_throw", name="Dagger Throw", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=9, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.DRAW_THEN_DISCARD, target=Target.SELF,
+                    amount=1, hit_count=1),),
+)
+DAGGER_SPRAY = CardDef(  # DaggerSpray.cs: 1-cost, 4 dmg ×2 to ALL (upg +2 dmg)
+    id="dagger_spray", name="Dagger Spray", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.ALL_ENEMIES,
+                    amount=4, hit_count=2, scaling=STRIKE_SCALING),),
+)
+FLICK_FLACK = CardDef(  # FlickFlack.cs: 1-cost, 6 dmg to ALL, Sly (upg +? dmg)
+    id="flick_flack", name="Flick Flack", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.ALL_ENEMIES,
+                    amount=6, scaling=STRIKE_SCALING),),
+)
+FOLLOW_THROUGH = CardDef(  # FollowThrough.cs: 1-cost, 7 dmg (+ bonus); base impl 7
+    id="follow_through", name="Follow Through", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=7, scaling=STRIKE_SCALING),),
+)
+LEADING_STRIKE = CardDef(  # LeadingStrike.cs: 1-cost attack (base dmg 3 + extra); base 3
+    id="leading_strike", name="Leading Strike", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=3, scaling=STRIKE_SCALING),),
+)
+POISONED_STAB = CardDef(  # PoisonedStab.cs: 1-cost, 6 dmg + 3 Poison (upg +2 dmg/+1 poison)
+    id="poisoned_stab", name="Poisoned Stab", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=6, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+                    power_id="poison", amount=3),),
+)
+RICOCHET = CardDef(  # Ricochet.cs: 2-cost, 3 dmg ×4 random, Sly (upg +? hits)
+    id="ricochet", name="Ricochet", cost=2, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.RANDOM_ENEMY,
+                    amount=3, hit_count=4, scaling=STRIKE_SCALING),),
+)
+SUCKER_PUNCH = CardDef(  # SuckerPunch.cs: 1-cost, 8 dmg + 1 Weak (upg +2 dmg/+1 weak)
+    id="sucker_punch", name="Sucker Punch", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=8, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+                    power_id="weak", amount=1),),
+)
+
+# --- Common skills ----------------------------------------------------------
+DEADLY_POISON = CardDef(  # DeadlyPoison.cs: 1-cost, 5 Poison (upg +2)
+    id="deadly_poison", name="Deadly Poison", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+                    power_id="poison", amount=5),),
+)
+SNAKEBITE = CardDef(  # Snakebite.cs: 2-cost, 7 Poison (upg +3)
+    id="snakebite", name="Snakebite", cost=2, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+                    power_id="poison", amount=7),),
+)
+BLADE_DANCE = CardDef(  # BladeDance.cs: 1-cost, add 3 Shivs to hand (upg +1)
+    id="blade_dance", name="Blade Dance", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.ADD_CARD, target=Target.SELF, card_id="shiv",
+                    amount=3, pile="hand"),),
+)
+CLOAK_AND_DAGGER = CardDef(  # CloakAndDagger.cs: 1-cost, Block 6 + 1 Shiv (upg +1 shiv)
+    id="cloak_and_dagger", name="Cloak and Dagger", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=6),
+             Effect(op=EffectOp.ADD_CARD, target=Target.SELF, card_id="shiv",
+                    amount=1, pile="hand"),),
+)
+DEFLECT = CardDef(  # Deflect.cs: 0-cost, Block 4 (upg +? )
+    id="deflect", name="Deflect", cost=0, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=4),),
+)
+DODGE_AND_ROLL = CardDef(  # DodgeAndRoll.cs: 1-cost, Block 4 (+ next-turn block); base 4
+    id="dodge_and_roll", name="Dodge and Roll", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=4),),
+)
+PREPARED = CardDef(  # Prepared.cs: 0-cost, draw 1 + discard 1 (upg +1 each)
+    id="prepared", name="Prepared", cost=0, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.DRAW_THEN_DISCARD, target=Target.SELF,
+                    amount=1, hit_count=1),),
+)
+ACROBATICS = CardDef(  # Acrobatics.cs: 1-cost, draw 3 + discard 1 (upg draw+1)
+    id="acrobatics", name="Acrobatics", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.DRAW_THEN_DISCARD, target=Target.SELF,
+                    amount=3, hit_count=1),),
+)
+
+# --- Uncommon attacks -------------------------------------------------------
+BACKSTAB = CardDef(  # Backstab.cs: 0-cost, 11 dmg, Innate+Exhaust (upg +4)
+    id="backstab", name="Backstab", cost=0, type=CardType.ATTACK, count=0,
+    exhaust=True,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=11, scaling=STRIKE_SCALING),),
+)
+DASH = CardDef(  # Dash.cs: 2-cost, Block 10 + 10 dmg (upg +? each)
+    id="dash", name="Dash", cost=2, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=10),
+             Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=10, scaling=STRIKE_SCALING),),
+)
+PREDATOR = CardDef(  # Predator.cs: 2-cost, 15 dmg + draw 2 next turn; base 15 dmg
+    id="predator", name="Predator", cost=2, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=15, scaling=STRIKE_SCALING),),
+)
+POUNCE = CardDef(  # Pounce.cs: 2-cost, 12 dmg (+ a free skill); base 12 dmg
+    id="pounce", name="Pounce", cost=2, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=12, scaling=STRIKE_SCALING),),
+)
+PINPOINT = CardDef(  # Pinpoint.cs: 3-cost, 15 dmg
+    id="pinpoint", name="Pinpoint", cost=3, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=15, scaling=STRIKE_SCALING),),
+)
+SKEWER = CardDef(  # Skewer.cs: X-cost, 8 dmg per energy spent
+    id="skewer", name="Skewer", cost=X_COST, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DAMAGE_X_HITS, target=Target.SELECTED_ENEMY,
+                    amount=8, scaling=STRIKE_SCALING),),
+)
+FINISHER = CardDef(  # Finisher.cs: 1-cost, 6 dmg per Attack played this turn
+    id="finisher", name="Finisher", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DAMAGE_PER_ATTACK_IN_HAND,
+                    target=Target.SELECTED_ENEMY, amount=6, scaling=STRIKE_SCALING),),
+)
+FLECHETTES = CardDef(  # Flechettes.cs: 1-cost, 5 dmg per Skill in hand; base impl 5×1
+    id="flechettes", name="Flechettes", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=5, scaling=STRIKE_SCALING),),
+)
+MEMENTO_MORI = CardDef(  # MementoMori.cs: 1-cost, base + 4 dmg per card discarded this turn
+    id="memento_mori", name="Memento Mori", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DAMAGE_PER_DISCARD_THIS_TURN,
+                    target=Target.SELECTED_ENEMY, amount=0, hit_count=4),),
+)
+
+# --- Uncommon skills/powers -------------------------------------------------
+BLUR = CardDef(  # Blur.cs: 1-cost, Block 5 + Blur power (block not reset); base block 5
+    id="blur", name="Blur", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=5),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="blur", amount=1),),
+)
+BACKFLIP = CardDef(  # Backflip.cs: 1-cost, Block 5 + draw 2; base block 5 + draw 2
+    id="backflip", name="Backflip", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=5),
+             Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=2),),
+)
+LEG_SWEEP = CardDef(  # LegSweep.cs: 2-cost, Block 11 + 2 Weak (upg +? each)
+    id="leg_sweep", name="Leg Sweep", cost=2, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=11),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+                    power_id="weak", amount=2),),
+)
+ESCAPE_PLAN = CardDef(  # EscapePlan.cs: 0-cost, draw 1 (+ block if skill); base draw 1
+    id="escape_plan", name="Escape Plan", cost=0, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=1),
+             Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=3),),
+)
+EXPERTISE = CardDef(  # Expertise.cs: 1-cost, draw up to 6 (impl: draw 6); upg +1
+    id="expertise", name="Expertise", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=6),),
+)
+CALCULATED_GAMBLE = CardDef(  # CalculatedGamble.cs: 0-cost, discard hand, draw that many
+    id="calculated_gamble", name="Calculated Gamble", cost=0, type=CardType.SKILL,
+    count=0,
+    effects=(Effect(op=EffectOp.DISCARD_HAND_DRAW, target=Target.SELF),),
+)
+ANTICIPATE = CardDef(  # Anticipate.cs: 0-cost, 2 Dexterity (PowerVar<DexterityPower>(2))
+    id="anticipate", name="Anticipate", cost=0, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="dexterity", amount=2),),
+)
+HAZE = CardDef(  # Haze.cs: 3-cost, 4 Poison to ALL enemies (upg +?)
+    id="haze", name="Haze", cost=3, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.ALL_ENEMIES,
+                    power_id="poison", amount=4),),
+)
+BUBBLE_BUBBLE = CardDef(  # BubbleBubble.cs: 1-cost, 9 Poison to one enemy
+    id="bubble_bubble", name="Bubble Bubble", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+                    power_id="poison", amount=9),),
+)
+BOUNCING_FLASK = CardDef(  # BouncingFlask.cs: 2-cost, 3 Poison to a random enemy ×3
+    id="bouncing_flask", name="Bouncing Flask", cost=2, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.RANDOM_ENEMY,
+                    power_id="poison", amount=3),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.RANDOM_ENEMY,
+                    power_id="poison", amount=3),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.RANDOM_ENEMY,
+                    power_id="poison", amount=3),),
+)
+ACCURACY = CardDef(  # Accuracy.cs: 1-cost Power, AccuracyPower(4) (upg +2)
+    id="accuracy", name="Accuracy", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="accuracy", amount=4),),
+)
+FOOTWORK = CardDef(  # Footwork.cs: 1-cost Power, 2 Dexterity (upg +1)
+    id="footwork", name="Footwork", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="dexterity", amount=2),),
+)
+NOXIOUS_FUMES = CardDef(  # NoxiousFumes.cs: 1-cost Power, NoxiousFumesPower(2) (upg +1)
+    id="noxious_fumes", name="Noxious Fumes", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="noxious_fumes", amount=2),),
+)
+OUTBREAK = CardDef(  # Outbreak.cs: 1-cost Power, OutbreakPower(3 dmg / 3 poisons) (upg +4)
+    id="outbreak", name="Outbreak", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="outbreak", amount=3),),
+)
+INFINITE_BLADES = CardDef(  # InfiniteBlades.cs: 1-cost Power, +1 Shiv each turn
+    id="infinite_blades", name="Infinite Blades", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="infinite_blades", amount=1),),
+)
+PHANTOM_BLADES = CardDef(  # PhantomBlades.cs: 1-cost Power, PhantomBladesPower(9)
+    id="phantom_blades", name="Phantom Blades", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="phantom_blades", amount=9),),
+)
+SPEEDSTER = CardDef(  # Speedster.cs: 2-cost Power, SpeedsterPower(2)
+    id="speedster", name="Speedster", cost=2, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="speedster", amount=2),),
+)
+WELL_LAID_PLANS = CardDef(  # WellLaidPlans.cs: 1-cost Power, retain 1 (upg +1)
+    id="well_laid_plans", name="Well-Laid Plans", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="well_laid_plans", amount=1),),
+)
+TACTICIAN = CardDef(  # Tactician.cs: 3-cost Skill, gain 1 energy (when discarded);
+    # base impl = gain 1 energy on play (the discard trigger needs the discard-
+    # gain primitive; faithful energy value preserved).
+    id="tactician", name="Tactician", cost=3, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.ENERGY_GAIN, target=Target.SELF, amount=1),),
+)
+ADRENALINE = CardDef(  # Adrenaline.cs: 0-cost Skill, +1 energy + draw 2, Exhaust
+    id="adrenaline", name="Adrenaline", cost=0, type=CardType.SKILL, count=0,
+    exhaust=True,
+    effects=(Effect(op=EffectOp.ENERGY_GAIN, target=Target.SELF, amount=1),
+             Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=2),),
+)
+
+# --- Rare attacks/skills/powers ---------------------------------------------
+THE_HUNT = CardDef(  # TheHunt.cs: 1-cost, 10 dmg (kill->reward); base 10 dmg, Exhaust
+    id="the_hunt", name="The Hunt", cost=1, type=CardType.ATTACK, count=0,
+    exhaust=True,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=10, scaling=STRIKE_SCALING),),
+)
+ECHOING_SLASH = CardDef(  # EchoingSlash.cs: 1-cost, 10 dmg AoE, repeat per kill
+    id="echoing_slash", name="Echoing Slash", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DAMAGE_AOE_ECHO_ON_KILL, target=Target.ALL_ENEMIES,
+                    amount=10, scaling=STRIKE_SCALING),),
+)
+GRAND_FINALE = CardDef(  # GrandFinale.cs: 0-cost, 60 dmg AoE (only if draw empty); impl 60
+    id="grand_finale", name="Grand Finale", cost=0, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.ALL_ENEMIES,
+                    amount=60, scaling=STRIKE_SCALING),),
+)
+ASSASSINATE = CardDef(  # Assassinate.cs: 0-cost, 10 dmg, Innate+Exhaust; base 10
+    id="assassinate", name="Assassinate", cost=0, type=CardType.ATTACK, count=0,
+    exhaust=True,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=10, scaling=STRIKE_SCALING),),
+)
+MURDER = CardDef(  # Murder.cs: 3-cost, base + 1 dmg per card drawn this turn
+    id="murder", name="Murder", cost=3, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DAMAGE_PER_CARD_DRAWN, target=Target.SELECTED_ENEMY,
+                    amount=0, hit_count=1),),
+)
+ENVENOM = CardDef(  # Envenom.cs: 2-cost Power, EnvenomPower(1)
+    id="envenom", name="Envenom", cost=2, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="envenom", amount=1),),
+)
+ACCELERANT = CardDef(  # Accelerant.cs: 1-cost Power, AccelerantPower(1)
+    id="accelerant", name="Accelerant", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="accelerant", amount=1),),
+)
+SNEAKY = CardDef(  # Sneaky.cs: 2-cost Power, SneakyPower(1)
+    id="sneaky", name="Sneaky", cost=2, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="sneaky", amount=1),),
+)
+SERPENT_FORM = CardDef(  # SerpentForm.cs: 3-cost Power, SerpentFormPower(4)
+    id="serpent_form", name="Serpent Form", cost=3, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="serpent_form", amount=4),),
+)
+FAN_OF_KNIVES = CardDef(  # FanOfKnives.cs: 2-cost Power, FanOfKnives + add 4 Shivs;
+    # FanOfKnivesPower (Shiv -> all enemies) not modeled, so add 4 Shivs.
+    id="fan_of_knives", name="Fan of Knives", cost=2, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.ADD_CARD, target=Target.SELF, card_id="shiv",
+                    amount=4, pile="hand"),),
+)
+TOOLS_OF_THE_TRADE = CardDef(  # ToolsOfTheTrade.cs: 1-cost Power, draw+discard each turn
+    id="tools_of_the_trade", name="Tools of the Trade", cost=1, type=CardType.POWER,
+    count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="tools_of_the_trade", amount=1),),
+)
+AFTERIMAGE = CardDef(  # Afterimage.cs (Silent): Power, AfterimagePower(1); cost from .cs
+    id="afterimage_silent", name="Afterimage", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="afterimage", amount=1),),
+)
+BURST = CardDef(  # Burst.cs: 1-cost Skill, BurstPower(1) — next Skill plays twice
+    id="burst", name="Burst", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="burst", amount=1),),
+)
+STRANGLE = CardDef(  # Strangle.cs: 1-cost, 8 dmg + StranglePower(2)
+    id="strangle", name="Strangle", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=8, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+                    power_id="strangle", amount=2),),
+)
+PIERCING_WAIL = CardDef(  # PiercingWail.cs (Silent): 1-cost, Strength-down to all, Exhaust;
+    # PiercingWailPower applies a turn-end-restored Strength-down. base 6 to all.
+    id="piercing_wail", name="Piercing Wail", cost=1, type=CardType.SKILL, count=0,
+    exhaust=True,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.ALL_ENEMIES,
+                    power_id="piercing_wail", amount=6),),
+)
+
+# Cards that need an absent selection/branching primitive are registered as
+# faithful by-type placeholders below (correct cost/type/rarity in _SILENT_META).
+
+# All implemented Silent CardDefs (excluding the basics, which the scaffold
+# already registers). Keyed for the catalog merge.
+_SILENT_IMPLEMENTED: tuple[CardDef, ...] = (
+    SHIV,
+    SLICE, DAGGER_THROW, DAGGER_SPRAY, FLICK_FLACK, FOLLOW_THROUGH,
+    LEADING_STRIKE, POISONED_STAB, RICOCHET, SUCKER_PUNCH,
+    DEADLY_POISON, SNAKEBITE, BLADE_DANCE, CLOAK_AND_DAGGER, DEFLECT,
+    DODGE_AND_ROLL, PREPARED, ACROBATICS,
+    BACKSTAB, DASH, PREDATOR, POUNCE, PINPOINT, SKEWER, FINISHER, FLECHETTES,
+    MEMENTO_MORI,
+    BLUR, BACKFLIP, LEG_SWEEP, ESCAPE_PLAN, EXPERTISE, CALCULATED_GAMBLE,
+    ANTICIPATE, HAZE, BUBBLE_BUBBLE, BOUNCING_FLASK,
+    ACCURACY, FOOTWORK, NOXIOUS_FUMES, OUTBREAK, INFINITE_BLADES,
+    PHANTOM_BLADES, SPEEDSTER, WELL_LAID_PLANS, TACTICIAN, ADRENALINE,
+    THE_HUNT, ECHOING_SLASH, GRAND_FINALE, ASSASSINATE, MURDER,
+    ENVENOM, ACCELERANT, SNEAKY, SERPENT_FORM, FAN_OF_KNIVES,
+    TOOLS_OF_THE_TRADE, AFTERIMAGE, PIERCING_WAIL, BURST, STRANGLE,
 )
 
 
@@ -1252,6 +1626,40 @@ _UPGRADE_DELTAS: dict[str, tuple[tuple, ...]] = {
     "thrash": (("dmg", 2),),                      # Thrash.cs Damage 4 -> 6
     "unmovable": (("cost", -1),),                 # Unmovable.cs cost 2 -> 1
     "giant_rock": (("dmg", 4),),                  # GiantRock.cs Damage 16 -> 20
+    # --- Phase 9.1 Silent upgrades (decompiled OnUpgrade values) ---
+    "neutralize": (("dmg", 1), ("power", "weak", 1)),   # 3/1 -> 4/2
+    "survivor": (("block", 3),),                         # Block 8 -> 11
+    "shiv": (("dmg", 2),),                               # Shiv 4 -> 6
+    "slice": (("dmg", 3),),                              # 6 -> 9
+    "dagger_throw": (("dmg", 3),),                       # 9 -> 12
+    "dagger_spray": (("dmg", 2),),                       # 4 -> 6 (×2)
+    "poisoned_stab": (("dmg", 2), ("power", "poison", 1)),  # 6/3 -> 8/4
+    "sucker_punch": (("dmg", 2), ("power", "weak", 1)),  # 8/1 -> 10/2
+    "backstab": (("dmg", 4),),                           # 11 -> 15
+    "deadly_poison": (("power", "poison", 2),),          # 5 -> 7
+    "snakebite": (("power", "poison", 3),),              # 7 -> 10
+    "blade_dance": (("add_card", 1),),                   # Cards 3 -> 4
+    "cloak_and_dagger": (("add_card", 1),),              # Shivs 1 -> 2
+    "footwork": (("power", "dexterity", 1),),            # Dex 2 -> 3
+    "accuracy": (("power", "accuracy", 2),),             # 4 -> 6
+    "noxious_fumes": (("power", "noxious_fumes", 1),),   # 2 -> 3
+    "outbreak": (("power", "outbreak", 4),),             # 3 -> 7
+    "leg_sweep": (("block", 3), ("power", "weak", 1)),   # +block/+weak
+    "expertise": (("draw", 1),),                         # 6 -> 7
+    "the_hunt": (("dmg", 4),),                           # 10 -> 14
+    "echoing_slash": (("dmg", 4),),                      # 10 -> 14
+    "well_laid_plans": (("power", "well_laid_plans", 1),),  # retain 1 -> 2
+    "haze": (("power", "poison", 2),),                   # 4 -> 6
+    "bubble_bubble": (("power", "poison", 3),),          # 9 -> 12
+    "strangle": (("dmg", 3), ("power", "strangle", 1)),  # 8/2 -> 11/3
+    "memento_mori": (("dmg_extra_discard", 1),),         # ExtraDamage 4 -> 5
+    "murder": (("dmg_extra_drawn", 1),),                 # ExtraDamage 1 -> 2
+    "predator": (("dmg", 5),),                           # 15 -> 20
+    "pounce": (("dmg", 4),),                             # 12 -> 16
+    "pinpoint": (("dmg", 5),),                           # 15 -> 20
+    "skewer": (("dmg", 2),),                             # 8 -> 10 per hit
+    "finisher": (("dmg", 2),),                           # 6 -> 8 per attack
+    "anticipate": (("power", "dexterity", 1),),          # 2 -> 3
 }
 
 # Default deltas for any implemented card not in the table above:
@@ -1279,6 +1687,16 @@ def _apply_delta(effects: tuple[Effect, ...], delta: tuple) -> tuple[Effect, ...
             new_eff = _replace(eff, amount=eff.amount + delta[1])
         elif kind == "auto_play" and eff.op is EffectOp.AUTO_PLAY_FROM_DRAW:
             new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "add_card" and eff.op is EffectOp.ADD_CARD:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif (kind == "dmg_extra_discard"
+              and eff.op is EffectOp.DAMAGE_PER_DISCARD_THIS_TURN):
+            # MementoMori upgrade: +1 per-discard ExtraDamage (stored in hit_count).
+            new_eff = _replace(eff, hit_count=eff.hit_count + delta[1])
+        elif (kind == "dmg_extra_drawn"
+              and eff.op is EffectOp.DAMAGE_PER_CARD_DRAWN):
+            # Murder upgrade: +1 per-drawn ExtraDamage (stored in hit_count).
+            new_eff = _replace(eff, hit_count=eff.hit_count + delta[1])
         elif kind == "block" and eff.op is EffectOp.GAIN_BLOCK_IF_EXHAUSTED:
             new_eff = _replace(eff, amount=eff.amount + delta[1])
         elif kind == "energy" and eff.op is EffectOp.GAIN_ENERGY_IF_EXHAUSTED:

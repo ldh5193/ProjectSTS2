@@ -143,6 +143,8 @@ class CombatState:
                 if replacement is not None:
                     card = replacement
             self.hand.append(card)
+            # Track cards drawn this turn (Murder scales with CardDrawnEntry).
+            self._cards_drawn_this_turn = getattr(self, "_cards_drawn_this_turn", 0) + 1
             # Confused (ConfusedPower from SneckoEye/FakeSneckoEye): each drawn
             # card with a non-negative canonical cost gets a random cost 0-3 for
             # the rest of combat (ConfusedPower.AfterCardDrawn). Fired before the
@@ -205,6 +207,8 @@ class CombatState:
         self._hp_lost_this_turn = False
         self._block_gains_this_turn = 0
         self._cards_exhausted_this_turn = 0
+        self._cards_discarded_this_turn = 0
+        self._cards_drawn_this_turn = 0
         # Max-energy modifiers (Demesne +amount, WasteAway −amount). Applied to
         # the base per-turn energy (ModifyMaxEnergy), floored at 0.
         energy = self.player.max_energy
@@ -270,6 +274,35 @@ class CombatState:
             from .relics import trigger_on_card_exhausted
             trigger_on_card_exhausted(self.run_state, self, card)
 
+    def _discard_card_from_hand(self, card: CardDef) -> None:
+        """Move a card from hand to the discard pile and fire on_card_discarded
+        for the player's powers (Silent discard payoffs) and any discard-trigger
+        relics (Tingsha damage / ToughBandages block, AfterCardDiscarded). Used
+        by Survivor / Acrobatics / Prepared / DaggerThrow / CalculatedGamble."""
+        self.discard_pile.append(card)
+        self._cards_discarded_this_turn += 1
+        self._fire_power_hook(self.player, "on_card_discarded",
+                              self, self.player, card)
+        if self.run_state is not None:
+            from .relics import trigger_on_card_discarded
+            trigger_on_card_discarded(self.run_state, self, card)
+
+    def _discard_n_from_hand(self, n: int) -> None:
+        """Discard up to `n` cards from hand. No selection UI in the sim, so we
+        discard the LOWEST-value cards (keeps the strongest cards), mirroring a
+        sensible player; the count + the discard hooks are what matter for
+        fidelity (Silent's discard synergies care about the count, not which)."""
+        from .dsl import X_COST
+
+        def _val(c):
+            cost = c.cost if (c.cost is not None and c.cost != X_COST) else 0
+            return cost
+        for _ in range(n):
+            if not self.hand:
+                return
+            idx = min(range(len(self.hand)), key=lambda i: _val(self.hand[i]))
+            self._discard_card_from_hand(self.hand.pop(idx))
+
     def can_play(self, card_index: int) -> bool:
         if not (0 <= card_index < len(self.hand)):
             return False
@@ -298,6 +331,11 @@ class CombatState:
     # _exhaust_card; _block_gains_this_turn increments on player card block-gain.
     _block_gains_this_turn: int = field(default=0, init=False)
     _cards_exhausted_this_turn: int = field(default=0, init=False)
+    # Silent (Phase 9.1): cards discarded / drawn this turn, for MementoMori
+    # (dmg × discarded this turn) and Murder (dmg × drawn this turn). Reset at
+    # start_player_turn.
+    _cards_discarded_this_turn: int = field(default=0, init=False)
+    _cards_drawn_this_turn: int = field(default=0, init=False)
 
     def play_card(self, card_index: int, target_is_monster: bool = True) -> None:
         if not self.can_play(card_index):
@@ -573,6 +611,12 @@ class CombatState:
                     if sc.kind.value == "target_vulnerable_count":
                         v = t.get_power("vulnerable")
                         amt += sc.amount * (v.amount if v else 0)
+                # SneckoSkull (Silent relic): the player gives +1 Poison stack
+                # when applying Poison to an enemy (ModifyPowerAmountGiven).
+                if (eff.power_id == "poison" and t is not self.player and amt > 0
+                        and self.run_state is not None):
+                    from .relics import poison_amount_bonus
+                    amt += poison_amount_bonus(self.run_state)
                 if amt != 0:
                     p = make_power(eff.power_id, amt, t)
                     # Unmovable needs a CombatState back-reference for its
@@ -584,6 +628,11 @@ class CombatState:
                     if (eff.power_id == "vulnerable" and t is not self.player
                             and amt > 0):
                         self._fire_power_hook(self.player, "on_vulnerable_applied",
+                                              self, self.player)
+                    # Outbreak: the player applied Poison to an enemy (counter).
+                    if (eff.power_id == "poison" and t is not self.player
+                            and amt > 0):
+                        self._fire_power_hook(self.player, "on_poison_applied",
                                               self, self.player)
             return
         if eff.op is EffectOp.DRAW_CARD:
@@ -829,6 +878,89 @@ class CombatState:
                 if self.player.get_power("no_energy_gain") is None:
                     self.player.energy += eff.amount
             return
+        # ---- Phase 9.1 Silent effect ops --------------------------------
+        if eff.op is EffectOp.DISCARD_CARDS:
+            # Survivor / Prepared: discard `amount` cards from hand.
+            self._discard_n_from_hand(max(1, eff.amount))
+            return
+        if eff.op is EffectOp.DRAW_THEN_DISCARD:
+            # Acrobatics / DaggerThrow: draw `amount` (DRAW), then discard
+            # `duration` cards. We encode draw count in `amount`, discard in
+            # `hit_count` (reused field) so both numbers stay on one Effect.
+            self.draw(eff.amount)
+            self._discard_n_from_hand(max(1, eff.hit_count))
+            return
+        if eff.op is EffectOp.DISCARD_HAND_DRAW:
+            # CalculatedGamble: discard the whole hand, then draw that many.
+            n = len(self.hand)
+            for c in list(self.hand):
+                self.hand.remove(c)
+                self._discard_card_from_hand(c)
+            self.draw(n)
+            return
+        if eff.op is EffectOp.DAMAGE_PER_DISCARD_THIS_TURN:
+            # MementoMori: base dmg + ExtraDamage(amount) × cards discarded this
+            # turn, single target. eff.amount == base, eff.hit_count reused as
+            # per-discard ExtraDamage.
+            n = self._cards_discarded_this_turn
+            dmg = eff.amount + eff.hit_count * n
+            for t in targets:
+                if t.alive and dmg > 0:
+                    deal_damage(dmg, self.player, t)
+            return
+        if eff.op is EffectOp.DAMAGE_PER_CARD_DRAWN:
+            # Murder: base dmg + ExtraDamage(amount) × cards drawn this turn.
+            n = self._cards_drawn_this_turn
+            dmg = eff.amount + eff.hit_count * n
+            for t in targets:
+                if t.alive and dmg > 0:
+                    deal_damage(dmg, self.player, t)
+            return
+        if eff.op is EffectOp.DAMAGE_X_HITS:
+            # Skewer: X-cost attack, hit count == energy spent on it.
+            hits = self._x_value
+            for _ in range(max(0, hits)):
+                for t in targets:
+                    if t.alive:
+                        deal_damage(eff.amount, self.player, t)
+            return
+        if eff.op is EffectOp.DAMAGE_PER_ATTACK_IN_HAND:
+            # Finisher: deal `amount` damage once per Attack played this turn.
+            hits = self._attacks_played_this_turn
+            base_amount, _ = self._resolve_damage_scaling(eff, targets, card)
+            for _ in range(max(0, hits)):
+                for t in targets:
+                    if t.alive:
+                        deal_damage(base_amount, self.player, t)
+            return
+        if eff.op is EffectOp.DAMAGE_AOE_ECHO_ON_KILL:
+            # EchoingSlash: AoE `amount`; repeat the whole AoE once per enemy
+            # killed by that wave (EchoingSlash.cs while-loop on WasTargetKilled).
+            base_amount, _ = self._resolve_damage_scaling(eff, targets, card)
+            waves = 1
+            guard = 0
+            while waves > 0 and guard < 20:
+                guard += 1
+                waves -= 1
+                alive_now = [m for m in self.alive_monsters()]
+                killed = 0
+                for t in alive_now:
+                    was = t.alive
+                    deal_damage(base_amount, self.player, t)
+                    if was and not t.alive:
+                        killed += 1
+                waves += killed
+            return
+        if eff.op is EffectOp.BLOCK_PER_ENEMY_POISON:
+            # Mirage: gain block == total Poison stacks across all live enemies.
+            total = 0
+            for m in self.alive_monsters():
+                pz = m.get_power("poison")
+                if pz is not None and pz.amount > 0:
+                    total += pz.amount
+            if total > 0:
+                gain_block(self.player, total)
+            return
 
     # Duration debuffs that decay by 1 at the END of the bearer's OWN turn.
     # In the real game (WeakPower/VulnerablePower/FrailPower .cs) these tick in
@@ -879,7 +1011,22 @@ class CombatState:
         # player most wants to keep). Cards flagged ethereal/status are not
         # specially handled here (the sim has no ethereal hand cards yet).
         retain = self.player.get_power("retain_hand")
+        # WellLaidPlans (WellLaidPlansPower.cs): retain up to `amount` cards at
+        # end of turn (persistent, no decay). Reuse the retain machinery: if no
+        # RetainHand power is present, synthesize an equivalent retain count from
+        # WellLaidPlans so the highest-value cards are kept.
+        wlp = self.player.get_power("well_laid_plans")
         retained: list = []
+        if retain is None and wlp is not None and wlp.amount > 0 and self.hand:
+            from .dsl import X_COST as _XC
+
+            def _ck(c):
+                return c.cost if (c.cost is not None and c.cost != _XC) else 0
+            n_keep = min(wlp.amount, len(self.hand))
+            kept = sorted(self.hand, key=_ck, reverse=True)[:n_keep]
+            kept_ids = {id(c) for c in kept}
+            retained = [c for c in self.hand if id(c) in kept_ids]
+            self.hand = [c for c in self.hand if id(c) not in kept_ids]
         if retain is not None and retain.amount > 0 and self.hand:
             from .dsl import X_COST
             n_keep = min(2, len(self.hand))

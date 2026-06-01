@@ -1193,7 +1193,18 @@ class RunEnv(gym.Env):
         cursor += 1                          # -> 533
         # [533..537) osty present/hp/block/pad  TODO(P9.3 Necrobinder osty)
         cursor += 4                          # -> 537
-        # [537..541) per-enemy poison / 20      TODO(P9.1 Silent poison)
+        # [537..541) per-enemy poison / 20      (P9.1 Silent poison — LIVE)
+        # Poison stacks on each of up to 4 alive enemies, normalized /20, in
+        # the same alive-enemy order the combat block uses. 0 outside combat.
+        if rs is not None and rs.in_combat() and rs.combat is not None:
+            try:
+                alive = rs.combat.alive_monsters()
+                for i, m in enumerate(alive[:4]):
+                    pz = m.get_power("poison") if hasattr(m, "get_power") else None
+                    if pz is not None and pz.amount > 0:
+                        v[cursor + i] = min(1.0, pz.amount / 20.0)
+            except Exception:
+                pass
         cursor += 4                          # -> 541
         # [541..560) pad to a clean OBS_DIM = 560.
         cursor += 19                         # -> 560

@@ -51,6 +51,16 @@ class EffectOp(str, Enum):
     GAIN_ENERGY_PER_HAND_ATTACK = "gain_energy_per_hand_attack"  # ExpectAFight: +1 energy per hand Attack
     GAIN_BLOCK_IF_EXHAUSTED = "gain_block_if_exhausted"  # EvilEye: block ×2 if exhausted this turn
     GAIN_ENERGY_IF_EXHAUSTED = "gain_energy_if_exhausted"  # ForgottenRitual: energy iff exhausted this turn
+    # Phase 9.1 Silent additions:
+    DISCARD_CARDS = "discard_cards"        # Survivor/Acrobatics/Prepared/DaggerThrow: discard N from hand
+    DRAW_THEN_DISCARD = "draw_then_discard"  # Acrobatics/DaggerThrow: draw, then discard amount
+    DISCARD_HAND_DRAW = "discard_hand_draw"  # CalculatedGamble: discard whole hand, draw that many
+    DAMAGE_PER_DISCARD_THIS_TURN = "damage_per_discard_this_turn"  # MementoMori: dmg×cards discarded this turn
+    DAMAGE_PER_CARD_DRAWN = "damage_per_card_drawn"  # Murder: dmg×cards drawn this turn
+    DAMAGE_X_HITS = "damage_x_hits"        # Skewer: X-cost, hit count == energy spent
+    DAMAGE_PER_ATTACK_IN_HAND = "damage_per_attack_in_hand"  # Finisher: +1 hit per Attack played this turn
+    DAMAGE_AOE_ECHO_ON_KILL = "damage_aoe_echo_on_kill"  # EchoingSlash: AoE, repeat per kill
+    BLOCK_PER_ENEMY_POISON = "block_per_enemy_poison"  # Mirage: block == total enemy poison
 
 
 class ScalingKind(str, Enum):

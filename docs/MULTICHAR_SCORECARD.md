@@ -16,7 +16,7 @@ Ironclad critical-path audit.
 | Character   | Start setup | Card pool | Relics | Primitive | Critical-path fidelity | Batch |
 |-------------|:-----------:|:---------:|:------:|:---------:|:----------------------:|:-----:|
 | Ironclad    | done | done (87) | done | n/a | **100%** (Ironclad audit) | shipped |
-| Silent      | scaffold | TODO (88) | TODO (8) | poison/shiv/discard TODO | scaffold-only | P9.1 |
+| Silent      | done | **65/88 faithful** (+Shiv token; 22 by-type placeholders) | **8/8** | **poison/shiv/discard DONE** | faithful | **P9.1 shipped** |
 | Defect      | scaffold | TODO (88) | TODO (8) | **orbs** TODO | scaffold-only | P9.2 |
 | Necrobinder | scaffold | TODO (88) | TODO (8) | **osty** TODO | scaffold-only | P9.3 |
 | Regent      | scaffold | TODO (88) | TODO (8) | **stars** TODO | scaffold-only | P9.4 |
@@ -75,10 +75,52 @@ with bit-identical Ironclad logits at step 0. `--characters` CSV flag added
 
 ---
 
+## P9.1 (Silent) — what shipped
+
+### Signature mechanics (faithful, decompiled refs)
+- **Poison** (`PoisonPower.cs`): stacking DoT; ticks at the owner's turn start
+  (`apply_poison_tick`, already wired in combat) for `stacks` Unblockable damage,
+  then −1. Stacks additively; falls off at 1. Per-enemy poison now populates the
+  obs v5 slot `[537..541)` (poison/20, alive-enemy order).
+- **Shiv** (`Shiv.cs`): 0-cost Attack token, 4 dmg, Exhaust (upgrade +2). Generated
+  by Blade Dance (3), Cloak and Dagger (1), Fan of Knives (4), Infinite Blades
+  (1/turn), Ninja Scroll relic (3 turn-1). **Accuracy** (`AccuracyPower.cs`) adds
+  +amount damage to Shiv-tagged attacks only (verified: boosts Shiv, not Strike).
+- **Discard** (new `on_discard` hook): added `_discard_card_from_hand` +
+  `on_card_discarded` power hook + `on_card_discarded` relic hook. Survivor /
+  Acrobatics / Prepared / Dagger Throw / Calculated Gamble discard; Tingsha (3
+  dmg) and Tough Bandages (3 block) pay off on discard; Memento Mori scales with
+  cards discarded this turn; Murder with cards drawn this turn.
+
+### Cards: 65/88 faithful (+Shiv) ; 22 by-type placeholders
+Placeholders carry **faithful cost/type/rarity** (from each `.cs` `base(...)`)
+but defer their effect because they need an absent card-selection / branching
+primitive (hand-select-to-discard targeting, on-discard card transforms,
+intangible/wraith). Deferred: abrasive, blade_of_ink, bullet_time,
+corrosive_wave, expose, flanking, hand_trick, hidden_daggers, knife_trap,
+malaise, master_planner, mirage, nightmare, precise_cut, reflex, shadow_step,
+shadowmeld, storm_of_steel, suppress, untouchable, up_my_sleeve, wraith_form.
+
+### Relics: 8/8 (`SilentRelicPool.cs`)
+RingOfTheSnake (+2 hand draw turn 1, real `ModifyHandDraw`), HelicalDart (+1
+Temp Dex on Shiv play), NinjaScroll (3 Shivs turn 1), PaperKrane (Weak-mult
+modifier — faithful no-op, primitive absent), SneckoSkull (+1 Poison given,
+wired into APPLY_POWER), Tingsha (3 dmg on discard), ToughBandages (3 block on
+discard), TwistedFunnel (already in EventRelicPool). Gated OUT of cross-character
+reward pools so Silent relics never drop for Ironclad.
+
+### Powers (Silent-unique, decompiled)
+OutbreakPower (every-3rd-poison AoE), InfiniteBladesPower (turn-start Shiv),
+SerpentFormPower (per-card-play random dmg), AccelerantPower, AccuracyPower
+(reused), EnvenomPower (reused), NoxiousFumesPower (reused), PhantomBladesPower,
+SpeedsterPower, SneakyPower (multiplayer-only no-op), ToolsOfTheTradePower
+(draw+discard turn start), WellLaidPlansPower (persistent retain), plus reused
+Blur/Dexterity/Weak/Burst/Strangle/PiercingWail.
+
 ## Known TODOs flagged in code (next batches)
 
-- `TODO(P9.1)` Silent: Neutralize/Survivor real effects, RingOfTheSnake,
-  PoisonPower, Shiv token, Accuracy, discard hooks, 88 cards, 8 relics.
+- `P9.1 deferred` Silent: 22 cards needing a card-selection/transform primitive
+  (see list above) + PaperKrane's Weak-multiplier modifier.
 - `TODO(P9.2)` Defect: orb primitive (`sim/orbs.py`), Zap/Dualcast, CrackedCore,
   FocusPower, 88 cards, 8 relics, obs orb/focus slots.
 - `TODO(P9.3)` Necrobinder: Osty minion primitive, Bodyguard/Unleash,

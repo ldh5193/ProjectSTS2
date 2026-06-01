@@ -279,8 +279,14 @@ def test_pools_only_contain_real_registry_ids():
 
 
 def test_pools_derived_from_rarity():
-    # Every common/uncommon/rare-rarity relic lands in the matching tier.
+    # Every common/uncommon/rare-rarity relic lands in the matching tier —
+    # EXCEPT character-exclusive relics (Silent/Defect/...), which are gated to
+    # their character's relic-reward path and intentionally excluded from the
+    # generic cross-character reward pool (P9.1).
+    _char_pools = ("silent", "defect", "necrobinder", "regent")
     for rid, rd in RELIC_REGISTRY.items():
+        if rd.pool in _char_pools:
+            continue
         if rd.rarity == "common":
             assert rid in RELIC_POOLS["common"]
         elif rd.rarity == "uncommon":
