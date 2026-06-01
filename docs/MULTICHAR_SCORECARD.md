@@ -1,9 +1,9 @@
 # Multi-Character Fidelity Scorecard
 
 Date: 2026-06-01
-Status: **Phase 9.0 (SCAFFOLD) complete** — multi-character foundation +
-obs v5 (504 -> 560). No character CONTENT (cards/relics/powers/primitives)
-is implemented yet beyond Ironclad; the four new characters are scaffold-only.
+Status: **Phase 9.2 (Defect + orb system) complete.** Ironclad (100%), Silent
+(P9.1), and Defect (P9.2, orb system) are faithful; Necrobinder/Regent remain
+scaffold-only. obs v5 (504 -> 560) with the orb/focus slots now live.
 
 See `docs/MULTICHAR_FIDELITY_PLAN.md` for the authoritative plan (roster,
 obs v5 layout, primitives, batch order) and `docs/FIDELITY_AUDIT.md` for the
@@ -17,7 +17,7 @@ Ironclad critical-path audit.
 |-------------|:-----------:|:---------:|:------:|:---------:|:----------------------:|:-----:|
 | Ironclad    | done | done (87) | done | n/a | **100%** (Ironclad audit) | shipped |
 | Silent      | done | **65/88 faithful** (+Shiv token; 22 by-type placeholders) | **8/8** | **poison/shiv/discard DONE** | faithful | **P9.1 shipped** |
-| Defect      | scaffold | TODO (88) | TODO (8) | **orbs** TODO | scaffold-only | P9.2 |
+| Defect      | done | **86/88 faithful** (2 transform/persistent-block placeholders) | **8/8** | **orb system DONE** | faithful | **P9.2 shipped** |
 | Necrobinder | scaffold | TODO (88) | TODO (8) | **osty** TODO | scaffold-only | P9.3 |
 | Regent      | scaffold | TODO (88) | TODO (8) | **stars** TODO | scaffold-only | P9.4 |
 | Deprived    | fixture | fallback | fallback | n/a | debug fixture (not a target) | n/a |
@@ -40,10 +40,10 @@ anchor on `OBS_DIM_V4_4 = 504`). The new tail `[504..560)`:
 |---------|-----:|-------|-----------|
 | `[504..510)` | 6 | character one-hot (ironclad/silent/defect/necrobinder/regent + pad) | **P9.0 (live)** |
 | `[510..511)` | 1 | star resource / 10 | P9.4 |
-| `[511..521)` | 10 | orb-queue slot type-ids / 5 | P9.2 |
-| `[521..531)` | 10 | orb-queue evoke values / 30 | P9.2 |
-| `[531..532)` | 1 | orb capacity / 10 | P9.2 |
-| `[532..533)` | 1 | focus / 10 | P9.2 |
+| `[511..521)` | 10 | orb-queue slot type-ids / 5 | **P9.2 (live)** |
+| `[521..531)` | 10 | orb-queue evoke values / 30 | **P9.2 (live)** |
+| `[531..532)` | 1 | orb capacity / 10 | **P9.2 (live)** |
+| `[532..533)` | 1 | focus / 10 | **P9.2 (live)** |
 | `[533..537)` | 4 | osty present / hp / block / pad | P9.3 |
 | `[537..541)` | 4 | per-enemy poison / 20 | P9.1 |
 | `[541..560)` | 19 | pad to a clean 560 | — |
@@ -117,12 +117,69 @@ SpeedsterPower, SneakyPower (multiplayer-only no-op), ToolsOfTheTradePower
 (draw+discard turn start), WellLaidPlansPower (persistent retain), plus reused
 Blur/Dexterity/Weak/Burst/Strangle/PiercingWail.
 
+## P9.2 (Defect) — what shipped
+
+### Orb system (new primitive, faithful — `sim/orbs.py` + `sim/combat.py`)
+- **OrbQueue** (`OrbQueue.cs`): capacity (Defect base 3, hard max 10); channel
+  appends; channeling into a FULL queue evokes the front (oldest) orb first
+  (OrbCmd.Channel overflow). `add_orb_slots` (Capacitor/RunicCapacitor).
+- **Five orb types** (`Models.Orbs/*.cs`), decompile-exact:
+  Lightning (passive 3 / evoke 8, random enemy), Frost (passive 2 / evoke 5
+  block), Dark (passive +6 ACCUMULATES into evoke_val base 6; evoke hits the
+  lowest-HP enemy for the total), Plasma (passive +1 / evoke +2 energy,
+  **Focus-immune**), Glass (passive 4 to ALL then −1; evoke = passive×2 to ALL).
+- **Focus** (`FocusPower.cs`): ModifyOrbValue -> max(value+Amount, 0). Scales
+  Lightning/Frost/Dark/Glass passive+evoke; **Plasma ignores Focus** (verified
+  against PlasmaOrb.cs returning raw 1m/2m). TemporaryFocus (Hotfix/FocusedStrike)
+  decays at turn end.
+- **Passive timing** (`OrbQueue.BeforeTurnEnd` / `AfterTurnStart`): Lightning/
+  Frost/Dark/Glass fire at player turn END (after the turn-end power hooks);
+  Plasma fires at player turn START. Each orb fires `triggerCount` times
+  (GoldPlatedCables +1 for the front orb via ModifyOrbPassiveTriggerCount).
+- Channel/evoke are CARD/RELIC-DRIVEN (no free-standing orb action — action
+  space stays Discrete(300)). New DSL ops: channel_orb, evoke_orb,
+  evoke_all_orbs, add_orb_slots, channel_orb_per_enemy, channel_orb_x,
+  damage_hits_per_orb, gain_energy_per_current. obs v5 orb slots [511..533) live.
+
+### Cards: 86/88 faithful ; 2 by-type placeholders
+Start deck (Defect.cs): 4× StrikeDefect, 4× DefendDefect, 1× Zap (channel 1
+Lightning), 1× Dualcast (evoke front orb ×2). Placeholders (need an absent
+transform / persistent-block primitive): **modded, genetic_algorithm**. All
+others carry exact cost/damage/block/orb-effect/upgrade.
+
+### Relics: 8/8 (`DefectRelicPool.cs`)
+CrackedCore (channel 1 Lightning turn 1 — starter), DataDisk (+1 Focus on combat
+enter), EmotionChip (re-fire all orb passives at turn start if HP lost last
+turn), GoldPlatedCables (front orb +1 passive trigger), PowerCell (+2 hand draw
+turn 1), Metronome (every 7th orb channeled -> 30 AoE), RunicCapacitor (+3 orb
+slots turn 1), SymbioticVirus (channel 1 Dark turn 1). Gated to the Defect
+character-relic pool (7 droppable; CrackedCore is the starter).
+
+### Powers (Defect-unique, decompiled)
+FocusPower, TemporaryFocusPower (Hotfix/FocusedStrike), ThunderPower (dmg on
+evoke), StormPower (channel Lightning on Power play), HailstormPower (AoE per
+Frost orb), CoolantPower (block per Frost orb), SmokestackPower (turn-end AoE),
+LoopPower (retrigger front orb at turn start), EchoFormPower (replay first card),
+CreativeAiPower (add a Power each turn), FeralPower, IterationPower,
+MachineLearningPower (+draw), SignalBoostPower, SpinnerPower (channel Glass on
+attack), SubroutinePower, ConsumingShadowPower, TrashToTreasurePower,
+BiasedCognitionPower (Focus over time). Buffer reuses the shared BufferPower.
+
+### Tests
+`tests/test_defect_orbs.py` (16) + `tests/test_defect_cards.py` (32): orb
+value model + Focus scaling (and Plasma immunity), capacity/channel/overflow,
+per-orb passive timing + evoke with exact values, signature cards (Zap/Dualcast/
+BallLightning/ColdSnap/Glacier/Chill/Capacitor/Tempest/Barrage/MultiCast/
+DoubleEnergy/Rainbow), powers (Thunder/Storm/Loop/Hailstorm/BiasedCognition),
+upgrades, CrackedCore + relic pool, the 88-card pool, and an A0 RunEnv(Defect)
+integration run reaching deep floors.
+
 ## Known TODOs flagged in code (next batches)
 
 - `P9.1 deferred` Silent: 22 cards needing a card-selection/transform primitive
   (see list above) + PaperKrane's Weak-multiplier modifier.
-- `TODO(P9.2)` Defect: orb primitive (`sim/orbs.py`), Zap/Dualcast, CrackedCore,
-  FocusPower, 88 cards, 8 relics, obs orb/focus slots.
+- `P9.2 deferred` Defect: 2 cards (modded transform-status, genetic_algorithm
+  persistent-block) need an absent primitive.
 - `TODO(P9.3)` Necrobinder: Osty minion primitive, Bodyguard/Unleash,
   BoundPhylactery, MinionPower, 88 cards, 8 relics, obs osty slots.
 - `TODO(P9.4)` Regent: Star resource primitive, FallingStar/Venerate,

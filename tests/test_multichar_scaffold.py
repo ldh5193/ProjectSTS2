@@ -170,13 +170,15 @@ def test_character_card_pool_fallback():
     # Ironclad pool is populated.
     iron = character_card_pool("ironclad")
     assert iron[CardRarity.COMMON]
-    # Silent is now populated (P9.1) — its own pool is non-empty.
+    # Silent (P9.1) and Defect (P9.2) are now populated — own pools non-empty.
     assert CHARACTER_CARD_POOLS["silent"][CardRarity.COMMON]
     assert character_card_pool("silent")[CardRarity.COMMON]
+    assert CHARACTER_CARD_POOLS["defect"][CardRarity.COMMON]
+    assert character_card_pool("defect")[CardRarity.COMMON]
     # Remaining scaffold characters fall back to the Ironclad pool (non-empty).
-    for c in ("defect", "necrobinder", "regent"):
+    for c in ("necrobinder", "regent"):
         assert character_card_pool(c)[CardRarity.COMMON]
-        # ...but their own registry entry is still empty (filled in P9.2-P9.4).
+        # ...but their own registry entry is still empty (filled in P9.3-P9.4).
         assert CHARACTER_CARD_POOLS[c][CardRarity.COMMON] == []
 
 
@@ -186,8 +188,11 @@ def test_character_relic_pool_registry():
     # Silent relic pool is now populated (P9.1).
     assert "RING_OF_THE_SNAKE" in character_relic_pool_ids("silent")
     assert len(character_relic_pool_ids("silent")) == 8
+    # Defect relic pool is now populated (P9.2): 7 droppable + CrackedCore starter.
+    assert "RUNIC_CAPACITOR" in character_relic_pool_ids("defect")
+    assert len(character_relic_pool_ids("defect")) == 7
     # Remaining scaffold character relic pools are empty until their batches.
-    for c in ("defect", "necrobinder", "regent"):
+    for c in ("necrobinder", "regent"):
         assert character_relic_pool_ids(c) == frozenset()
 
 

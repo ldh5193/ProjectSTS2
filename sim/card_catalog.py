@@ -358,6 +358,16 @@ from .cards import _SILENT_IMPLEMENTED as _SILENT_IMPLEMENTED  # noqa: E402
 for _sc in _SILENT_IMPLEMENTED:
     _IMPLEMENTED.setdefault(_sc.id, _sc)
 
+# Phase 9.2: register the fully-implemented Defect cards. The scaffold already
+# registered StrikeDefect/DefendDefect/Zap/Dualcast (Zap/Dualcast now carry real
+# orb effects); use plain assignment so those four pick up the real effects.
+from .cards import _DEFECT_IMPLEMENTED as _DEFECT_IMPLEMENTED  # noqa: E402
+from .cards import ZAP as _ZAP_DEFECT, DUALCAST as _DUALCAST_DEFECT  # noqa: E402
+_IMPLEMENTED[_ZAP_DEFECT.id] = _ZAP_DEFECT
+_IMPLEMENTED[_DUALCAST_DEFECT.id] = _DUALCAST_DEFECT
+for _dc in _DEFECT_IMPLEMENTED:
+    _IMPLEMENTED.setdefault(_dc.id, _dc)
+
 
 def _build_registry() -> tuple[dict[str, CardDef], dict[str, CardRarity]]:
     by_id: dict[str, CardDef] = {}
@@ -638,6 +648,132 @@ SILENT_RARE = _dedup(SILENT_RARE)
 
 
 # ===========================================================================
+# Phase 9.2 — DEFECT card metadata (DefectCardPool.cs, 88 cards). (id, name,
+# cost, type, rarity), .cs-exact. Implemented effects live in sim/cards.py
+# (_DEFECT_IMPLEMENTED); a few that need an absent card-selection/transform
+# primitive register as by-type placeholders with the right cost/type/rarity.
+# Basics (StrikeDefect/DefendDefect) come from the scaffold. Ancients
+# (Quadcast/BiasedCognition) are excluded from reward generation.
+# ===========================================================================
+_DEFECT_META: list[tuple[str, str, int, CardType, CardRarity]] = [
+    # --- Basics (registered via scaffold; here for rarity lookup) ---
+    ("strike_defect", "Strike", 1, CardType.ATTACK, CardRarity.BASIC),
+    ("defend_defect", "Defend", 1, CardType.SKILL, CardRarity.BASIC),
+    ("zap", "Zap", 1, CardType.SKILL, CardRarity.BASIC),
+    ("dualcast", "Dualcast", 1, CardType.SKILL, CardRarity.BASIC),
+    # --- Common ---
+    ("ball_lightning", "Ball Lightning", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("barrage", "Barrage", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("beam_cell", "Beam Cell", 0, CardType.ATTACK, CardRarity.COMMON),
+    ("claw", "Claw", 0, CardType.ATTACK, CardRarity.COMMON),
+    ("cold_snap", "Cold Snap", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("compile_driver", "Compile Driver", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("go_for_the_eyes", "Go for the Eyes", 0, CardType.ATTACK, CardRarity.COMMON),
+    ("gunk_up", "Gunk Up", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("momentum_strike", "Momentum Strike", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("sweeping_beam", "Sweeping Beam", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("focused_strike", "Focused Strike", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("charge_battery", "Charge Battery", 1, CardType.SKILL, CardRarity.COMMON),
+    ("coolheaded", "Coolheaded", 1, CardType.SKILL, CardRarity.COMMON),
+    ("hologram", "Hologram", 1, CardType.SKILL, CardRarity.COMMON),
+    ("leap", "Leap", 1, CardType.SKILL, CardRarity.COMMON),
+    ("turbo", "Turbo", 0, CardType.SKILL, CardRarity.COMMON),
+    ("boost_away", "Boost Away", 0, CardType.SKILL, CardRarity.COMMON),
+    # --- Uncommon ---
+    ("compact", "Compact", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("ftl", "FTL", 0, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("refract", "Refract", 3, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("rocket_punch", "Rocket Punch", 2, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("scrape", "Scrape", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("sunder", "Sunder", 3, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("synthesis", "Synthesis", 2, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("tesla_coil", "Tesla Coil", 0, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("uproar", "Uproar", 2, CardType.ATTACK, CardRarity.COMMON),
+    ("null", "Null", 2, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("boot_sequence", "Boot Sequence", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    ("capacitor", "Capacitor", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("chaos", "Chaos", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("chill", "Chill", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    ("darkness", "Darkness", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("double_energy", "Double Energy", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("fight_through", "Fight Through", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("fusion", "Fusion", 2, CardType.SKILL, CardRarity.UNCOMMON),
+    ("glacier", "Glacier", 2, CardType.SKILL, CardRarity.UNCOMMON),
+    ("glasswork", "Glasswork", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("overclock", "Overclock", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    ("scavenge", "Scavenge", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("shadow_shield_defect", "Shadow Shield", 2, CardType.SKILL, CardRarity.UNCOMMON),
+    ("skim", "Skim", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("tempest", "Tempest", _X, CardType.SKILL, CardRarity.UNCOMMON),
+    ("white_noise", "White Noise", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("bulk_up", "Bulk Up", 2, CardType.POWER, CardRarity.UNCOMMON),
+    ("feral", "Feral", 2, CardType.POWER, CardRarity.UNCOMMON),
+    ("hailstorm", "Hailstorm", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("iteration", "Iteration", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("loop", "Loop", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("smokestack", "Smokestack", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("storm", "Storm", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("subroutine", "Subroutine", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("lightning_rod", "Lightning Rod", 1, CardType.SKILL, CardRarity.COMMON),
+    ("thunder", "Thunder", 1, CardType.POWER, CardRarity.UNCOMMON),
+    # --- Rare ---
+    ("adaptive_strike", "Adaptive Strike", 2, CardType.ATTACK, CardRarity.RARE),
+    ("all_for_one", "All for One", 2, CardType.ATTACK, CardRarity.RARE),
+    ("hyperbeam", "Hyperbeam", 2, CardType.ATTACK, CardRarity.RARE),
+    ("ice_lance", "Ice Lance", 3, CardType.ATTACK, CardRarity.RARE),
+    ("meteor_strike", "Meteor Strike", 5, CardType.ATTACK, CardRarity.RARE),
+    ("shatter", "Shatter", 1, CardType.ATTACK, CardRarity.RARE),
+    ("flak_cannon", "Flak Cannon", 2, CardType.ATTACK, CardRarity.RARE),
+    ("helix_drill", "Helix Drill", 0, CardType.ATTACK, CardRarity.RARE),
+    ("buffer", "Buffer", 2, CardType.POWER, CardRarity.RARE),
+    ("coolant", "Coolant", 1, CardType.POWER, CardRarity.RARE),
+    ("creative_ai", "Creative AI", 3, CardType.POWER, CardRarity.RARE),
+    ("defragment", "Defragment", 1, CardType.POWER, CardRarity.RARE),
+    ("echo_form", "Echo Form", 3, CardType.POWER, CardRarity.RARE),
+    ("consuming_shadow", "Consuming Shadow", 2, CardType.POWER, CardRarity.RARE),
+    ("machine_learning", "Machine Learning", 1, CardType.POWER, CardRarity.RARE),
+    ("signal_boost", "Signal Boost", 1, CardType.SKILL, CardRarity.RARE),
+    ("spinner", "Spinner", 1, CardType.POWER, CardRarity.RARE),
+    ("supercritical", "Supercritical", 0, CardType.SKILL, CardRarity.RARE),
+    ("synchronize", "Synchronize", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("trash_to_treasure", "Trash to Treasure", 1, CardType.POWER, CardRarity.RARE),
+    ("reboot", "Reboot", 0, CardType.SKILL, CardRarity.RARE),
+    ("rainbow", "Rainbow", 2, CardType.SKILL, CardRarity.RARE),
+    ("multi_cast", "Multi-Cast", 0, CardType.SKILL, CardRarity.RARE),
+    ("voltaic", "Voltaic", 3, CardType.SKILL, CardRarity.RARE),
+    ("hotfix", "Hotfix", 0, CardType.SKILL, CardRarity.COMMON),
+    ("ignition", "Ignition", 1, CardType.SKILL, CardRarity.RARE),
+    ("modded", "Modded", 0, CardType.SKILL, CardRarity.RARE),
+    ("genetic_algorithm", "Genetic Algorithm", 1, CardType.SKILL, CardRarity.RARE),
+    ("energy_surge", "Energy Surge", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    # --- Ancient (excluded from reward gen) ---
+    ("biased_cognition", "Biased Cognition", 1, CardType.POWER, CardRarity.ANCIENT),
+    ("quadcast", "Quadcast", 1, CardType.SKILL, CardRarity.ANCIENT),
+]
+
+
+def _build_defect_registry() -> None:
+    seen: set[str] = set()
+    for cid, name, cost, ctype, rarity in _DEFECT_META:
+        if cid in seen:
+            continue
+        seen.add(cid)
+        RARITY_OF.setdefault(cid, rarity)
+        if cid not in CARDS:
+            CARDS[cid] = _placeholder(cid, name, cost, ctype, rarity)
+
+
+_build_defect_registry()
+
+DEFECT_COMMON = _dedup([c for (c, _n, _co, _t, r) in _DEFECT_META
+                        if r is CardRarity.COMMON])
+DEFECT_UNCOMMON = _dedup([c for (c, _n, _co, _t, r) in _DEFECT_META
+                          if r is CardRarity.UNCOMMON])
+DEFECT_RARE = _dedup([c for (c, _n, _co, _t, r) in _DEFECT_META
+                      if r is CardRarity.RARE])
+
+
+# ===========================================================================
 # Phase 9.0 — per-character card-reward POOL registry (SCAFFOLD).
 # ===========================================================================
 #
@@ -662,8 +798,12 @@ CHARACTER_CARD_POOLS: dict[str, dict[CardRarity, list[str]]] = {
         CardRarity.UNCOMMON: list(SILENT_UNCOMMON),
         CardRarity.RARE: list(SILENT_RARE),
     },
-    # TODO(P9.2): Defect 88 cards.
-    "defect": {CardRarity.COMMON: [], CardRarity.UNCOMMON: [], CardRarity.RARE: []},
+    # P9.2: Defect 88-card pool (DefectCardPool.cs).
+    "defect": {
+        CardRarity.COMMON: list(DEFECT_COMMON),
+        CardRarity.UNCOMMON: list(DEFECT_UNCOMMON),
+        CardRarity.RARE: list(DEFECT_RARE),
+    },
     # TODO(P9.3): Necrobinder 88 cards.
     "necrobinder": {CardRarity.COMMON: [], CardRarity.UNCOMMON: [], CardRarity.RARE: []},
     # TODO(P9.4): Regent 88 cards.

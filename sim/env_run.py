@@ -1183,13 +1183,36 @@ class RunEnv(gym.Env):
         cursor += _OBS_CHAR_ONEHOT          # -> 510
         # [510..511) stars / 10        TODO(P9.4 Regent stars)
         cursor += 1                          # -> 511
-        # [511..521) orb-queue type ids / 5     TODO(P9.2 Defect orbs)
+        # [511..533) Defect orb queue / focus (P9.2 — LIVE). Zero for non-Defect
+        # (their orb_queue is None / capacity 0).
+        cs = rs.combat if (rs is not None and rs.in_combat()) else None
+        q = getattr(cs, "orb_queue", None) if cs is not None else None
+        focus = 0
+        if cs is not None:
+            try:
+                focus = cs.orb_focus()
+            except Exception:
+                focus = 0
+        # [511..521) orb-queue type ids / 5 (slot i -> (orb_type_id+1)/5, 0=empty)
+        if q is not None:
+            for i, orb in enumerate(q.orbs[:10]):
+                v[cursor + i] = (int(orb.type) + 1) / 5.0
         cursor += 10                         # -> 521
-        # [521..531) orb evoke values / 30      TODO(P9.2 Defect orbs)
+        # [521..531) orb evoke values / 30 (Focus-scaled; Dark accumulator)
+        if q is not None:
+            for i, orb in enumerate(q.orbs[:10]):
+                try:
+                    ev = orb.evoke_value(focus)
+                except Exception:
+                    ev = 0
+                v[cursor + i] = min(1.0, max(0.0, ev / 30.0))
         cursor += 10                         # -> 531
-        # [531..532) orb capacity / 10          TODO(P9.2 Defect orbs)
+        # [531..532) orb capacity / 10
+        if q is not None:
+            v[cursor] = min(1.0, q.capacity / 10.0)
         cursor += 1                          # -> 532
-        # [532..533) focus / 10                 TODO(P9.2 Defect focus)
+        # [532..533) focus / 10 (can be negative; clamp [0,1] like the rest)
+        v[cursor] = min(1.0, max(0.0, focus / 10.0))
         cursor += 1                          # -> 533
         # [533..537) osty present/hp/block/pad  TODO(P9.3 Necrobinder osty)
         cursor += 4                          # -> 537

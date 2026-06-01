@@ -525,6 +525,13 @@ def _start_combat(rs: RunState, encounter_id: str) -> None:
     cs.hand = []
     cs.discard_pile = []
     cs.run_state = rs  # enable per-attack/per-card/turn-end relic hooks
+    # Phase 9.2 Defect: give the combat an orb queue sized to the run's base
+    # orb-slot count (Defect 3, else 0). Capacity-0 queues make channels no-ops,
+    # so non-Defect characters are unaffected. Relics/cards (RunicCapacitor,
+    # Capacitor) add slots on top during combat.
+    if getattr(rs, "orb_slots", 0) > 0:
+        from .orbs import OrbQueue
+        cs.orb_queue = OrbQueue(capacity=rs.orb_slots)
     # Reset per-combat relic counters (Kunai/Shuriken/Nunchaku/PenNib/
     # HappyFlower/Pendulum/…). Each is flagged resets_per_combat in the
     # registry (decompiled per-combat counters reset on combat end).

@@ -57,6 +57,10 @@ class CombatState:
     # is +2. Applied to _x_value when resolving an X-cost card. Set by the
     # relic's combat-start hook so standalone combat stays at 0.
     chemical_x_bonus: int = 0
+    # Phase 9.2 Defect: the orb queue (None for non-Defect; capacity 0 means
+    # channels are no-ops). Created/sized by run_engine._start_combat from the
+    # RunState's orb_slots, or directly in tests. See sim/orbs.py.
+    orb_queue: object = None  # sim.orbs.OrbQueue | None
 
     def _sync_monsters(self) -> None:
         """Ensure `self.monsters` includes `self.monster` for legacy code."""
@@ -200,10 +204,140 @@ class CombatState:
         self.player.powers.remove(p)
         p.on_removed(self, self.player)
 
+    # ---- Phase 9.2 Defect orb engine -------------------------------------
+
+    def orb_focus(self) -> int:
+        """Current Focus value (sum of FocusPower-like modifiers on the player).
+        Computed via the modify_orb_value hook against a 0 baseline so any power
+        that scales orb values (Focus / TemporaryFocus) is composed correctly."""
+        v = 0
+        for p in self.player.powers:
+            v = p.modify_orb_value(self.player, v)
+        return v
+
+    def _orb_trigger_count(self, orb) -> int:
+        """How many times `orb` fires its passive at a turn boundary
+        (Hook.ModifyOrbPassiveTriggerCount). Player powers, then relics
+        (GoldPlatedCables +1 for the front orb)."""
+        count = 1
+        for p in self.player.powers:
+            count = p.modify_orb_passive_trigger_count(orb, count)
+        if self.run_state is not None:
+            from .relics import modify_orb_passive_trigger_count
+            count = modify_orb_passive_trigger_count(self.run_state, self, orb, count)
+        return max(0, count)
+
+    def channel_orb(self, orb_type) -> None:
+        """Channel one orb of `orb_type` (a name string or OrbType) into the
+        queue. Overflow evokes the front orb first (OrbCmd.Channel). Fires the
+        on_orb_channeled hook for player powers + relics (Metronome)."""
+        from .orbs import OrbQueue, OrbType
+        if self.orb_queue is None:
+            return
+        if isinstance(orb_type, str):
+            orb_type = OrbType[orb_type.upper()]
+        orb = self.orb_queue.channel(orb_type, self._evoke_orb)
+        if orb is None:
+            return
+        self._fire_power_hook(self.player, "on_orb_channeled", self, self.player, orb)
+        if self.run_state is not None:
+            from .relics import trigger_on_orb_channeled
+            trigger_on_orb_channeled(self.run_state, self, orb)
+
+    def evoke_front_orb(self) -> None:
+        """Evoke the front (oldest) orb (Dualcast/MultiCast). No-op if empty."""
+        if self.orb_queue is None:
+            return
+        self.orb_queue.evoke_front(self._evoke_orb)
+
+    def add_orb_slots(self, n: int) -> None:
+        if self.orb_queue is not None:
+            self.orb_queue.add_capacity(n)
+
+    def _evoke_orb(self, orb) -> None:
+        """Resolve an orb's Evoke (called by the queue on pop/overflow).
+        Routes damage/block/energy through the combat pipeline, then fires
+        on_orb_evoked (Thunder)."""
+        from .orbs import OrbType
+        focus = self.orb_focus()
+        val = orb.evoke_value(focus)
+        targets: list = []
+        if orb.type is OrbType.LIGHTNING:
+            alive = self.alive_monsters()
+            if alive and val > 0:
+                t = self.rng.choice(alive)
+                deal_damage(val, self.player, t)
+                targets = [t]
+        elif orb.type is OrbType.FROST:
+            gain_block(self.player, val)
+            targets = [self.player]
+        elif orb.type is OrbType.DARK:
+            alive = self.alive_monsters()
+            if alive and val > 0:
+                t = min(alive, key=lambda m: m.hp)
+                deal_damage(val, self.player, t)
+                targets = [t]
+        elif orb.type is OrbType.PLASMA:
+            if self.player.get_power("no_energy_gain") is None:
+                self.player.energy += val
+            targets = [self.player]
+        elif orb.type is OrbType.GLASS:
+            if val > 0:
+                targets = [m for m in self.alive_monsters() if m.alive]
+                for t in list(targets):
+                    if t.alive:
+                        deal_damage(val, self.player, t)
+        self._fire_power_hook(self.player, "on_orb_evoked",
+                              self, self.player, orb, targets)
+
+    def trigger_orb_passive(self, orb) -> None:
+        """Resolve a single passive trigger for `orb` (OrbModel.Passive)."""
+        from .orbs import OrbType
+        focus = self.orb_focus()
+        val = orb.passive_value(focus)
+        if orb.type is OrbType.LIGHTNING:
+            alive = self.alive_monsters()
+            if alive and val > 0:
+                deal_damage(val, self.player, self.rng.choice(alive))
+        elif orb.type is OrbType.FROST:
+            gain_block(self.player, val)
+        elif orb.type is OrbType.DARK:
+            # Accumulates into the evoke value (DarkOrb.Passive: _evokeVal += val).
+            orb.dark_evoke += val
+        elif orb.type is OrbType.PLASMA:
+            if self.player.get_power("no_energy_gain") is None:
+                self.player.energy += val
+        elif orb.type is OrbType.GLASS:
+            if val > 0:
+                for m in list(self.alive_monsters()):
+                    if m.alive:
+                        deal_damage(val, self.player, m)
+                orb.glass_passive = max(0, orb.glass_passive - 1)
+
+    def _fire_orb_passives(self, when: str) -> None:
+        """Fire orb passives at a turn boundary. `when` == 'turn_end'
+        (BeforeTurnEnd: Lightning/Frost/Dark/Glass) or 'turn_start'
+        (AfterTurnStart: Plasma). Each orb fires triggerCount times, left to
+        right (oldest first)."""
+        from .orbs import OrbType
+        if self.orb_queue is None:
+            return
+        end_types = {OrbType.LIGHTNING, OrbType.FROST, OrbType.DARK, OrbType.GLASS}
+        start_types = {OrbType.PLASMA}
+        want = end_types if when == "turn_end" else start_types
+        for orb in list(self.orb_queue.orbs):
+            if orb.type not in want:
+                continue
+            for _ in range(self._orb_trigger_count(orb)):
+                self.trigger_orb_passive(orb)
+
     def start_player_turn(self) -> None:
         self.turn_number += 1
         self.is_player_turn = True
         self._attacks_played_this_turn = 0
+        # EmotionChip (Defect relic): remember whether HP was lost on the
+        # turn that just ended before clearing the per-turn flag.
+        self._hp_lost_last_turn = getattr(self, "_hp_lost_this_turn", False)
         self._hp_lost_this_turn = False
         self._block_gains_this_turn = 0
         self._cards_exhausted_this_turn = 0
@@ -236,6 +370,9 @@ class CombatState:
         # Brutality (lose HP + draw). Fire after the draw, per the .cs ordering
         # of AfterSideTurnStart (DemonForm) which runs once the turn is set up.
         self._fire_power_hook(self.player, "on_turn_start", self, self.player)
+        # Orb passives that fire AfterTurnStart (PlasmaOrb: +energy). Fired here,
+        # after the turn is set up and the on_turn_start hooks (Loop) have run.
+        self._fire_orb_passives("turn_start")
         # Monster-side reactions to the player's turn starting (RampartPower:
         # the Living Shield re-armors its Turret Operator each player turn).
         for m in self.alive_monsters():
@@ -372,6 +509,12 @@ class CombatState:
             burst.amount -= 1
             if burst.amount <= 0:
                 self.player.powers.remove(burst)
+        # Echo Form (EchoFormPower.cs): the FIRST card played each turn is
+        # played `amount` extra times. Consume the per-turn flag.
+        echo = self.player.get_power("echo_form")
+        if echo is not None and not getattr(echo, "_used_this_turn", False):
+            echo._used_this_turn = True
+            extra_plays += echo.amount
         # Per-card enchant play-count (Glam: first play replays +Times this
         # combat). EnchantPlayCount(originalPlayCount) -> originalPlayCount+Times.
         ench = getattr(card, "enchantment", None)
@@ -961,6 +1104,56 @@ class CombatState:
             if total > 0:
                 gain_block(self.player, total)
             return
+        # ---- Phase 9.2 Defect orb effect ops ----------------------------
+        if eff.op is EffectOp.CHANNEL_ORB:
+            # Channel `amount` orbs of type eff.power_id (e.g. "lightning").
+            for _ in range(max(1, eff.amount)):
+                self.channel_orb(eff.power_id)
+            return
+        if eff.op is EffectOp.EVOKE_ORB:
+            # Dualcast/Quadcast: evoke the FRONT orb `amount` times. Dualcast (2)
+            # evokes the same front orb twice (the .cs evokes without dequeue
+            # first, then dequeues) — we model the net as `amount` evokes of the
+            # front-most orb; if the queue empties, stop.
+            for _ in range(max(1, eff.amount)):
+                if self.orb_queue is None or self.orb_queue.is_empty():
+                    break
+                self.evoke_front_orb()
+            return
+        if eff.op is EffectOp.EVOKE_ALL_ORBS:
+            # MultiCast: evoke every orb currently in the queue.
+            if self.orb_queue is not None:
+                while not self.orb_queue.is_empty():
+                    self.evoke_front_orb()
+            return
+        if eff.op is EffectOp.ADD_ORB_SLOTS:
+            self.add_orb_slots(max(0, eff.amount))
+            return
+        if eff.op is EffectOp.CHANNEL_ORB_PER_ENEMY:
+            # Chill: channel a Frost orb per (alive) enemy.
+            n = len(self.alive_monsters())
+            for _ in range(n):
+                self.channel_orb("frost")
+            return
+        if eff.op is EffectOp.CHANNEL_ORB_X:
+            # Tempest: X-cost; channel `_x_value` Lightning orbs.
+            for _ in range(max(0, self._x_value)):
+                self.channel_orb("lightning")
+            return
+        if eff.op is EffectOp.DAMAGE_HITS_PER_ORB:
+            # Barrage: hit count == number of orbs in the queue.
+            hits = len(self.orb_queue.orbs) if self.orb_queue is not None else 0
+            base_amount, _ = self._resolve_damage_scaling(eff, targets, card)
+            for _ in range(max(0, hits)):
+                for t in targets:
+                    if t.alive:
+                        deal_damage(base_amount, self.player, t)
+            return
+        if eff.op is EffectOp.GAIN_ENERGY_PER_CURRENT:
+            # DoubleEnergy: gain energy equal to current energy (double it).
+            if self.player.get_power("no_energy_gain") is None:
+                self.player.energy += self.player.energy
+            return
 
     # Duration debuffs that decay by 1 at the END of the bearer's OWN turn.
     # In the real game (WeakPower/VulnerablePower/FrailPower .cs) these tick in
@@ -986,6 +1179,9 @@ class CombatState:
         # of hand Attacks) fire BEFORE the hand is discarded so Stampede still
         # sees its Attacks (StampedePower.BeforeTurnEndEarly).
         self._fire_power_hook(self.player, "on_turn_end", self, self.player)
+        # Orb passives that fire BeforeTurnEnd (Lightning dmg / Frost block /
+        # Dark accumulate / Glass AoE). Fired after the turn-end power hooks.
+        self._fire_orb_passives("turn_end")
         # One-Two Punch: any unused charge is removed at turn end.
         otp = self.player.get_power("one_two_punch")
         if otp is not None:

@@ -61,6 +61,18 @@ class EffectOp(str, Enum):
     DAMAGE_PER_ATTACK_IN_HAND = "damage_per_attack_in_hand"  # Finisher: +1 hit per Attack played this turn
     DAMAGE_AOE_ECHO_ON_KILL = "damage_aoe_echo_on_kill"  # EchoingSlash: AoE, repeat per kill
     BLOCK_PER_ENEMY_POISON = "block_per_enemy_poison"  # Mirage: block == total enemy poison
+    # Phase 9.2 Defect orb additions. `power_id` reused to carry the orb type
+    # name for CHANNEL_ORB (e.g. "lightning"); `amount` is the channel/evoke
+    # repeat count (CHANNEL_ORB / EVOKE_ORB) or the slot count (ADD_ORB_SLOTS).
+    CHANNEL_ORB = "channel_orb"            # Zap/ColdSnap/Darkness/…: channel N orbs of a type
+    EVOKE_ORB = "evoke_orb"                # Dualcast/Quadcast: evoke the front orb N times
+    EVOKE_ALL_ORBS = "evoke_all_orbs"      # MultiCast: evoke every orb (+1 if X-cost)
+    ADD_ORB_SLOTS = "add_orb_slots"        # Capacitor: +N orb slots
+    CHANNEL_ORB_PER_ENEMY = "channel_orb_per_enemy"  # Chill: channel a Frost per enemy
+    CHANNEL_ORB_X = "channel_orb_x"        # Tempest: X-cost, channel Lightning ×energy
+    DAMAGE_X_CHANNEL_LIGHTNING = "damage_x_channel_lightning"  # (reserved)
+    DAMAGE_HITS_PER_ORB = "damage_hits_per_orb"  # Barrage: hit count == orb count
+    GAIN_ENERGY_PER_CURRENT = "gain_energy_per_current"  # DoubleEnergy: +current energy
 
 
 class ScalingKind(str, Enum):

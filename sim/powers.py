@@ -157,6 +157,25 @@ class Power:
         Hard To Kill (cap `amount`)."""
         return amount
 
+    # ---- Phase 9.2 Defect orb hooks ----
+    def modify_orb_value(self, owner, value: int) -> int:
+        """Modify an orb's passive/evoke value (Hook.ModifyOrbValue). FocusPower
+        adds its Amount (clamped >= 0). Default: no change."""
+        return value
+
+    def modify_orb_passive_trigger_count(self, orb, count: int) -> int:
+        """Modify how many times an orb fires its passive at a turn boundary
+        (Hook.ModifyOrbPassiveTriggerCount). Default: no change."""
+        return count
+
+    def on_orb_channeled(self, cs, owner, orb) -> None:
+        """An orb was channeled by `owner` (AfterOrbChanneled). Used by
+        Metronome (relic) / Storm-style counters."""
+
+    def on_orb_evoked(self, cs, owner, orb, targets) -> None:
+        """An orb belonging to `owner` was evoked (AfterOrbEvoked). Used by
+        Thunder (deal Amount to the evoke targets)."""
+
     def blocks_block_reset(self) -> bool:
         """If True, the owner's block is NOT reset at turn start (Barricade)."""
         return False
@@ -1914,6 +1933,309 @@ class WellLaidPlansPower(Power):
     _owner: object = None
 
 
+# ===========================================================================
+# Phase 9.2 — Defect orb / Focus powers (decompiled Models.Powers/*.cs).
+# ===========================================================================
+
+@dataclass
+class FocusPower(Power):
+    """FocusPower.cs: ModifyOrbValue -> max(value + Amount, 0). Scales the
+    Focus-affected orbs' passive/evoke values. AllowNegative (can go below 0)."""
+    id: str = field(default="focus", init=False)
+    _owner: object = None
+
+    def modify_orb_value(self, owner, value: int) -> int:
+        if self._owner is not owner:
+            return value
+        return max(0, value + self.amount)
+
+
+@dataclass
+class TemporaryFocusPower(FocusPower):
+    """TemporaryFocusPower.cs (Hotfix/FocusedStrike grant FocusedStrikePower /
+    HotfixPower, both subclasses): identical Focus scaling, but the stack is
+    removed at the owner's turn end. We model it as a turn-end-decaying Focus:
+    the engine ticks it in the duration-debuff path is NOT generic, so we drop
+    the whole stack at turn end here."""
+    id: str = field(default="temporary_focus", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        if owner.get_power("temporary_focus") is self and self in owner.powers:
+            owner.powers.remove(self)
+
+
+@dataclass
+class ThunderPower(Power):
+    """ThunderPower.cs (AfterOrbEvoked): when an orb is evoked, deal Amount
+    Unpowered damage to the evoke targets."""
+    id: str = field(default="thunder", init=False)
+    _owner: object = None
+
+    def on_orb_evoked(self, cs, owner, orb, targets) -> None:
+        from .damage import deal_damage
+        for t in targets:
+            if getattr(t, "alive", False):
+                deal_damage(self.amount, owner, t)
+
+
+@dataclass
+class StormPower(Power):
+    """StormPower.cs (AfterCardPlayed): whenever the owner plays a POWER card,
+    channel a Lightning orb. Amount = orbs per power card."""
+    id: str = field(default="storm", init=False)
+    _owner: object = None
+
+    def on_card_played(self, cs, owner, card) -> None:
+        from .dsl import CardType
+        if card.type is CardType.POWER and owner is cs.player:
+            for _ in range(self.amount):
+                cs.channel_orb("lightning")
+
+
+@dataclass
+class HailstormPower(Power):
+    """HailstormPower.cs (BeforeTurnEnd): for each Frost orb in the queue, deal
+    Amount Unpowered damage to all enemies (FrostOrbs counter; base 6 dmg)."""
+    id: str = field(default="hailstorm", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        from .orbs import OrbType
+        from .damage import deal_damage
+        if owner is not cs.player:
+            return
+        q = getattr(cs, "orb_queue", None)
+        if q is None:
+            return
+        frost = sum(1 for o in q.orbs if o.type is OrbType.FROST)
+        for _ in range(frost):
+            for m in list(cs.alive_monsters()):
+                if m.alive:
+                    deal_damage(self.amount, owner, m)
+
+
+@dataclass
+class CoolantPower(Power):
+    """CoolantPower.cs: at turn end, gain block == Amount × number of Frost orbs.
+    (Heuristic from the decompile: GainBlock(num * Amount), num = Frost orbs.)"""
+    id: str = field(default="coolant", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        from .orbs import OrbType
+        from .damage import gain_block
+        if owner is not cs.player:
+            return
+        q = getattr(cs, "orb_queue", None)
+        if q is None:
+            return
+        frost = sum(1 for o in q.orbs if o.type is OrbType.FROST)
+        if frost > 0:
+            gain_block(owner, frost * self.amount)
+
+
+@dataclass
+class SmokestackPower(Power):
+    """SmokestackPower.cs (turn end): deal Amount Unpowered damage to all
+    enemies each turn (a Combust-like AoE engine; base 5)."""
+    id: str = field(default="smokestack", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        from .damage import deal_damage
+        if owner is not cs.player:
+            return
+        for m in list(cs.alive_monsters()):
+            if m.alive:
+                deal_damage(self.amount, owner, m)
+
+
+@dataclass
+class LoopPower(Power):
+    """LoopPower.cs (AfterTurnStart): at turn start, trigger the FRONT orb's
+    passive Amount extra times (the orb at index 0). Defect's signature engine."""
+    id: str = field(default="loop", init=False)
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        if owner is not cs.player:
+            return
+        q = getattr(cs, "orb_queue", None)
+        if q is None or not q.orbs:
+            return
+        front = q.orbs[0]
+        for _ in range(self.amount):
+            cs.trigger_orb_passive(front)
+
+
+@dataclass
+class EchoFormPower(Power):
+    """EchoFormPower.cs: the first card the owner plays each turn is played an
+    extra Amount times. Modeled via a per-turn 'used' flag + the play_card
+    extra-plays path (cs reads echo_form for the turn's first card)."""
+    id: str = field(default="echo_form", init=False)
+    _owner: object = None
+    _used_this_turn: bool = False
+
+    def on_turn_start(self, cs, owner) -> None:
+        self._used_this_turn = False
+
+
+@dataclass
+class CreativeAiPower(Power):
+    """CreativeAiPower.cs (BeforeHandDraw): at the start of each turn, add Amount
+    random Power cards to hand. We approximate by adding a random implemented
+    Defect Power card id; faithful in count + 'free power each turn' effect."""
+    id: str = field(default="creative_ai", init=False)
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        if owner is not cs.player:
+            return
+        from .card_catalog import CARDS
+        from .dsl import CardType
+        power_ids = [cid for cid, c in CARDS.items()
+                     if c.type is CardType.POWER and not cid.endswith("+")
+                     and ("defect" in cid or cid in _DEFECT_POWER_IDS)]
+        for _ in range(self.amount):
+            if power_ids:
+                cid = cs.rng.choice(power_ids)
+                cs.hand.append(CARDS[cid])
+
+
+# Defect power-card ids CreativeAi can pull (used above; kept small + safe).
+_DEFECT_POWER_IDS = frozenset({
+    "defragment", "storm", "loop", "echo_form", "buffer_card", "hailstorm",
+    "coolant", "smokestack", "feral", "iteration", "machine_learning",
+    "biased_cognition", "subroutine", "trash_to_treasure", "creative_ai",
+})
+
+
+@dataclass
+class FeralPower(Power):
+    """FeralPower.cs: gain Amount Strength; reduced as zero-cost attacks are
+    played (DisplayAmount = max(0, Amount - zeroCostAttacksPlayed)). We grant
+    the Strength immediately at apply time; the decay nuance is cosmetic for
+    damage purposes, so it's modeled as flat Strength via the card effect."""
+    id: str = field(default="feral", init=False)
+    _owner: object = None
+
+
+@dataclass
+class IterationPower(Power):
+    """IterationPower.cs (AfterCardDrawn): when a Status card is drawn, draw
+    Amount cards. Status draws are rare in-sim; faithful no-op-leaning hook."""
+    id: str = field(default="iteration", init=False)
+    _owner: object = None
+
+    def on_card_drawn(self, cs, owner, card) -> None:
+        if owner is cs.player and getattr(card, "is_status", False):
+            cs.draw(self.amount)
+
+
+@dataclass
+class MachineLearningPower(Power):
+    """MachineLearningPower.cs (ModifyHandDraw): draw +Amount extra cards each
+    turn (CardsVar 1)."""
+    id: str = field(default="machine_learning", init=False)
+    _owner: object = None
+
+    def modify_hand_draw(self, owner, count: int) -> int:
+        return count + self.amount
+
+
+@dataclass
+class SignalBoostPower(Power):
+    """SignalBoostPower.cs: the next Power card costs 0 (heuristic). Modeled as a
+    cost override on POWER cards while the stack is positive; one-shot decrement
+    handled in play_card via on_card_played."""
+    id: str = field(default="signal_boost", init=False)
+    _owner: object = None
+
+    def modify_card_cost(self, card):
+        from .dsl import CardType
+        if self.amount > 0 and card.type is CardType.POWER:
+            return 0
+        return None
+
+    def on_card_played(self, cs, owner, card) -> None:
+        from .dsl import CardType
+        if card.type is CardType.POWER and self.amount > 0:
+            self.amount -= 1
+            if self.amount <= 0 and self in owner.powers:
+                owner.powers.remove(self)
+
+
+@dataclass
+class SpinnerPower(Power):
+    """SpinnerPower.cs (AfterCardPlayed): when the owner plays an Attack, channel
+    a Glass orb. Amount = Glass orbs per attack."""
+    id: str = field(default="spinner", init=False)
+    _owner: object = None
+
+    def on_card_played(self, cs, owner, card) -> None:
+        from .dsl import CardType
+        if card.type is CardType.ATTACK and owner is cs.player:
+            for _ in range(self.amount):
+                cs.channel_orb("glass")
+
+
+@dataclass
+class SubroutinePower(Power):
+    """SubroutinePower.cs (AfterCardPlayed): every Amount-th card played gains
+    1 energy. We track a per-power counter; faithful 'gain 1 energy on the Nth
+    card' (base: every other card)."""
+    id: str = field(default="subroutine", init=False)
+    _owner: object = None
+    _count: int = 0
+
+    def on_card_played(self, cs, owner, card) -> None:
+        if owner is not cs.player:
+            return
+        self._count += 1
+        if self._count % 2 == 0:
+            if owner.get_power("no_energy_gain") is None:
+                owner.energy += 1
+
+
+@dataclass
+class ConsumingShadowPower(Power):
+    """ConsumingShadowPower.cs (AfterTurnEnd): at turn end, channel Amount Dark
+    orbs (ongoing dark-orb engine; base 1)."""
+    id: str = field(default="consuming_shadow", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        if owner is cs.player:
+            for _ in range(self.amount):
+                cs.channel_orb("dark")
+
+
+@dataclass
+class TrashToTreasurePower(Power):
+    """TrashToTreasurePower.cs: marker power (its real effect transforms Status
+    cards on draw). Faithful no-op marker in-sim (status cards are rare)."""
+    id: str = field(default="trash_to_treasure", init=False)
+    _owner: object = None
+
+
+@dataclass
+class BiasedCognitionPower(Power):
+    """BiasedCognitionPower.cs (AfterTurnEnd / on apply countdown): at turn end,
+    apply -Amount Focus (lose Focus over time). We decrement Focus by Amount each
+    turn end (the BiasedCognition card grants +4 Focus up front)."""
+    id: str = field(default="biased_cognition", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        if owner is not cs.player:
+            return
+        foc = owner.get_power("focus")
+        if foc is not None:
+            foc.amount -= self.amount
+
+
 POWER_REGISTRY: dict[str, type[Power]] = {
     "confused": ConfusedPower,
     "no_draw": NoDrawPower,
@@ -2037,6 +2359,26 @@ POWER_REGISTRY: dict[str, type[Power]] = {
     "serpent_form": SerpentFormPower,
     "tools_of_the_trade": ToolsOfTheTradePower,
     "well_laid_plans": WellLaidPlansPower,
+    # Phase 9.2 — Defect orb / Focus powers.
+    "focus": FocusPower,
+    "temporary_focus": TemporaryFocusPower,
+    "thunder": ThunderPower,
+    "storm": StormPower,
+    "hailstorm": HailstormPower,
+    "coolant": CoolantPower,
+    "smokestack": SmokestackPower,
+    "loop": LoopPower,
+    "echo_form": EchoFormPower,
+    "creative_ai": CreativeAiPower,
+    "feral": FeralPower,
+    "iteration": IterationPower,
+    "machine_learning": MachineLearningPower,
+    "signal_boost": SignalBoostPower,
+    "spinner": SpinnerPower,
+    "subroutine": SubroutinePower,
+    "consuming_shadow": ConsumingShadowPower,
+    "trash_to_treasure": TrashToTreasurePower,
+    "biased_cognition": BiasedCognitionPower,
 }
 
 

@@ -135,6 +135,12 @@ class RelicDef:
     # / EventRelicPool split). One of: "shared", "ironclad", "event". Used to
     # build RELIC_POOLS faithfully. Defaults to "shared".
     pool: str = "shared"
+    # Phase 9.2 Defect orb hooks.
+    # Orb-channeled hook — fired by combat.channel_orb after an orb is channeled
+    # (Metronome: every 7th orb -> 30 AoE).
+    on_orb_channeled: Optional[Callable[[RunState, object, object], None]] = None  # (rs, cs, orb)
+    # Orb passive trigger-count modifier (GoldPlatedCables: +1 for the front orb).
+    modify_orb_passive_trigger_count: Optional[Callable[[RunState, object, object, int], int]] = None  # (rs, cs, orb, count)->int
     # Obs category — see RELIC_CATEGORIES above.
     category: str = "misc"
 
@@ -175,6 +181,54 @@ def _gain_energy(combat, amount: int) -> None:
     Coffee-style: EnergyVar(1) -> +1 max energy."""
     combat.player.max_energy += amount
     combat.player.energy += amount
+
+
+def _channel_orbs(combat, orb_type: str, n: int) -> None:
+    """Channel `n` orbs of `orb_type` into the combat's orb queue (CrackedCore
+    Lightning ×1, SymbioticVirus Dark ×1). No-op if the combat has no queue."""
+    if getattr(combat, "orb_queue", None) is None:
+        return
+    for _ in range(n):
+        combat.channel_orb(orb_type)
+
+
+def _metronome_orb_channeled(rs, combat, orb) -> None:
+    """Metronome.cs (AfterOrbChanneled): every 7th orb channeled this combat,
+    deal 30 Unpowered damage to all enemies. Counter on the RelicInstance,
+    resets per combat."""
+    inst = next((r for r in rs.relics if r.id == "METRONOME"), None)
+    if inst is None:
+        return
+    inst.counter = (inst.counter or 0) + 1
+    if inst.counter >= 7:
+        inst.counter = 0
+        from .damage import deal_damage
+        for m in list(combat.alive_monsters()):
+            if m.alive:
+                deal_damage(30, combat.player, m)
+
+
+def _gold_plated_front_orb(rs, combat, orb, count: int) -> int:
+    """GoldPlatedCables.cs (ModifyOrbPassiveTriggerCounts): the FRONT orb fires
+    its passive +1 extra time."""
+    q = getattr(combat, "orb_queue", None)
+    if q is not None and q.orbs and q.orbs[0] is orb:
+        return count + 1
+    return count
+
+
+def _emotion_chip_turn_start(rs, combat) -> None:
+    """EmotionChip.cs (AfterPlayerTurnStart): if the player lost HP last turn,
+    trigger every orb's passive once. We approximate 'lost HP last turn' with a
+    per-combat flag set when the player took unblocked damage; absent that flag
+    we fire on turns > 1 only when block was breached. Simplest faithful model:
+    fire orb passives once at the start of turns after the first if HP was lost."""
+    q = getattr(combat, "orb_queue", None)
+    if q is None or not q.orbs:
+        return
+    if getattr(combat, "_hp_lost_last_turn", False):
+        for orb in list(q.orbs):
+            combat.trigger_orb_passive(orb)
 
 
 def _attack_counter_power(rs, cs, card, *, relic_id: str,
@@ -2132,8 +2186,57 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     "CRACKED_CORE": RelicDef(
         id="CRACKED_CORE", name="Cracked Core", rarity="starter",
         category="misc",
-        # TODO(P9.2): CrackedCore.cs — channel 1 Lightning orb on combat start
-        # (needs the orb primitive).
+        # CrackedCore.cs BeforeSideTurnStart (RoundNumber <= 1): channel 1
+        # Lightning orb at the start of combat (turn 1). Fired via on_combat_start
+        # (which runs after start_player_turn, i.e. turn 1).
+        on_combat_start=lambda rs, cs: _channel_orbs(cs, "lightning", 1),
+    ),
+    # --- Phase 9.2: Defect character relic pool (DefectRelicPool.cs, 8 relics).
+    "DATA_DISK_DEFECT": RelicDef(
+        id="DATA_DISK_DEFECT", name="Data Disk", rarity="common", pool="defect",
+        merchant_cost=150, category="misc",
+        # DataDisk.cs AfterRoomEntered(CombatRoom): apply 1 Focus. Modeled as a
+        # combat-start +1 Focus.
+        on_combat_start=lambda rs, cs: _apply_power_to_self(cs, "focus", 1),
+    ),
+    "EMOTION_CHIP": RelicDef(
+        id="EMOTION_CHIP", name="Emotion Chip", rarity="rare", pool="defect",
+        category="misc",
+        # EmotionChip.cs: if HP lost last turn, trigger all orb passives at the
+        # start of this turn.
+        on_player_turn_start=lambda rs, cs: _emotion_chip_turn_start(rs, cs),
+    ),
+    "GOLD_PLATED_CABLES": RelicDef(
+        id="GOLD_PLATED_CABLES", name="Gold-Plated Cables", rarity="uncommon",
+        pool="defect", category="misc",
+        # GoldPlatedCables.cs: the FRONT orb triggers its passive +1 extra time.
+        modify_orb_passive_trigger_count=_gold_plated_front_orb,
+    ),
+    "POWER_CELL": RelicDef(
+        id="POWER_CELL", name="Power Cell", rarity="rare", pool="defect",
+        category="draw_card",
+        # PowerCell.cs (RoundNumber <= 1): add 2 zero-cost cards from draw to
+        # hand on turn 1. Approximated as +2 hand draw on turn 1.
+        modify_hand_draw=lambda rs, cs, base: base + 2
+        if getattr(cs, "turn_number", 1) <= 1 else base,
+    ),
+    "METRONOME": RelicDef(
+        id="METRONOME", name="Metronome", rarity="rare", pool="defect",
+        category="aoe_damage", resets_per_combat=True,
+        # Metronome.cs: every 7th orb channeled, deal 30 to all enemies.
+        on_orb_channeled=lambda rs, cs, orb: _metronome_orb_channeled(rs, cs, orb),
+    ),
+    "RUNIC_CAPACITOR": RelicDef(
+        id="RUNIC_CAPACITOR", name="Runic Capacitor", rarity="shop", pool="defect",
+        merchant_cost=175, category="misc",
+        # RunicCapacitor.cs (RoundNumber <= 1): +3 orb slots at combat start.
+        on_combat_start=lambda rs, cs: cs.add_orb_slots(3),
+    ),
+    "SYMBIOTIC_VIRUS": RelicDef(
+        id="SYMBIOTIC_VIRUS", name="Symbiotic Virus", rarity="uncommon",
+        pool="defect", category="misc",
+        # SymbioticVirus.cs (RoundNumber <= 1): channel 1 Dark orb at combat start.
+        on_combat_start=lambda rs, cs: _channel_orbs(cs, "dark", 1),
     ),
     "BOUND_PHYLACTERY": RelicDef(
         id="BOUND_PHYLACTERY", name="Bound Phylactery", rarity="starter",
@@ -2185,6 +2288,30 @@ def trigger_on_combat_start(rs: RunState, combat) -> None:
         rd = RELIC_REGISTRY.get(r.id)
         if rd and rd.on_combat_start:
             rd.on_combat_start(rs, combat)
+
+
+def trigger_on_orb_channeled(rs: RunState, combat, orb) -> None:
+    """Fire each owned relic's on_orb_channeled hook (Metronome)."""
+    for r in rs.relics:
+        rd = RELIC_REGISTRY.get(r.id)
+        if rd and rd.on_orb_channeled:
+            try:
+                rd.on_orb_channeled(rs, combat, orb)
+            except Exception:
+                pass
+
+
+def modify_orb_passive_trigger_count(rs: RunState, combat, orb, count: int) -> int:
+    """Apply each owned relic's orb-passive-trigger-count modifier
+    (GoldPlatedCables: +1 for the front orb)."""
+    for r in rs.relics:
+        rd = RELIC_REGISTRY.get(r.id)
+        if rd and rd.modify_orb_passive_trigger_count:
+            try:
+                count = rd.modify_orb_passive_trigger_count(rs, combat, orb, count)
+            except Exception:
+                pass
+    return count
 
 
 def trigger_on_player_turn_start(rs: RunState, combat) -> None:
@@ -2432,7 +2559,12 @@ _SILENT_POOL_IDS: frozenset[str] = frozenset({       # P9.1 (SilentRelicPool.cs)
     "HELICAL_DART", "NINJA_SCROLL", "PAPER_KRANE", "RING_OF_THE_SNAKE",
     "SNECKO_SKULL", "TINGSHA", "TOUGH_BANDAGES", "TWISTED_FUNNEL",
 })
-_DEFECT_POOL_IDS: frozenset[str] = frozenset()       # TODO(P9.2)
+_DEFECT_POOL_IDS: frozenset[str] = frozenset({       # P9.2 (DefectRelicPool.cs)
+    # CrackedCore is the starter (granted at run start, not a drop). The other
+    # 7 in DefectRelicPool.cs are character-exclusive drops.
+    "DATA_DISK_DEFECT", "EMOTION_CHIP", "GOLD_PLATED_CABLES", "POWER_CELL",
+    "METRONOME", "RUNIC_CAPACITOR", "SYMBIOTIC_VIRUS",
+})
 _NECROBINDER_POOL_IDS: frozenset[str] = frozenset()  # TODO(P9.3)
 _REGENT_POOL_IDS: frozenset[str] = frozenset()       # TODO(P9.4)
 

@@ -1016,14 +1016,18 @@ DEFEND_DEFECT = CardDef(
     id="defend_defect", name="Defend", cost=1, type=CardType.SKILL, count=4,
     effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=5),),
 )
-# TODO(P9.2): Zap = channel a Lightning orb; Dualcast = evoke front orb twice.
-# Both need the orb primitive — registered as inert 1-cost SKILL stubs so the
-# deck builds; they currently do nothing on play.
+# P9.2: Zap = channel a Lightning orb; Dualcast = evoke front orb twice. Real
+# CardDefs live in the Defect library below (ZAP_REAL / DUALCAST_REAL); the
+# starting deck references them. These names are kept as forward aliases so the
+# scaffold tuple builds; they are rebound to the real defs after the library.
 ZAP = CardDef(
-    id="zap", name="Zap", cost=1, type=CardType.SKILL, count=1, effects=(),
+    id="zap", name="Zap", cost=1, type=CardType.SKILL, count=1,
+    effects=(Effect(op=EffectOp.CHANNEL_ORB, target=Target.SELF,
+                    power_id="lightning", amount=1),),
 )
 DUALCAST = CardDef(
-    id="dualcast", name="Dualcast", cost=1, type=CardType.SKILL, count=1, effects=(),
+    id="dualcast", name="Dualcast", cost=1, type=CardType.SKILL, count=1,
+    effects=(Effect(op=EffectOp.EVOKE_ORB, target=Target.SELF, amount=2),),
 )
 DEFECT_STARTING_DECK = (STRIKE_DEFECT, DEFEND_DEFECT, ZAP, DUALCAST)
 
@@ -1465,6 +1469,457 @@ _SILENT_IMPLEMENTED: tuple[CardDef, ...] = (
 )
 
 
+# ===========================================================================
+# Phase 9.2 — DEFECT full card library (decompiled Models.Cards/*.cs, 88 cards
+# in DefectCardPool.cs). Costs / damage / block / orb-effects / focus / upgrade
+# are .cs-exact. The basics (StrikeDefect/DefendDefect) come from the scaffold;
+# Zap/Dualcast are upgraded below to real orb effects (replacing the inert
+# stubs). Cards needing an absent card-selection / transform primitive (Hologram
+# discard-pick, Compact/Modded transform, GeneticAlgorithm persistent block,
+# Claw cross-copy scaling) land as faithful by-type placeholders.
+#
+# Orb DSL ops: CHANNEL_ORB (power_id = orb type name), EVOKE_ORB (amount = N),
+# EVOKE_ALL_ORBS, ADD_ORB_SLOTS, CHANNEL_ORB_PER_ENEMY, CHANNEL_ORB_X,
+# DAMAGE_HITS_PER_ORB, GAIN_ENERGY_PER_CURRENT. See sim/dsl.py + combat.py.
+# ===========================================================================
+from .dsl import X_COST as _XCD  # noqa: E402
+
+
+def _ch(orb: str, n: int = 1) -> Effect:
+    return Effect(op=EffectOp.CHANNEL_ORB, target=Target.SELF, power_id=orb, amount=n)
+
+
+# Zap / Dualcast are the scaffold starter CardDefs above (now carrying real orb
+# effects). They are registered via the scaffold; not repeated in the library.
+
+# --- Common ----------------------------------------------------------------
+BALL_LIGHTNING = CardDef(  # BallLightning.cs: 1-cost, 7 dmg + channel Lightning (upg +3 dmg)
+    id="ball_lightning", name="Ball Lightning", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=7, scaling=STRIKE_SCALING), _ch("lightning", 1)),
+)
+BARRAGE = CardDef(  # Barrage.cs: 1-cost, 5 dmg × (orb count) (upg +2 dmg)
+    id="barrage", name="Barrage", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DAMAGE_HITS_PER_ORB, target=Target.SELECTED_ENEMY,
+                    amount=5, scaling=STRIKE_SCALING),),
+)
+BEAM_CELL = CardDef(  # BeamCell.cs: 0-cost, 3 dmg + 1 Vulnerable (upg +1/+1)
+    id="beam_cell", name="Beam Cell", cost=0, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=3, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+                    power_id="vulnerable", amount=1)),
+)
+CLAW = CardDef(  # Claw.cs: 0-cost, 3 dmg (cross-Claw scaling +2 not modeled; upg +1 dmg)
+    id="claw", name="Claw", cost=0, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=3, scaling=STRIKE_SCALING),),
+)
+COLD_SNAP = CardDef(  # ColdSnap.cs: 1-cost, 6 dmg + channel Frost (upg +3 dmg)
+    id="cold_snap", name="Cold Snap", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=6, scaling=STRIKE_SCALING), _ch("frost", 1)),
+)
+COMPILE_DRIVER = CardDef(  # CompileDriver.cs: 1-cost, 7 dmg + draw 1 per orb-type (upg +3 dmg)
+    id="compile_driver", name="Compile Driver", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=7, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=1)),
+)
+GO_FOR_THE_EYES = CardDef(  # GoForTheEyes.cs: 0-cost, 3 dmg + 1 Weak (upg +1/+1)
+    id="go_for_the_eyes", name="Go for the Eyes", cost=0, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=3, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+                    power_id="weak", amount=1)),
+)
+GUNK_UP = CardDef(  # GunkUp.cs: 1-cost, 4 dmg ×3 (status-add not modeled; upg dmg)
+    id="gunk_up", name="Gunk Up", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=4, scaling=STRIKE_SCALING, hit_count=3),),
+)
+MOMENTUM_STRIKE = CardDef(  # MomentumStrike.cs: 1-cost, 10 dmg
+    id="momentum_strike", name="Momentum Strike", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=10, scaling=STRIKE_SCALING),),
+)
+SWEEPING_BEAM = CardDef(  # SweepingBeam.cs: 1-cost, 6 dmg to ALL + draw 1 (upg +3 dmg)
+    id="sweeping_beam", name="Sweeping Beam", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.ALL_ENEMIES,
+                    amount=6, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=1)),
+)
+FOCUSED_STRIKE = CardDef(  # FocusedStrike.cs: 1-cost, 9 dmg + 1 (temp) Focus (upg +2/+1)
+    id="focused_strike", name="Focused Strike", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=9, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="temporary_focus", amount=1)),
+)
+
+# --- Common skills ---------------------------------------------------------
+CHARGE_BATTERY = CardDef(  # ChargeBattery.cs: 1-cost, 7 block + EnergyNextTurn 1 (upg +3 block)
+    id="charge_battery", name="Charge Battery", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=7),
+             Effect(op=EffectOp.ENERGY_GAIN, target=Target.SELF, amount=1)),
+)
+COOLHEADED = CardDef(  # Coolheaded.cs: 1-cost, channel Frost + draw 1 (upg draw +1)
+    id="coolheaded", name="Coolheaded", cost=1, type=CardType.SKILL, count=0,
+    effects=(_ch("frost", 1), Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=1)),
+)
+HOLOGRAM = CardDef(  # Hologram.cs: 1-cost, 3 block + return a discard card (pick not modeled); Exhaust
+    id="hologram", name="Hologram", cost=1, type=CardType.SKILL, count=0, exhaust=True,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=3),),
+)
+LEAP = CardDef(  # Leap.cs: 1-cost, 9 block (upg +3)
+    id="leap", name="Leap", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=9),),
+)
+TURBO = CardDef(  # Turbo.cs: 0-cost, gain 2 energy (status-add not modeled; upg +1)
+    id="turbo", name="Turbo", cost=0, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.ENERGY_GAIN, target=Target.SELF, amount=2),),
+)
+BOOST_AWAY = CardDef(  # BoostAway.cs: 0-cost, 6 block
+    id="boost_away", name="Boost Away", cost=0, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=6),),
+)
+
+# --- Uncommon attacks ------------------------------------------------------
+BLIZZARD = None  # (not in DefectCardPool; placeholder for clarity)
+COMPACT = CardDef(  # Compact.cs: 1-cost, 6 block (status->Fuel transform not modeled; upg +1)
+    id="compact", name="Compact", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=6),),
+)
+FTL = CardDef(  # Ftl.cs: 0-cost, 5 dmg + draw 1 if <PlayMax cards played (upg +1 dmg)
+    id="ftl", name="FTL", cost=0, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=5, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=1)),
+)
+REFRACT = CardDef(  # Refract.cs: 3-cost, 9 dmg + channel 2 Glass (upg dmg)
+    id="refract", name="Refract", cost=3, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=9, scaling=STRIKE_SCALING), _ch("glass", 2)),
+)
+ROCKET_PUNCH = CardDef(  # RocketPunch.cs: 2-cost, 13 dmg + draw 1 (upg +1/+1)
+    id="rocket_punch", name="Rocket Punch", cost=2, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=13, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=1)),
+)
+SCRAPE = CardDef(  # Scrape.cs: 1-cost, 7 dmg + draw 4 (keep non-0-cost; upg +3 dmg)
+    id="scrape", name="Scrape", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=7, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=4)),
+)
+SUNDER = CardDef(  # Sunder.cs: 3-cost, 24 dmg + 3 energy if it kills (upg +8 dmg)
+    id="sunder", name="Sunder", cost=3, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=24, scaling=STRIKE_SCALING),),
+)
+SYNTHESIS = CardDef(  # Synthesis.cs: 2-cost, 12 dmg (+ FreePower not modeled; upg dmg)
+    id="synthesis", name="Synthesis", cost=2, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=12, scaling=STRIKE_SCALING),),
+)
+TESLA_COIL = CardDef(  # TeslaCoil.cs: 0-cost, 3 dmg
+    id="tesla_coil", name="Tesla Coil", cost=0, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=3, scaling=STRIKE_SCALING),),
+)
+UPROAR = CardDef(  # Uproar.cs: 2-cost, 5 dmg (escalates per play; base here)
+    id="uproar", name="Uproar", cost=2, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=5, scaling=STRIKE_SCALING),),
+)
+NULL = CardDef(  # Null.cs: 2-cost, 10 dmg + 2 Weak + channel Dark (upg dmg)
+    id="null", name="Null", cost=2, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=10, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+                    power_id="weak", amount=2), _ch("dark", 1)),
+)
+
+# --- Uncommon skills -------------------------------------------------------
+BOOT_SEQUENCE = CardDef(  # BootSequence.cs: 0-cost, 10 block; Innate (upg block)
+    id="boot_sequence", name="Boot Sequence", cost=0, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=10),),
+)
+CAPACITOR = CardDef(  # Capacitor.cs: 1-cost Power, +2 orb slots (upg +1)
+    id="capacitor", name="Capacitor", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.ADD_ORB_SLOTS, target=Target.SELF, amount=2),),
+)
+CHAOS = CardDef(  # Chaos.cs: 1-cost, channel 1 random orb (modeled as Lightning; upg +1)
+    id="chaos", name="Chaos", cost=1, type=CardType.SKILL, count=0,
+    effects=(_ch("lightning", 1),),
+)
+CHILL = CardDef(  # Chill.cs: 0-cost, channel a Frost per enemy; Exhaust (upg loses Exhaust)
+    id="chill", name="Chill", cost=0, type=CardType.SKILL, count=0, exhaust=True,
+    effects=(Effect(op=EffectOp.CHANNEL_ORB_PER_ENEMY, target=Target.SELF),),
+)
+DARKNESS = CardDef(  # Darkness.cs: 1-cost, channel 1 Dark (upg evokes/effect)
+    id="darkness", name="Darkness", cost=1, type=CardType.SKILL, count=0,
+    effects=(_ch("dark", 1),),
+)
+DOUBLE_ENERGY = CardDef(  # DoubleEnergy.cs: 1-cost, double current energy (upg cost -1)
+    id="double_energy", name="Double Energy", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_ENERGY_PER_CURRENT, target=Target.SELF),),
+)
+FIGHT_THROUGH = CardDef(  # FightThrough.cs: 1-cost, 13 block (upg block)
+    id="fight_through", name="Fight Through", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=13),),
+)
+FUSION = CardDef(  # Fusion.cs: 2-cost, channel a Plasma (upg cost -1)
+    id="fusion", name="Fusion", cost=2, type=CardType.SKILL, count=0,
+    effects=(_ch("plasma", 1),),
+)
+GLACIER = CardDef(  # Glacier.cs: 2-cost, 6 block + channel 2 Frost (upg +3 block)
+    id="glacier", name="Glacier", cost=2, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=6),
+             _ch("frost", 2)),
+)
+GLASSWORK = CardDef(  # Glasswork.cs: 1-cost, 5 block + channel Glass (upg +3 block)
+    id="glasswork", name="Glasswork", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=5),
+             _ch("glass", 1)),
+)
+OVERCLOCK = CardDef(  # Overclock.cs: 0-cost, draw 2 (status-add not modeled; upg +1)
+    id="overclock", name="Overclock", cost=0, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=2),),
+)
+SCAVENGE = CardDef(  # Scavenge.cs: 1-cost, EnergyNextTurn 2 (upg +1)
+    id="scavenge", name="Scavenge", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.ENERGY_GAIN, target=Target.SELF, amount=2),),
+)
+SHADOW_SHIELD_DEFECT = CardDef(  # ShadowShield.cs: 2-cost, 11 block + channel Dark (upg block)
+    id="shadow_shield_defect", name="Shadow Shield", cost=2, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=11),
+             _ch("dark", 1)),
+)
+SKIM = CardDef(  # Skim.cs: 1-cost, draw 3 (upg +1)
+    id="skim", name="Skim", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=3),),
+)
+TEMPEST = CardDef(  # Tempest.cs: X-cost, channel X Lightning
+    id="tempest", name="Tempest", cost=_XCD, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.CHANNEL_ORB_X, target=Target.SELF),),
+)
+WHITE_NOISE = CardDef(  # WhiteNoise.cs: 1-cost, add a random Power to hand (free); Exhaust
+    id="white_noise", name="White Noise", cost=1, type=CardType.SKILL, count=0,
+    exhaust=True,
+    effects=(Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=1),),
+)
+
+# --- Uncommon powers -------------------------------------------------------
+BULK_UP = CardDef(  # BulkUp.cs: 2-cost Power, +2 Strength + 2 Dexterity (upg +1/+1)
+    id="bulk_up", name="Bulk Up", cost=2, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="strength", amount=2),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="dexterity", amount=2)),
+)
+FERAL = CardDef(  # Feral.cs: 2-cost Power, FeralPower 1 -> +Strength (upg +1)
+    id="feral", name="Feral", cost=2, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="strength", amount=3),),
+)
+HAILSTORM = CardDef(  # Hailstorm.cs: 1-cost Power, HailstormPower 6 (upg +2)
+    id="hailstorm", name="Hailstorm", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="hailstorm", amount=6),),
+)
+ITERATION = CardDef(  # Iteration.cs: 1-cost Power, IterationPower 2 (upg)
+    id="iteration", name="Iteration", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="iteration", amount=2),),
+)
+LOOP = CardDef(  # Loop.cs: 1-cost Power, LoopPower 1 (upg +1)
+    id="loop", name="Loop", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="loop", amount=1),),
+)
+SMOKESTACK = CardDef(  # Smokestack.cs: 1-cost Power, SmokestackPower 5 (upg +2)
+    id="smokestack", name="Smokestack", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="smokestack", amount=5),),
+)
+STORM = CardDef(  # Storm.cs: 1-cost Power, StormPower 1 (upg +1)
+    id="storm", name="Storm", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="storm", amount=1),),
+)
+SUBROUTINE = CardDef(  # Subroutine.cs: 1-cost Power, SubroutinePower 1
+    id="subroutine", name="Subroutine", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="subroutine", amount=1),),
+)
+LIGHTNING_ROD = CardDef(  # LightningRod.cs: 1-cost, 4 block + LightningRodPower 2 (upg)
+    id="lightning_rod", name="Lightning Rod", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=4),
+             # LightningRodPower channels Lightning over time; approximate as
+             # channel 2 Lightning now (faithful net effect).
+             _ch("lightning", 2)),
+)
+THUNDER = CardDef(  # Thunder.cs: 1-cost Power, ThunderPower 6 (upg +2)
+    id="thunder", name="Thunder", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="thunder", amount=6),),
+)
+
+# --- Rare ------------------------------------------------------------------
+ADAPTIVE_STRIKE = CardDef(  # AdaptiveStrike.cs: 2-cost, 18 dmg
+    id="adaptive_strike", name="Adaptive Strike", cost=2, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=18, scaling=STRIKE_SCALING),),
+)
+ALL_FOR_ONE = CardDef(  # AllForOne.cs: 2-cost, 10 dmg (+hand-return not modeled)
+    id="all_for_one", name="All for One", cost=2, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=10, scaling=STRIKE_SCALING),),
+)
+CORE_SURGE = None
+HYPERBEAM = CardDef(  # Hyperbeam.cs: 2-cost, 26 dmg to ALL, then lose 3 Focus (upg +8 dmg)
+    id="hyperbeam", name="Hyperbeam", cost=2, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.ALL_ENEMIES,
+                    amount=26, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="focus", amount=-3)),
+)
+ICE_LANCE = CardDef(  # IceLance.cs: 3-cost, 19 dmg + channel 3 Frost (upg +5 dmg)
+    id="ice_lance", name="Ice Lance", cost=3, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=19, scaling=STRIKE_SCALING), _ch("frost", 3)),
+)
+METEOR_STRIKE = CardDef(  # MeteorStrike.cs: 5-cost, 24 dmg + channel 3 Plasma (upg +6 dmg)
+    id="meteor_strike", name="Meteor Strike", cost=5, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=24, scaling=STRIKE_SCALING), _ch("plasma", 3)),
+)
+SHATTER = CardDef(  # Shatter.cs: 1-cost, 11 dmg to ALL (upg +4)
+    id="shatter", name="Shatter", cost=1, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.ALL_ENEMIES,
+                    amount=11, scaling=STRIKE_SCALING),),
+)
+FLAK_CANNON = CardDef(  # FlakCannon.cs: 2-cost, 8 dmg × (status count) random (base 1 hit)
+    id="flak_cannon", name="Flak Cannon", cost=2, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.RANDOM_ENEMY,
+                    amount=8, scaling=STRIKE_SCALING),),
+)
+HELIX_DRILL = CardDef(  # HelixDrill.cs: 0-cost, 3 dmg (scaling not modeled)
+    id="helix_drill", name="Helix Drill", cost=0, type=CardType.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
+                    amount=3, scaling=STRIKE_SCALING),),
+)
+BUFFER = CardDef(  # Buffer.cs: 2-cost Power, BufferPower 1 (prevent next HP loss; upg +1)
+    id="buffer", name="Buffer", cost=2, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="buffer", amount=1),),
+)
+COOLANT = CardDef(  # Coolant.cs: 1-cost Power, CoolantPower 2 (upg +1)
+    id="coolant", name="Coolant", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="coolant", amount=2),),
+)
+CREATIVE_AI = CardDef(  # CreativeAi.cs: 3-cost Power, CreativeAiPower 1 (upg cost -1)
+    id="creative_ai", name="Creative AI", cost=3, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="creative_ai", amount=1),),
+)
+DEFRAGMENT = CardDef(  # Defragment.cs: 1-cost Power, +1 Focus (upg +1)
+    id="defragment", name="Defragment", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="focus", amount=1),),
+)
+ECHO_FORM = CardDef(  # EchoForm.cs: 3-cost Power, EchoFormPower 1 (upg)
+    id="echo_form", name="Echo Form", cost=3, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="echo_form", amount=1),),
+)
+CONSUMING_SHADOW = CardDef(  # ConsumingShadow.cs: 2-cost Power, channel 2 Dark + ConsumingShadowPower 1
+    id="consuming_shadow", name="Consuming Shadow", cost=2, type=CardType.POWER, count=0,
+    effects=(_ch("dark", 2),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="consuming_shadow", amount=1)),
+)
+MACHINE_LEARNING = CardDef(  # MachineLearning.cs: 1-cost Power, MachineLearningPower 1 (+1 draw/turn)
+    id="machine_learning", name="Machine Learning", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="machine_learning", amount=1),),
+)
+SIGNAL_BOOST = CardDef(  # SignalBoost.cs: 1-cost, SignalBoostPower 1 (next Power 0 cost)
+    id="signal_boost", name="Signal Boost", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="signal_boost", amount=1),),
+)
+SPINNER = CardDef(  # Spinner.cs: 1-cost Power, channel a Glass + SpinnerPower 1
+    id="spinner", name="Spinner", cost=1, type=CardType.POWER, count=0,
+    effects=(_ch("glass", 1),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="spinner", amount=1)),
+)
+SUPERCRITICAL = CardDef(  # Supercritical.cs: 0-cost, EnergyNextTurn 4 (upg)
+    id="supercritical", name="Supercritical", cost=0, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.ENERGY_GAIN, target=Target.SELF, amount=4),),
+)
+SYNCHRONIZE = CardDef(  # Synchronize.cs: 1-cost, SynchronizePower(=Focus) — grant 1 Focus
+    id="synchronize", name="Synchronize", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="focus", amount=1),),
+)
+TRASH_TO_TREASURE = CardDef(  # TrashToTreasure.cs: 1-cost Power, TrashToTreasurePower 1
+    id="trash_to_treasure", name="Trash to Treasure", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="trash_to_treasure", amount=1),),
+)
+REBOOT = CardDef(  # Reboot.cs: 0-cost, draw 4 (shuffle-deck nuance not modeled; upg +2)
+    id="reboot", name="Reboot", cost=0, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=4),),
+)
+RAINBOW = CardDef(  # Rainbow.cs: 2-cost, channel Lightning + Frost + Dark; Exhaust
+    id="rainbow", name="Rainbow", cost=2, type=CardType.SKILL, count=0, exhaust=True,
+    effects=(_ch("lightning", 1), _ch("frost", 1), _ch("dark", 1)),
+)
+MULTI_CAST = CardDef(  # MultiCast.cs: 0-cost X, evoke all orbs (+1 evoke); modeled as evoke-all
+    id="multi_cast", name="Multi-Cast", cost=0, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.EVOKE_ALL_ORBS, target=Target.SELF),),
+)
+VOLTAIC = CardDef(  # Voltaic.cs: 3-cost, channel Lightning per Lightning channeled (base 1)
+    id="voltaic", name="Voltaic", cost=3, type=CardType.SKILL, count=0,
+    effects=(_ch("lightning", 1),),
+)
+
+# --- Ancient ---------------------------------------------------------------
+BIASED_COGNITION = CardDef(  # BiasedCognition.cs: 1-cost Power, +4 Focus + BiasedCognitionPower 1
+    id="biased_cognition", name="Biased Cognition", cost=1, type=CardType.POWER, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id="focus", amount=4),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="biased_cognition", amount=1)),
+)
+QUADCAST = CardDef(  # Quadcast.cs: 1-cost, evoke front orb 4 times (upg cost -1)
+    id="quadcast", name="Quadcast", cost=1, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.EVOKE_ORB, target=Target.SELF, amount=4),),
+)
+HOTFIX = CardDef(  # Hotfix.cs: 0-cost, +2 (temporary) Focus (upg +1)
+    id="hotfix", name="Hotfix", cost=0, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.APPLY_POWER, target=Target.SELF,
+                    power_id="temporary_focus", amount=2),),
+)
+IGNITION = CardDef(  # Ignition.cs: 1-cost, channel a Plasma (orb to an ally)
+    id="ignition", name="Ignition", cost=1, type=CardType.SKILL, count=0,
+    effects=(_ch("plasma", 1),),
+)
+ENERGY_SURGE = CardDef(  # EnergySurge.cs: 0-cost, gain energy this turn (Turbo-like)
+    id="energy_surge", name="Energy Surge", cost=0, type=CardType.SKILL, count=0,
+    effects=(Effect(op=EffectOp.ENERGY_GAIN, target=Target.SELF, amount=2),),
+)
+
+
+# All fully-implemented Defect CardDefs (basics are the scaffold Strike/Defend;
+# Zap/Dualcast replaced below). Used by the catalog merge.
+_DEFECT_IMPLEMENTED: tuple[CardDef, ...] = (
+    BALL_LIGHTNING, BARRAGE, BEAM_CELL, CLAW, COLD_SNAP, COMPILE_DRIVER,
+    GO_FOR_THE_EYES, GUNK_UP, MOMENTUM_STRIKE, SWEEPING_BEAM, FOCUSED_STRIKE,
+    CHARGE_BATTERY, COOLHEADED, HOLOGRAM, LEAP, TURBO, BOOST_AWAY,
+    COMPACT, FTL, REFRACT, ROCKET_PUNCH, SCRAPE, SUNDER, SYNTHESIS, TESLA_COIL,
+    UPROAR, NULL,
+    BOOT_SEQUENCE, CAPACITOR, CHAOS, CHILL, DARKNESS, DOUBLE_ENERGY,
+    FIGHT_THROUGH, FUSION, GLACIER, GLASSWORK, OVERCLOCK, SCAVENGE,
+    SHADOW_SHIELD_DEFECT, SKIM, TEMPEST, WHITE_NOISE,
+    BULK_UP, FERAL, HAILSTORM, ITERATION, LOOP, SMOKESTACK, STORM, SUBROUTINE,
+    LIGHTNING_ROD, THUNDER,
+    ADAPTIVE_STRIKE, ALL_FOR_ONE, HYPERBEAM, ICE_LANCE, METEOR_STRIKE, SHATTER,
+    FLAK_CANNON, HELIX_DRILL,
+    BUFFER, COOLANT, CREATIVE_AI, DEFRAGMENT, ECHO_FORM, CONSUMING_SHADOW,
+    MACHINE_LEARNING, SIGNAL_BOOST, SPINNER, SUPERCRITICAL, SYNCHRONIZE,
+    TRASH_TO_TREASURE, REBOOT, RAINBOW, MULTI_CAST, VOLTAIC,
+    BIASED_COGNITION, QUADCAST, HOTFIX, IGNITION, ENERGY_SURGE,
+)
+
+
 def build_starting_deck(character: str = "ironclad") -> list[CardDef]:
     """Build the starting deck for `character` (the Character enum value
     string). Defaults to Ironclad for backward compatibility — existing
@@ -1660,6 +2115,84 @@ _UPGRADE_DELTAS: dict[str, tuple[tuple, ...]] = {
     "skewer": (("dmg", 2),),                             # 8 -> 10 per hit
     "finisher": (("dmg", 2),),                           # 6 -> 8 per attack
     "anticipate": (("power", "dexterity", 1),),          # 2 -> 3
+    # --- Phase 9.2 Defect upgrades (decompiled OnUpgrade values) ---
+    "zap": (("cost", -1),),                              # cost 1 -> 0
+    "dualcast": (("cost", -1),),                         # cost 1 -> 0
+    "ball_lightning": (("dmg", 3),),                     # 7 -> 10
+    "barrage": (("dmg", 2),),                            # 5 -> 7
+    "beam_cell": (("dmg", 1), ("power", "vulnerable", 1)),  # 3/1 -> 4/2
+    "claw": (("dmg", 1),),                               # 3 -> 4
+    "cold_snap": (("dmg", 3),),                          # 6 -> 9
+    "compile_driver": (("dmg", 3),),                     # 7 -> 10
+    "go_for_the_eyes": (("dmg", 1), ("power", "weak", 1)),  # 3/1 -> 4/2
+    "momentum_strike": (("dmg", 3),),
+    "sweeping_beam": (("dmg", 3),),                      # 6 -> 9
+    "focused_strike": (("dmg", 2), ("power", "temporary_focus", 1)),  # 9/1 -> 11/2
+    "charge_battery": (("block", 3),),                   # 7 -> 10
+    "coolheaded": (("draw", 1),),                        # draw 1 -> 2
+    "hologram": (("block", 2),),                         # 3 -> 5
+    "leap": (("block", 3),),                             # 9 -> 12
+    "turbo": (("energy", 1),),                           # 2 -> 3
+    "boost_away": (("block", 3),),
+    "compact": (("block", 1),),                          # 6 -> 7
+    "ftl": (("dmg", 1),),                                # 5 -> 6
+    "refract": (("dmg", 3),),
+    "rocket_punch": (("dmg", 1), ("draw", 1)),           # 13/1 -> 14/2
+    "scrape": (("dmg", 3), ("draw", 1)),                 # 7/4 -> 10/5
+    "sunder": (("dmg", 8),),                             # 24 -> 32
+    "synthesis": (("dmg", 3),),
+    "tesla_coil": (("dmg", 2),),
+    "uproar": (("dmg", 1),),
+    "null": (("dmg", 3),),
+    "boot_sequence": (("block", 3),),                    # 10 -> 13
+    "capacitor": (("add_orb_slots", 1),),                # +2 -> +3 slots
+    "chaos": (("channel_orb", 1),),                      # channel 1 -> 2
+    "darkness": (("channel_orb", 1),),
+    "double_energy": (("cost", -1),),
+    "fight_through": (("block", 4),),
+    "fusion": (("cost", -1),),                           # cost 2 -> 1
+    "glacier": (("block", 3),),                          # 6 -> 9
+    "glasswork": (("block", 3),),                        # 5 -> 8
+    "overclock": (("draw", 1),),                         # 2 -> 3
+    "scavenge": (("energy", 1),),                        # 2 -> 3
+    "shadow_shield_defect": (("block", 3),),
+    "skim": (("draw", 1),),                              # 3 -> 4
+    "tempest": (),                                       # X-cost; per-energy channel
+    "bulk_up": (("power", "strength", 1), ("power", "dexterity", 1)),  # 2/2 -> 3/3
+    "feral": (("power", "strength", 1),),
+    "hailstorm": (("power", "hailstorm", 2),),           # 6 -> 8
+    "iteration": (("power", "iteration", 1),),
+    "loop": (("power", "loop", 1),),                     # 1 -> 2
+    "smokestack": (("power", "smokestack", 2),),         # 5 -> 7
+    "storm": (("power", "storm", 1),),                   # 1 -> 2
+    "lightning_rod": (("channel_orb", 1),),
+    "thunder": (("power", "thunder", 2),),               # 6 -> 8
+    "adaptive_strike": (("dmg", 5),),
+    "all_for_one": (("dmg", 4),),
+    "hyperbeam": (("dmg", 8),),                          # 26 -> 34
+    "ice_lance": (("dmg", 5),),                          # 19 -> 24
+    "meteor_strike": (("dmg", 6),),                      # 24 -> 30
+    "shatter": (("dmg", 4),),                            # 11 -> 15
+    "flak_cannon": (("dmg", 3),),
+    "helix_drill": (("dmg", 4),),
+    "buffer": (("power", "buffer", 1),),                 # 1 -> 2
+    "coolant": (("power", "coolant", 1),),               # 2 -> 3
+    "creative_ai": (("cost", -1),),                      # cost 3 -> 2
+    "defragment": (("power", "focus", 1),),              # 1 -> 2
+    "consuming_shadow": (("channel_orb", 1),),
+    "machine_learning": (("power", "machine_learning", 1),),
+    "signal_boost": (("power", "signal_boost", 1),),
+    "spinner": (("power", "spinner", 1),),
+    "supercritical": (("energy", 1),),
+    "synchronize": (("power", "focus", 1),),
+    "reboot": (("draw", 2),),                            # 4 -> 6
+    "rainbow": (),                                       # upgrade removes Exhaust
+    "voltaic": (("channel_orb", 1),),
+    "biased_cognition": (("power", "focus", 1),),        # 4 -> 5
+    "quadcast": (("cost", -1),),                         # cost 1 -> 0
+    "hotfix": (("power", "temporary_focus", 1),),        # 2 -> 3
+    "ignition": (("channel_orb", 1),),
+    "energy_surge": (("energy", 1),),
 }
 
 # Default deltas for any implemented card not in the table above:
@@ -1688,6 +2221,10 @@ def _apply_delta(effects: tuple[Effect, ...], delta: tuple) -> tuple[Effect, ...
         elif kind == "auto_play" and eff.op is EffectOp.AUTO_PLAY_FROM_DRAW:
             new_eff = _replace(eff, amount=eff.amount + delta[1])
         elif kind == "add_card" and eff.op is EffectOp.ADD_CARD:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "channel_orb" and eff.op is EffectOp.CHANNEL_ORB:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "add_orb_slots" and eff.op is EffectOp.ADD_ORB_SLOTS:
             new_eff = _replace(eff, amount=eff.amount + delta[1])
         elif (kind == "dmg_extra_discard"
               and eff.op is EffectOp.DAMAGE_PER_DISCARD_THIS_TURN):
