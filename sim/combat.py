@@ -66,6 +66,57 @@ class CombatState:
     # never takes a turn (Osty.cs NOTHING_MOVE). Re-created per combat (does not
     # carry between combats). See sim/osty.py.
     osty: object = None  # sim.creatures.Creature | None
+    # Phase 9.4 Regent: the Star resource (PlayerCombatState._stars). An int
+    # counter, clamped >= 0 (no upper cap — GainStars/LoseStars in
+    # PlayerCombatState.cs only floor at 0). Persists for the whole combat
+    # (NOT reset per turn; reset to 0 at combat start). 0 for non-Regent.
+    stars: int = 0
+
+    def gain_stars(self, amount: int) -> None:
+        """GainStars(amount): add `amount` stars (PlayerCombatState.GainStars,
+        floored at 0). Negative amounts are ignored (the .cs throws)."""
+        if amount > 0:
+            self.stars = max(0, self.stars + amount)
+
+    def lose_stars(self, amount: int) -> None:
+        """LoseStars(amount): subtract `amount` stars, floored at 0
+        (PlayerCombatState.LoseStars). Fires AfterStarsSpent for player powers
+        (ChildOfTheStars block) and relics (GalacticDust/MiniRegent)."""
+        if amount <= 0:
+            return
+        spent = min(self.stars, amount)
+        self.stars = self.stars - spent
+        if spent > 0:
+            self._fire_power_hook(self.player, "on_stars_spent", self,
+                                  self.player, spent)
+            if self.run_state is not None:
+                from .relics import trigger_on_stars_spent
+                trigger_on_stars_spent(self.run_state, self, spent)
+
+    def star_cost_of(self, card: CardDef) -> int:
+        """Card's star cost. Combines the card's own CanonicalStarCost with the
+        excess-energy-paid-in-stars rule (ShouldPayExcessEnergyCostWithStars):
+        if a Regent overpays a card's energy cost from stars, each missing
+        energy costs 2 stars (PlayerCombatState.HasEnoughResourcesFor). The
+        hook that enables that conversion is off by default (no Regent card/relic
+        in the obtainable pool grants it), so the base star cost is what
+        applies unless a power flags excess-energy payment."""
+        base = max(0, getattr(card, "star_cost", 0) or 0)
+        # VoidForm: the first N cards each turn cost 0 stars too (TryModifyStarCost).
+        for p in self.player.powers:
+            if getattr(p, "id", None) == "void_form" and p._played_this_turn < p.amount:
+                base = 0
+        if self._should_pay_excess_energy_with_stars():
+            energy_cost = self.effective_cost(card)
+            if energy_cost > self.player.energy:
+                base += (energy_cost - self.player.energy) * 2
+        return base
+
+    def _should_pay_excess_energy_with_stars(self) -> bool:
+        for p in self.player.powers:
+            if p.should_pay_excess_energy_with_stars():
+                return True
+        return False
 
     def _sync_monsters(self) -> None:
         """Ensure `self.monsters` includes `self.monster` for legacy code."""
@@ -462,7 +513,18 @@ class CombatState:
         from .dsl import X_COST
         if card.cost < 0 and card.cost != X_COST:
             return False
-        return self.player.energy >= self.effective_cost(card)
+        # Regent star cost: a card is playable iff energy covers the energy cost
+        # AND stars cover the star cost (PlayerCombatState.HasEnoughResourcesFor).
+        # When the excess-energy-paid-with-stars hook is on, the missing energy
+        # is rolled into the star cost (star_cost_of) and the energy requirement
+        # drops to the current energy.
+        if self.star_cost_of(card) > self.stars:
+            return False
+        energy_cost = self.effective_cost(card)
+        if (energy_cost > self.player.energy
+                and self._should_pay_excess_energy_with_stars()):
+            energy_cost = self.player.energy
+        return self.player.energy >= energy_cost
 
     # Energy spent on the X-cost card currently resolving (Whirlwind hit count,
     # Cascade auto-plays). 0 when no X-cost card is mid-resolution.
@@ -492,6 +554,16 @@ class CombatState:
         from .dsl import CardType, X_COST
         card = self.hand.pop(card_index)
         spent = self.effective_cost(card)
+        # Spend stars FIRST (PlayerCommands.SpendResources spends energy+stars on
+        # play; lose_stars fires AfterStarsSpent before the card resolves).
+        star_spend = self.star_cost_of(card)
+        # Excess energy paid with stars: cap energy spent at current energy
+        # (CardModel.SpendResources energyToSpend = energy when overpaying).
+        if (spent > self.player.energy
+                and self._should_pay_excess_energy_with_stars()):
+            spent = self.player.energy
+        if star_spend > 0:
+            self.lose_stars(star_spend)
         self.player.energy -= spent
         # X-cost cards repeat their effect once per energy spent. Chemical X
         # (ChemicalX.cs) makes X-cost cards behave as if X is +chemical_x_bonus.
@@ -1226,6 +1298,14 @@ class CombatState:
                 if dp is not None and t.hp <= dp.amount:
                     t.hp = 0
                     t.alive = False
+            return
+        # ---- Phase 9.4 Regent / Stars effect ops ------------------------
+        if eff.op is EffectOp.GAIN_STARS:
+            self.gain_stars(max(0, eff.amount))
+            return
+        if eff.op is EffectOp.STAR_NEXT_TURN:
+            self.player.add_or_stack_power(
+                make_power("star_next_turn", max(0, eff.amount), self.player))
             return
 
     # Duration debuffs that decay by 1 at the END of the bearer's OWN turn.

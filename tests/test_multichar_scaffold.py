@@ -178,11 +178,9 @@ def test_character_card_pool_fallback():
     # Necrobinder (P9.3) is now populated — own pool non-empty.
     assert CHARACTER_CARD_POOLS["necrobinder"][CardRarity.COMMON]
     assert character_card_pool("necrobinder")[CardRarity.COMMON]
-    # Remaining scaffold characters fall back to the Ironclad pool (non-empty).
-    for c in ("regent",):
-        assert character_card_pool(c)[CardRarity.COMMON]
-        # ...but their own registry entry is still empty (filled in P9.4).
-        assert CHARACTER_CARD_POOLS[c][CardRarity.COMMON] == []
+    # Regent (P9.4) is now populated — own pool non-empty.
+    assert CHARACTER_CARD_POOLS["regent"][CardRarity.COMMON]
+    assert character_card_pool("regent")[CardRarity.COMMON]
 
 
 def test_character_relic_pool_registry():
@@ -197,9 +195,9 @@ def test_character_relic_pool_registry():
     # Necrobinder relic pool is now populated (P9.3): 7 droppable + BoundPhylactery starter.
     assert "BONE_FLUTE" in character_relic_pool_ids("necrobinder")
     assert len(character_relic_pool_ids("necrobinder")) == 7
-    # Remaining scaffold character relic pools are empty until their batches.
-    for c in ("regent",):
-        assert character_relic_pool_ids(c) == frozenset()
+    # Regent relic pool is now populated (P9.4): 7 droppable + DivineRight starter.
+    assert "GALACTIC_DUST" in character_relic_pool_ids("regent")
+    assert len(character_relic_pool_ids("regent")) == 7
 
 
 def test_generate_card_reward_per_character_does_not_crash():

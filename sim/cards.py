@@ -1066,15 +1066,21 @@ DEFEND_REGENT = CardDef(
     id="defend_regent", name="Defend", cost=1, type=CardType.SKILL, count=4,
     effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=5),),
 )
-# TODO(P9.4): FallingStar (star-cost 2) and Venerate (star generation) need the
-# Star resource primitive — inert stubs for now.
+# FallingStar.cs: 0-cost / star-cost 2 Attack, 8 dmg + 1 Weak + 1 Vulnerable,
+# AnyEnemy (upg +4 dmg). Venerate.cs: 1-cost Skill, GainStars(2) (upg +1 star).
 FALLING_STAR = CardDef(
-    id="falling_star", name="Falling Star", cost=1, type=CardType.ATTACK, count=1,
+    id="falling_star", name="Falling Star", cost=0, type=CardType.ATTACK, count=1,
+    star_cost=2,
     effects=(Effect(op=EffectOp.DEAL_DAMAGE, target=Target.SELECTED_ENEMY,
-                    amount=6, scaling=STRIKE_SCALING),),
+                    amount=8, scaling=STRIKE_SCALING),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+                    power_id="weak", amount=1),
+             Effect(op=EffectOp.APPLY_POWER, target=Target.SELECTED_ENEMY,
+                    power_id="vulnerable", amount=1),),
 )
 VENERATE = CardDef(
-    id="venerate", name="Venerate", cost=1, type=CardType.SKILL, count=1, effects=(),
+    id="venerate", name="Venerate", cost=1, type=CardType.SKILL, count=1,
+    effects=(Effect(op=EffectOp.GAIN_STARS, target=Target.SELF, amount=2),),
 )
 REGENT_STARTING_DECK = (STRIKE_REGENT, DEFEND_REGENT, FALLING_STAR, VENERATE)
 
@@ -2132,6 +2138,211 @@ _NECROBINDER_IMPLEMENTED: tuple[CardDef, ...] = (
 )
 
 
+# ===========================================================================
+# Phase 9.4 — REGENT full card library (decompiled Models.Cards/*.cs, 88 cards
+# in RegentCardPool.cs + Strike/Defend basics + FallingStar/Venerate starters).
+# Costs / damage / block / star-cost / star-gain / debuff / upgrade are
+# .cs-exact. Cards needing an absent primitive (Forge upgrade-in-combat,
+# card-select, retain, history-count scaling, colorless gen) land as faithful
+# by-type placeholders (correct cost/type/rarity/star-cost) and are flagged.
+# ===========================================================================
+
+def _dmg(amount: int, target: Target = Target.SELECTED_ENEMY, hit_count: int = 1):
+    return Effect(op=EffectOp.DEAL_DAMAGE, target=target, amount=amount,
+                  hit_count=hit_count, scaling=STRIKE_SCALING)
+
+
+def _block(amount: int):
+    return Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=amount)
+
+
+def _gain_stars(n: int):
+    return Effect(op=EffectOp.GAIN_STARS, target=Target.SELF, amount=n)
+
+
+def _enemy_power(pid: str, amount: int, target: Target = Target.SELECTED_ENEMY):
+    return Effect(op=EffectOp.APPLY_POWER, target=target, power_id=pid, amount=amount)
+
+
+# --- Common attacks ---------------------------------------------------------
+SOLAR_STRIKE = CardDef(  # SolarStrike.cs: 1-cost, 9 dmg + GainStars 1 (upg +3 dmg)
+    id="solar_strike", name="Solar Strike", cost=1, type=_C.ATTACK, count=0,
+    effects=(_dmg(9), _gain_stars(1)))
+PHOTON_CUT = CardDef(  # PhotonCut.cs: 1-cost, 10 dmg + draw 1 (PutBack); base 10/draw1
+    id="photon_cut", name="Photon Cut", cost=1, type=_C.ATTACK, count=0,
+    effects=(_dmg(10), _draw(1)))
+CRESCENT_SPEAR = CardDef(  # CrescentSpear.cs: 1-cost / star 1, dmg = 6 + 2×star-cards in deck
+    id="crescent_spear", name="Crescent Spear", cost=1, type=_C.ATTACK, count=0,
+    star_cost=1, effects=(_dmg(6),))   # base CalculationBase 6 (per-card scaling deferred)
+CRUSH_UNDER = CardDef(  # CrushUnder.cs: 1-cost AoE, 7 dmg + 1 StrengthLoss to all (upg +? )
+    id="crush_under", name="Crush Under", cost=1, type=_C.ATTACK, count=0,
+    effects=(_dmg(7, _T.ALL_ENEMIES),
+             _enemy_power("weak", 1, _T.ALL_ENEMIES)))   # StrengthLoss ~ Weak-shaped debuff
+GUIDING_STAR = CardDef(  # GuidingStar.cs: 1-cost / star 2, 12 dmg + draw 2 (upg +1 dmg/+1 card)
+    id="guiding_star", name="Guiding Star", cost=1, type=_C.ATTACK, count=0,
+    star_cost=2, effects=(_dmg(12), _draw(2)))
+WROUGHT_IN_WAR = CardDef(  # WroughtInWar.cs: 1-cost, 7 dmg + Forge 7 (Forge deferred)
+    id="wrought_in_war", name="Wrought in War", cost=1, type=_C.ATTACK, count=0,
+    effects=(_dmg(7),))
+COLLISION_COURSE = CardDef(  # CollisionCourse.cs: 0-cost, 11 dmg (upg +? )
+    id="collision_course", name="Collision Course", cost=0, type=_C.ATTACK, count=0,
+    effects=(_dmg(11),))
+ASTRAL_PULSE = CardDef(  # AstralPulse.cs: 0-cost / star 3 AoE, 14 dmg (upg +4)
+    id="astral_pulse", name="Astral Pulse", cost=0, type=_C.ATTACK, count=0,
+    star_cost=3, effects=(_dmg(14, _T.ALL_ENEMIES),))
+
+# --- Common skills ----------------------------------------------------------
+CLOAK_OF_STARS = CardDef(  # CloakOfStars.cs: 0-cost / star 1, Block 7 (upg +3)
+    id="cloak_of_stars", name="Cloak of Stars", cost=0, type=_C.SKILL, count=0,
+    star_cost=1, effects=(_block(7),))
+GATHER_LIGHT = CardDef(  # GatherLight.cs: 1-cost, Block 8 + GainStars 1 (upg +3 block)
+    id="gather_light", name="Gather Light", cost=1, type=_C.SKILL, count=0,
+    effects=(_block(8), _gain_stars(1)))
+GLOW = CardDef(  # Glow.cs: 1-cost, GainStars 1 + draw 1 (+ draw-next-turn 1) (upg +1 star)
+    id="glow", name="Glow", cost=1, type=_C.SKILL, count=0,
+    effects=(_gain_stars(1), _draw(1)))
+GLITTERSTREAM = CardDef(  # Glitterstream.cs: 2-cost, Block 11 (+ 5 next turn); base 11
+    id="glitterstream", name="Glitterstream", cost=2, type=_C.SKILL, count=0,
+    effects=(_block(11),))
+COSMIC_INDIFFERENCE = CardDef(  # CosmicIndifference.cs: 1-cost, Block (upg +?); base block
+    id="cosmic_indifference", name="Cosmic Indifference", cost=1, type=_C.SKILL, count=0,
+    effects=(_block(8),))
+HIDDEN_CACHE = CardDef(  # HiddenCache.cs: 1-cost, GainStars 1 + StarNextTurn 3
+    id="hidden_cache", name="Hidden Cache", cost=1, type=_C.SKILL, count=0,
+    effects=(_gain_stars(1),
+             Effect(op=EffectOp.STAR_NEXT_TURN, target=_T.SELF, amount=3)))
+SPOILS_OF_BATTLE = CardDef(  # SpoilsOfBattle.cs: 1-cost, Forge 5 + draw 2 (Forge deferred)
+    id="spoils_of_battle", name="Spoils of Battle", cost=1, type=_C.SKILL, count=0,
+    effects=(_draw(2),))
+PATTER = CardDef(  # Patter.cs: 1-cost, Block 9 + 2 Vigor (upg +?)
+    id="patter", name="Patter", cost=1, type=_C.SKILL, count=0,
+    effects=(_block(9), _self_power("vigor", 2)))
+REFINE_BLADE = CardDef(  # RefineBlade.cs: 1-cost, EnergyNextTurn (energy-next-turn deferred -> +1 now)
+    id="refine_blade", name="Refine Blade", cost=1, type=_C.SKILL, count=0,
+    effects=(Effect(op=EffectOp.ENERGY_GAIN, target=_T.SELF, amount=1),))
+
+# --- Uncommon attacks -------------------------------------------------------
+CELESTIAL_MIGHT = CardDef(  # CelestialMight.cs: 2-cost, 6 dmg ×3 (RepeatVar 3)
+    id="celestial_might", name="Celestial Might", cost=2, type=_C.ATTACK, count=0,
+    effects=(_dmg(6, hit_count=3),))
+HEGEMONY = CardDef(  # Hegemony.cs: 2-cost, 15 dmg + 2 energy
+    id="hegemony", name="Hegemony", cost=2, type=_C.ATTACK, count=0,
+    effects=(_dmg(15), Effect(op=EffectOp.ENERGY_GAIN, target=_T.SELF, amount=2)))
+KINGLY_PUNCH = CardDef(  # KinglyPunch.cs: 1-cost, 8 dmg (+Increase 4 scaling deferred)
+    id="kingly_punch", name="Kingly Punch", cost=1, type=_C.ATTACK, count=0,
+    effects=(_dmg(8),))
+KNOCKOUT_BLOW = CardDef(  # KnockoutBlow.cs: 3-cost, 30 dmg + GainStars 5
+    id="knockout_blow", name="Knockout Blow", cost=3, type=_C.ATTACK, count=0,
+    effects=(_dmg(30), _gain_stars(5)))
+SHINING_STRIKE = CardDef(  # ShiningStrike.cs: 1-cost, 8 dmg + GainStars 2
+    id="shining_strike", name="Shining Strike", cost=1, type=_C.ATTACK, count=0,
+    effects=(_dmg(8), _gain_stars(2)))
+KINGLY_KICK = CardDef(  # KinglyKick.cs: 4-cost, 27 dmg (upg +?)
+    id="kingly_kick", name="Kingly Kick", cost=4, type=_C.ATTACK, count=0,
+    effects=(_dmg(27),))
+LUNAR_BLAST = CardDef(  # LunarBlast.cs: 0-cost, 4 dmg × (skills played this turn); base 4
+    id="lunar_blast", name="Lunar Blast", cost=0, type=_C.ATTACK, count=0,
+    effects=(_dmg(4),))   # per-skill scaling deferred (history-count primitive absent)
+SUPERMASSIVE = CardDef(  # Supermassive.cs: 1-cost, 5 + 3×generated-cards; base 5
+    id="supermassive", name="Supermassive", cost=1, type=_C.ATTACK, count=0,
+    effects=(_dmg(5),))
+RADIATE = CardDef(  # Radiate.cs: 0-cost AoE, 3 dmg ×(stars gained) + GainStars 1; base 3 + star
+    id="radiate", name="Radiate", cost=0, type=_C.ATTACK, count=0,
+    effects=(_dmg(3, _T.ALL_ENEMIES), _gain_stars(1)))
+DEVASTATE = CardDef(  # Devastate.cs: 1-cost / star 4, 30 dmg (upg +?)
+    id="devastate", name="Devastate", cost=1, type=_C.ATTACK, count=0,
+    star_cost=4, effects=(_dmg(30),))
+GAMMA_BLAST = CardDef(  # GammaBlast.cs: 0-cost / star 3, 13 dmg + 2 Vuln + 2 Weak
+    id="gamma_blast", name="Gamma Blast", cost=0, type=_C.ATTACK, count=0,
+    star_cost=3, effects=(_dmg(13), _enemy_power("vulnerable", 2),
+                          _enemy_power("weak", 2)))
+
+# --- Uncommon skills ---------------------------------------------------------
+ALIGNMENT = CardDef(  # Alignment.cs: 0-cost / star 3 Skill (upg +?); modeled as gain stars
+    id="alignment", name="Alignment", cost=0, type=_C.SKILL, count=0,
+    star_cost=3, effects=(_gain_stars(3),))
+BULWARK = CardDef(  # Bulwark.cs: 2-cost, Block 13 + Forge 10 (Forge deferred)
+    id="bulwark", name="Bulwark", cost=2, type=_C.SKILL, count=0,
+    effects=(_block(13),))
+PARTICLE_WALL = CardDef(  # ParticleWall.cs: 0-cost / star 2, Block 9 (upg +?)
+    id="particle_wall", name="Particle Wall", cost=0, type=_C.SKILL, count=0,
+    star_cost=2, effects=(_block(9),))
+GLIMMER = CardDef(  # Glimmer.cs: 1-cost, draw 3 (PutBack 1); base draw 3
+    id="glimmer", name="Glimmer", cost=1, type=_C.SKILL, count=0,
+    effects=(_draw(3),))
+QUASAR = CardDef(  # Quasar.cs: 0-cost / star 2 Skill; modeled as gain stars (upg +?)
+    id="quasar", name="Quasar", cost=0, type=_C.SKILL, count=0,
+    star_cost=2, effects=(_gain_stars(2),))
+RESONANCE = CardDef(  # Resonance.cs: 1-cost / star 3 AoE Skill — debuff all (Weak 2)
+    id="resonance", name="Resonance", cost=1, type=_C.SKILL, count=0,
+    star_cost=3, effects=(_enemy_power("weak", 2, _T.ALL_ENEMIES),
+                          _enemy_power("vulnerable", 2, _T.ALL_ENEMIES)))
+REFLECT = CardDef(  # Reflect.cs: 1-cost / star 3 Skill (upg +?); modeled as block
+    id="reflect", name="Reflect", cost=1, type=_C.SKILL, count=0,
+    star_cost=3, effects=(_block(10),))
+
+# --- Uncommon powers ---------------------------------------------------------
+CHILD_OF_THE_STARS = CardDef(  # ChildOfTheStars.cs: 1-cost Power, ChildOfTheStars 1 (block per star spent)
+    id="child_of_the_stars", name="Child of the Stars", cost=1, type=_C.POWER, count=0,
+    effects=(_self_power("child_of_the_stars", 1),))
+TYRANNY = CardDef(  # Tyranny.cs: 1-cost Power, Tyranny 1 (+1 draw, exhaust 1 at turn start)
+    id="tyranny", name="Tyranny", cost=1, type=_C.POWER, count=0,
+    effects=(_self_power("tyranny", 1),))
+
+# --- Rare attacks ------------------------------------------------------------
+DYING_STAR = CardDef(  # DyingStar.cs: 1-cost / star 3 AoE, 9 dmg + StrengthLoss 9 (DyingStar power)
+    id="dying_star", name="Dying Star", cost=1, type=_C.ATTACK, count=0,
+    star_cost=3, effects=(_dmg(9, _T.ALL_ENEMIES),
+                          _enemy_power("weak", 2, _T.ALL_ENEMIES)))
+COMET = CardDef(  # Comet.cs: 0-cost / star 5, 33 dmg + 3 Vuln + 3 Weak (upg +11 dmg)
+    id="comet", name="Comet", cost=0, type=_C.ATTACK, count=0,
+    star_cost=5, effects=(_dmg(33), _enemy_power("vulnerable", 3),
+                          _enemy_power("weak", 3)))
+SEVEN_STARS = CardDef(  # SevenStars.cs: 2-cost / star 7 AoE, 7 dmg ×7 (RepeatVar 7)
+    id="seven_stars", name="Seven Stars", cost=2, type=_C.ATTACK, count=0,
+    star_cost=7, effects=(_dmg(7, _T.ALL_ENEMIES, hit_count=7),))
+HEIRLOOM_HAMMER = CardDef(  # HeirloomHammer.cs: 2-cost, 20 dmg ×(RepeatVar 1); base 20
+    id="heirloom_hammer", name="Heirloom Hammer", cost=2, type=_C.ATTACK, count=0,
+    effects=(_dmg(20),))
+BOMBARDMENT = CardDef(  # Bombardment.cs: 3-cost, 18 dmg (upg +?)
+    id="bombardment", name="Bombardment", cost=3, type=_C.ATTACK, count=0,
+    effects=(_dmg(18),))
+HEAVENLY_DRILL = CardDef(  # HeavenlyDrill.cs: 0-cost, 8 dmg + 4 energy
+    id="heavenly_drill", name="Heavenly Drill", cost=0, type=_C.ATTACK, count=0,
+    effects=(_dmg(8), Effect(op=EffectOp.ENERGY_GAIN, target=_T.SELF, amount=4)))
+MAKE_IT_SO = CardDef(  # MakeItSo.cs: 0-cost, 6 dmg + draw 3
+    id="make_it_so", name="Make It So", cost=0, type=_C.ATTACK, count=0,
+    effects=(_dmg(6), _draw(3)))
+
+# --- Stardust / star economy (uncommon attack) -------------------------------
+STARDUST = CardDef(  # Stardust.cs: 0-cost, 5 dmg to a random enemy (upg +2)
+    id="stardust", name="Stardust", cost=0, type=_C.ATTACK, count=0,
+    effects=(_dmg(5, _T.RANDOM_ENEMY),))
+
+# --- Ancient / boss (excluded from reward gen) -------------------------------
+METEOR_SHOWER = CardDef(  # MeteorShower.cs: 0-cost / star 2 AoE Ancient, 14 dmg + 2 Vuln + 2 Weak
+    id="meteor_shower", name="Meteor Shower", cost=0, type=_C.ATTACK, count=0,
+    star_cost=2, effects=(_dmg(14, _T.ALL_ENEMIES),
+                          _enemy_power("vulnerable", 2, _T.ALL_ENEMIES),
+                          _enemy_power("weak", 2, _T.ALL_ENEMIES)))
+
+# Regent cards needing an absent primitive land as by-type placeholders
+# (faithful cost/type/rarity/star-cost in card_catalog). Implemented below.
+_REGENT_IMPLEMENTED: tuple[CardDef, ...] = (
+    FALLING_STAR, VENERATE,
+    SOLAR_STRIKE, PHOTON_CUT, CRESCENT_SPEAR, CRUSH_UNDER, GUIDING_STAR,
+    WROUGHT_IN_WAR, COLLISION_COURSE, ASTRAL_PULSE,
+    CLOAK_OF_STARS, GATHER_LIGHT, GLOW, GLITTERSTREAM, COSMIC_INDIFFERENCE,
+    HIDDEN_CACHE, SPOILS_OF_BATTLE, PATTER, REFINE_BLADE,
+    CELESTIAL_MIGHT, HEGEMONY, KINGLY_PUNCH, KNOCKOUT_BLOW, SHINING_STRIKE,
+    KINGLY_KICK, LUNAR_BLAST, SUPERMASSIVE, RADIATE, DEVASTATE, GAMMA_BLAST,
+    ALIGNMENT, BULWARK, PARTICLE_WALL, GLIMMER, QUASAR, RESONANCE, REFLECT,
+    CHILD_OF_THE_STARS, TYRANNY,
+    DYING_STAR, COMET, SEVEN_STARS, HEIRLOOM_HAMMER, BOMBARDMENT, HEAVENLY_DRILL,
+    MAKE_IT_SO, STARDUST, METEOR_SHOWER,
+)
+
+
 def build_starting_deck(character: str = "ironclad") -> list[CardDef]:
     """Build the starting deck for `character` (the Character enum value
     string). Defaults to Ironclad for backward compatibility — existing
@@ -2468,6 +2679,34 @@ _UPGRADE_DELTAS: dict[str, tuple[tuple, ...]] = {
     "oblivion": (("doom", 1),),                          # Doom 3 -> 4
     "deathbringer": (("doom", 5),),                      # Doom 21 -> 26
     "end_of_days": (("doom", 8),),                       # Doom 29 -> 37
+    # --- Phase 9.4 Regent upgrades (decompiled OnUpgrade values) ---
+    "strike_regent": (("dmg", 3),),                      # 6 -> 9
+    "defend_regent": (("block", 3),),                    # 5 -> 8
+    "falling_star": (("dmg", 4),),                       # 8 -> 12
+    "venerate": (("gain_stars", 1),),                    # Stars 2 -> 3
+    "solar_strike": (("dmg", 3),),                       # 9 -> 12
+    "photon_cut": (("dmg", 0),),                         # PutBack tweak (deferred)
+    "guiding_star": (("dmg", 1), ("draw", 1)),           # 12->13, draw 2->3
+    "crush_under": (("dmg", 0),),                        # StrengthLoss +1 (deferred)
+    "astral_pulse": (("dmg", 4),),                       # 14 -> 18
+    "collision_course": (("dmg", 3),),                   # 11 -> 14
+    "cloak_of_stars": (("block", 3),),                   # 7 -> 10
+    "gather_light": (("block", 3),),                     # 8 -> 11
+    "glow": (("gain_stars", 1),),                        # Stars 1 -> 2
+    "glimmer": (("draw", 1),),                           # Cards 3 -> 4
+    "celestial_might": (("dmg", 2),),                    # 6 -> 8 (per hit)
+    "knockout_blow": (("dmg", 6),),                      # 30 -> 36
+    "shining_strike": (("dmg", 2),),                     # 8 -> 10
+    "kingly_kick": (("dmg", 6),),                        # 27 -> 33
+    "comet": (("dmg", 11),),                             # 33 -> 44
+    "dying_star": (("dmg", 2),),                         # 9 -> 11
+    "gamma_blast": (("dmg", 4),),                        # 13 -> 17
+    "devastate": (("dmg", 6),),                          # 30 -> 36
+    "stardust": (("dmg", 2),),                           # 5 -> 7
+    "meteor_shower": (("dmg", 4),),                      # 14 -> 18
+    "heirloom_hammer": (("dmg", 5),),                    # 20 -> 25
+    "heavenly_drill": (("dmg", 3),),                     # 8 -> 11
+    "make_it_so": (("dmg", 2),),                         # 6 -> 8
 }
 
 # Default deltas for any implemented card not in the table above:
@@ -2524,6 +2763,8 @@ def _apply_delta(effects: tuple[Effect, ...], delta: tuple) -> tuple[Effect, ...
         elif kind == "doom" and eff.op is EffectOp.APPLY_DOOM:
             new_eff = _replace(eff, amount=eff.amount + delta[1])
         elif kind == "doom" and eff.op is EffectOp.DOOM_KILL:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "gain_stars" and eff.op is EffectOp.GAIN_STARS:
             new_eff = _replace(eff, amount=eff.amount + delta[1])
         elif kind == "any_power" and eff.op is EffectOp.APPLY_POWER:
             new_eff = _replace(eff, amount=eff.amount + delta[1])

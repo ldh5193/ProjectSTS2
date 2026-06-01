@@ -911,6 +911,141 @@ NECROBINDER_RARE = _dedup([c for (c, _n, _co, _t, r) in _NECROBINDER_META
 
 
 # ===========================================================================
+# Phase 9.4 — REGENT 88-card pool meta (RegentCardPool.cs). cost/type/rarity
+# (and star-cost where it applies) are .cs-exact from each card's base(...) ctor
+# and CanonicalStarCost. Cards needing an absent primitive (Forge upgrade-in-
+# combat, card-select, retain, history-count scaling, colorless-gen) register as
+# by-type placeholders with the right cost/type/rarity. Basics (StrikeRegent/
+# DefendRegent/FallingStar/Venerate) come from the scaffold.
+# ===========================================================================
+_REGENT_META: list[tuple[str, str, int, CardType, CardRarity]] = [
+    # --- Basics (registered via scaffold; here for rarity lookup) ---
+    ("strike_regent", "Strike", 1, CardType.ATTACK, CardRarity.BASIC),
+    ("defend_regent", "Defend", 1, CardType.SKILL, CardRarity.BASIC),
+    ("falling_star", "Falling Star", 0, CardType.ATTACK, CardRarity.BASIC),
+    ("venerate", "Venerate", 1, CardType.SKILL, CardRarity.BASIC),
+    # --- Common ---
+    ("astral_pulse", "Astral Pulse", 0, CardType.ATTACK, CardRarity.COMMON),
+    ("collision_course", "Collision Course", 0, CardType.ATTACK, CardRarity.COMMON),
+    ("crescent_spear", "Crescent Spear", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("crush_under", "Crush Under", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("guiding_star", "Guiding Star", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("photon_cut", "Photon Cut", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("solar_strike", "Solar Strike", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("wrought_in_war", "Wrought in War", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("begone", "Begone", 1, CardType.SKILL, CardRarity.COMMON),
+    ("cloak_of_stars", "Cloak of Stars", 0, CardType.SKILL, CardRarity.COMMON),
+    ("cosmic_indifference", "Cosmic Indifference", 1, CardType.SKILL, CardRarity.COMMON),
+    ("gather_light", "Gather Light", 1, CardType.SKILL, CardRarity.COMMON),
+    ("glitterstream", "Glitterstream", 2, CardType.SKILL, CardRarity.COMMON),
+    ("glow", "Glow", 1, CardType.SKILL, CardRarity.COMMON),
+    ("hidden_cache", "Hidden Cache", 1, CardType.SKILL, CardRarity.COMMON),
+    ("know_thy_place", "Know Thy Place", 0, CardType.SKILL, CardRarity.COMMON),
+    ("patter", "Patter", 1, CardType.SKILL, CardRarity.COMMON),
+    ("refine_blade", "Refine Blade", 1, CardType.SKILL, CardRarity.COMMON),
+    ("spoils_of_battle", "Spoils of Battle", 1, CardType.SKILL, CardRarity.COMMON),
+    # --- Uncommon ---
+    ("celestial_might", "Celestial Might", 2, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("devastate", "Devastate", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("gamma_blast", "Gamma Blast", 0, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("hegemony", "Hegemony", 2, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("kingly_kick", "Kingly Kick", 4, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("kingly_punch", "Kingly Punch", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("knockout_blow", "Knockout Blow", 3, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("lunar_blast", "Lunar Blast", 0, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("radiate", "Radiate", 0, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("shining_strike", "Shining Strike", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("stardust", "Stardust", 0, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("supermassive", "Supermassive", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("alignment", "Alignment", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    ("bulwark", "Bulwark", 2, CardType.SKILL, CardRarity.UNCOMMON),
+    ("charge", "Charge", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("conqueror", "Conqueror", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("convergence", "Convergence", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("glimmer", "Glimmer", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("largesse", "Largesse", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    ("manifest_authority", "Manifest Authority", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("monologue", "Monologue", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    ("particle_wall", "Particle Wall", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    ("prophesize", "Prophesize", 2, CardType.SKILL, CardRarity.UNCOMMON),
+    ("quasar", "Quasar", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    ("reflect", "Reflect", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("resonance", "Resonance", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("royal_gamble", "Royal Gamble", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    ("summon_forth", "Summon Forth", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("terraforming", "Terraforming", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("black_hole", "Black Hole", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("child_of_the_stars", "Child of the Stars", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("furnace", "Furnace", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("orbit", "Orbit", 2, CardType.POWER, CardRarity.UNCOMMON),
+    ("pale_blue_dot", "Pale Blue Dot", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("parry", "Parry", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("pillar_of_creation", "Pillar of Creation", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("spectrum_shift", "Spectrum Shift", 2, CardType.POWER, CardRarity.UNCOMMON),
+    # --- Rare ---
+    ("beat_into_shape", "Beat into Shape", 1, CardType.ATTACK, CardRarity.RARE),
+    ("bombardment", "Bombardment", 3, CardType.ATTACK, CardRarity.RARE),
+    ("comet", "Comet", 0, CardType.ATTACK, CardRarity.RARE),
+    ("crash_landing", "Crash Landing", 1, CardType.ATTACK, CardRarity.RARE),
+    ("dying_star", "Dying Star", 1, CardType.ATTACK, CardRarity.RARE),
+    ("heavenly_drill", "Heavenly Drill", 0, CardType.ATTACK, CardRarity.RARE),
+    ("heirloom_hammer", "Heirloom Hammer", 2, CardType.ATTACK, CardRarity.RARE),
+    ("make_it_so", "Make It So", 0, CardType.ATTACK, CardRarity.RARE),
+    ("seven_stars", "Seven Stars", 2, CardType.ATTACK, CardRarity.RARE),
+    ("arsenal", "Arsenal", 1, CardType.POWER, CardRarity.RARE),
+    ("big_bang", "Big Bang", 0, CardType.SKILL, CardRarity.RARE),
+    ("bundle_of_joy", "Bundle of Joy", 1, CardType.SKILL, CardRarity.RARE),
+    ("decisions_decisions", "Decisions, Decisions", 0, CardType.SKILL, CardRarity.RARE),
+    ("foregone_conclusion", "Foregone Conclusion", 1, CardType.SKILL, CardRarity.RARE),
+    ("guards", "Guards", 2, CardType.SKILL, CardRarity.RARE),
+    ("i_am_invincible", "I Am Invincible", 1, CardType.SKILL, CardRarity.RARE),
+    ("the_smith", "The Smith", 1, CardType.SKILL, CardRarity.RARE),
+    ("genesis", "Genesis", 2, CardType.POWER, CardRarity.RARE),
+    ("hammer_time", "Hammer Time", 2, CardType.POWER, CardRarity.RARE),
+    ("monarchs_gaze", "Monarch's Gaze", 3, CardType.POWER, CardRarity.RARE),
+    ("neutron_aegis", "Neutron Aegis", 1, CardType.POWER, CardRarity.RARE),
+    ("royalties", "Royalties", 1, CardType.POWER, CardRarity.RARE),
+    ("seeking_edge", "Seeking Edge", 1, CardType.POWER, CardRarity.RARE),
+    ("sword_sage", "Sword Sage", 2, CardType.POWER, CardRarity.RARE),
+    ("tyranny", "Tyranny", 1, CardType.POWER, CardRarity.RARE),
+    ("void_form", "Void Form", 3, CardType.POWER, CardRarity.RARE),
+    # --- Ancient (excluded from reward gen) ---
+    ("meteor_shower", "Meteor Shower", 0, CardType.ATTACK, CardRarity.ANCIENT),
+    ("the_sealed_throne", "The Sealed Throne", 1, CardType.POWER, CardRarity.ANCIENT),
+]
+
+
+def _build_regent_registry() -> None:
+    seen: set[str] = set()
+    for cid, name, cost, ctype, rarity in _REGENT_META:
+        if cid in seen:
+            continue
+        seen.add(cid)
+        RARITY_OF.setdefault(cid, rarity)
+        if cid not in CARDS:
+            CARDS[cid] = _placeholder(cid, name, cost, ctype, rarity)
+
+
+_build_regent_registry()
+
+# Phase 9.4: register the fully-implemented Regent cards into the live CARDS
+# registry (this block runs AFTER _build_registry, so we assign directly). The
+# scaffold registered StrikeRegent/DefendRegent/FallingStar/Venerate; FallingStar
+# and Venerate now carry real star effects, so overwrite those too.
+from .cards import _REGENT_IMPLEMENTED as _REGENT_IMPLEMENTED  # noqa: E402
+for _rc in _REGENT_IMPLEMENTED:
+    CARDS[_rc.id] = _rc
+    _IMPLEMENTED.setdefault(_rc.id, _rc)
+
+REGENT_COMMON = _dedup([c for (c, _n, _co, _t, r) in _REGENT_META
+                        if r is CardRarity.COMMON])
+REGENT_UNCOMMON = _dedup([c for (c, _n, _co, _t, r) in _REGENT_META
+                          if r is CardRarity.UNCOMMON])
+REGENT_RARE = _dedup([c for (c, _n, _co, _t, r) in _REGENT_META
+                      if r is CardRarity.RARE])
+
+
+# ===========================================================================
 # Phase 9.0 — per-character card-reward POOL registry (SCAFFOLD).
 # ===========================================================================
 #
@@ -947,8 +1082,12 @@ CHARACTER_CARD_POOLS: dict[str, dict[CardRarity, list[str]]] = {
         CardRarity.UNCOMMON: list(NECROBINDER_UNCOMMON),
         CardRarity.RARE: list(NECROBINDER_RARE),
     },
-    # TODO(P9.4): Regent 88 cards.
-    "regent": {CardRarity.COMMON: [], CardRarity.UNCOMMON: [], CardRarity.RARE: []},
+    # P9.4: Regent 88-card pool (RegentCardPool.cs).
+    "regent": {
+        CardRarity.COMMON: list(REGENT_COMMON),
+        CardRarity.UNCOMMON: list(REGENT_UNCOMMON),
+        CardRarity.RARE: list(REGENT_RARE),
+    },
     # Deprived (debug): borrows nothing real; falls back to Ironclad.
     "deprived": {CardRarity.COMMON: [], CardRarity.UNCOMMON: [], CardRarity.RARE: []},
 }

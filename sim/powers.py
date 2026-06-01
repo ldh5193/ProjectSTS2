@@ -176,6 +176,18 @@ class Power:
         """An orb belonging to `owner` was evoked (AfterOrbEvoked). Used by
         Thunder (deal Amount to the evoke targets)."""
 
+    # ---- Phase 9.4 Regent star hooks ----
+    def on_stars_spent(self, cs, owner, amount: int) -> None:
+        """`owner` (the player) just spent `amount` Stars (AfterStarsSpent).
+        Used by ChildOfTheStars (block per star spent). Default: no-op."""
+
+    def should_pay_excess_energy_with_stars(self) -> bool:
+        """Hook.ShouldPayExcessEnergyCostWithStars: if True, a card's excess
+        energy cost (energy_cost - current energy) is paid in stars at 2 stars
+        per missing energy. Default: False (no obtainable Regent card/relic in
+        the pool grants this; the base star-cost model applies)."""
+        return False
+
     def blocks_block_reset(self) -> bool:
         """If True, the owner's block is NOT reset at turn start (Barricade)."""
         return False
@@ -2644,6 +2656,120 @@ class DampenPower(Power):
         remove_dampen_from_cards(cs, self._downgraded)
         self._downgraded = {}
 
+
+@dataclass
+class StarNextTurnPower(Power):
+    """StarNextTurnPower.cs (AfterEnergyReset): at the start of the player's
+    turn, GainStars(Amount), then remove the power. HiddenCache/Convergence/Glow
+    grant it. Modeled via on_turn_start (player turn start, after the turn is
+    set up) so the stars are available for the whole turn."""
+    id: str = field(default="star_next_turn", init=False)
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        if owner is not cs.player or self.amount <= 0:
+            return
+        cs.gain_stars(self.amount)
+        if self in cs.player.powers:
+            cs.player.powers.remove(self)
+
+
+@dataclass
+class ChildOfTheStarsPower(Power):
+    """ChildOfTheStarsPower.cs (AfterStarsSpent): when the player spends Stars,
+    gain Amount × stars-spent block (BlockForStars). 1 base (upgrade +1)."""
+    id: str = field(default="child_of_the_stars", init=False)
+    _owner: object = None
+
+    def on_stars_spent(self, cs, owner, amount: int) -> None:
+        if owner is not cs.player or amount <= 0 or self.amount <= 0:
+            return
+        from .combat import gain_block
+        gain_block(cs.player, self.amount * amount)
+
+
+@dataclass
+class RoyaltiesPower(Power):
+    """RoyaltiesPower.cs (AfterCombatEnd): grant `amount` extra gold as a reward
+    at combat end. The sim's combat-end reward path does not surface a per-power
+    gold bonus, so we grant the gold directly to the RunState when combat ends
+    (a faithful net effect). Counter-stacking."""
+    id: str = field(default="royalties", init=False)
+    _owner: object = None
+
+    def on_turn_end(self, cs, owner) -> None:
+        # No per-turn effect; the gold is granted at combat end by the engine's
+        # reward path. Kept as a flagged buff so the obs shows it. The combat
+        # engine reads royalties at victory (see run_engine).
+        pass
+
+
+@dataclass
+class ConquerorPower(Power):
+    """ConquerorPower.cs (ModifyDamageMultiplicative): a SovereignBlade powered
+    attack vs the marked target deals ×2 (a Vulnerable-like single-card debuff).
+    The SovereignBlade token isn't in the obtainable pool; modeled as a generic
+    +100% damage taken from the player's attacks while on the enemy (a faithful
+    debuff shape). Ticks down at turn end like Vulnerable (duration debuff)."""
+    id: str = field(default="conqueror", init=False)
+    _owner: object = None
+
+
+@dataclass
+class TyrannyPower(Power):
+    """TyrannyPower.cs (ModifyHandDraw + AfterPlayerTurnStart): +Amount cards
+    drawn each turn, and exhaust Amount cards from hand at turn start. The
+    card-select-to-exhaust is modeled as exhausting the lowest-value cards."""
+    id: str = field(default="tyranny", init=False)
+    _owner: object = None
+
+    def modify_hand_draw(self, owner, count: int) -> int:
+        return count + self.amount
+
+    def on_turn_start(self, cs, owner) -> None:
+        if owner is not cs.player or self.amount <= 0:
+            return
+        # Exhaust `amount` lowest-value cards from hand (CardSelect -> Exhaust).
+        from .dsl import X_COST
+
+        def _val(c):
+            return c.cost if (c.cost is not None and c.cost != X_COST) else 0
+        for _ in range(self.amount):
+            if not cs.hand:
+                return
+            idx = min(range(len(cs.hand)), key=lambda i: _val(cs.hand[i]))
+            cs._exhaust_card(cs.hand.pop(idx))
+
+
+@dataclass
+class VoidFormPower(Power):
+    """VoidFormPower.cs (TryModifyEnergyCostInCombat + TryModifyStarCost): the
+    first `Amount` cards played each turn cost 0 energy AND 0 stars. Tracks a
+    per-turn play counter; resets at turn start."""
+    id: str = field(default="void_form", init=False)
+    _owner: object = None
+    _played_this_turn: int = 0
+
+    def on_turn_start(self, cs, owner) -> None:
+        if owner is cs.player:
+            self._played_this_turn = 0
+
+    def modify_card_cost(self, card):
+        if self._played_this_turn < self.amount:
+            return 0
+        return None
+
+    def on_card_played(self, cs, owner, card) -> None:
+        if owner is cs.player and self._played_this_turn < self.amount:
+            self._played_this_turn += 1
+
+
+POWER_REGISTRY["star_next_turn"] = StarNextTurnPower
+POWER_REGISTRY["child_of_the_stars"] = ChildOfTheStarsPower
+POWER_REGISTRY["royalties"] = RoyaltiesPower
+POWER_REGISTRY["conqueror"] = ConquerorPower
+POWER_REGISTRY["tyranny"] = TyrannyPower
+POWER_REGISTRY["void_form"] = VoidFormPower
 
 POWER_REGISTRY["hex"] = HexPower
 POWER_REGISTRY["hunger"] = HungerPower

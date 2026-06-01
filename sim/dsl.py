@@ -82,6 +82,9 @@ class EffectOp(str, Enum):
     SUMMON_NEXT_TURN = "summon_next_turn"  # Invoke: SummonNextTurn power (amount)
     APPLY_DOOM = "apply_doom"              # Scourge/Deathbringer/…: Doom `amount` to target(s)
     DOOM_KILL = "doom_kill"                # EndOfDays: apply Doom then immediately doom-kill
+    # Phase 9.4 Regent / Stars ops. `amount` carries the star count.
+    GAIN_STARS = "gain_stars"              # Venerate/Glow/GatherLight/…: GainStars(amount)
+    STAR_NEXT_TURN = "star_next_turn"      # HiddenCache/Convergence: StarNextTurnPower(amount)
 
 
 class ScalingKind(str, Enum):
@@ -132,6 +135,11 @@ class CardDef:
     type: CardType
     effects: tuple[Effect, ...]
     count: int = 1  # copies in starting deck
+    # Phase 9.4 Regent: a card's STAR cost (CanonicalStarCost). 0 for the vast
+    # majority of cards; Regent star cards (FallingStar 2, Comet 5, SevenStars 7,
+    # …) cost stars IN ADDITION to energy. A card is playable iff energy covers
+    # the energy cost AND stars cover the star cost; both are spent on play.
+    star_cost: int = 0
     # Card keyword flags ported from the decompile's CanonicalKeywords.
     exhaust: bool = False  # card goes to exhaust pile after play (Exhaust keyword)
     is_status: bool = False  # generated status/curse card (Burn, Wound, Shiv, ...)

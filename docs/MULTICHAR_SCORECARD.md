@@ -1,10 +1,10 @@
 # Multi-Character Fidelity Scorecard
 
 Date: 2026-06-01
-Status: **Phase 9.3 (Necrobinder + Osty minion) complete.** Ironclad (100%),
-Silent (P9.1), Defect (P9.2, orbs), and Necrobinder (P9.3, Osty) are faithful;
-Regent remains scaffold-only. obs v5 (504 -> 560) with the orb/focus/osty slots
-now live.
+Status: **Phase 9.4 (Regent + Stars resource) complete — ALL 5 CHARACTERS'
+CORE MECHANICS DONE.** Ironclad (100%), Silent (P9.1), Defect (P9.2, orbs),
+Necrobinder (P9.3, Osty), and Regent (P9.4, Stars) are all faithful. obs v5
+(504 -> 560) with the orb/focus/osty/poison/star slots now fully live.
 
 See `docs/MULTICHAR_FIDELITY_PLAN.md` for the authoritative plan (roster,
 obs v5 layout, primitives, batch order) and `docs/FIDELITY_AUDIT.md` for the
@@ -20,7 +20,7 @@ Ironclad critical-path audit.
 | Silent      | done | **65/88 faithful** (+Shiv token; 22 by-type placeholders) | **8/8** | **poison/shiv/discard DONE** | faithful | **P9.1 shipped** |
 | Defect      | done | **86/88 faithful** (2 transform/persistent-block placeholders) | **8/8** | **orb system DONE** | faithful | **P9.2 shipped** |
 | Necrobinder | done | **66/88 faithful** (22 by-type placeholders) | **8/8** | **osty minion DONE** | faithful | **P9.3 shipped** |
-| Regent      | scaffold | TODO (88) | TODO (8) | **stars** TODO | scaffold-only | P9.4 |
+| Regent      | done | **50/88 faithful** (38 by-type placeholders) | **8/8** | **stars DONE** | faithful | **P9.4 shipped** |
 | Deprived    | fixture | fallback | fallback | n/a | debug fixture (not a target) | n/a |
 
 "scaffold" = the character can be constructed, reset, masked, and stepped at
@@ -40,13 +40,13 @@ anchor on `OBS_DIM_V4_4 = 504`). The new tail `[504..560)`:
 | Indices | Dims | Field | Filled by |
 |---------|-----:|-------|-----------|
 | `[504..510)` | 6 | character one-hot (ironclad/silent/defect/necrobinder/regent + pad) | **P9.0 (live)** |
-| `[510..511)` | 1 | star resource / 10 | P9.4 |
+| `[510..511)` | 1 | star resource / 10 | **P9.4 (live)** |
 | `[511..521)` | 10 | orb-queue slot type-ids / 5 | **P9.2 (live)** |
 | `[521..531)` | 10 | orb-queue evoke values / 30 | **P9.2 (live)** |
 | `[531..532)` | 1 | orb capacity / 10 | **P9.2 (live)** |
 | `[532..533)` | 1 | focus / 10 | **P9.2 (live)** |
 | `[533..537)` | 4 | osty present / hp / block / pad | **P9.3 (live)** |
-| `[537..541)` | 4 | per-enemy poison / 20 | P9.1 |
+| `[537..541)` | 4 | per-enemy poison / 20 | **P9.1 (live)** |
 | `[541..560)` | 19 | pad to a clean 560 | — |
 
 Only the character one-hot carries a value in P9.0; every mechanic slot is 0
@@ -231,6 +231,75 @@ PullAggro/Sacrifice/NecroMastery), Doom cards (Scourge/EndOfDays/turn-end kill),
 the 88-card pool + reward keying, relic pool + BoneFlute/IvoryTile, and an A0
 RunEnv(Necrobinder) integration run reaching deep floors.
 
+## P9.4 (Regent) — what shipped
+
+### Star resource (new primitive, faithful — `sim/combat.py`)
+- **Stars** (`PlayerCombatState.cs:70-182`): an int counter on `cs.stars`,
+  `gain_stars`/`lose_stars` (clamped >= 0, no upper cap — matches GainStars/
+  LoseStars which only floor at 0). **Persists for the whole combat** (NOT reset
+  per turn — verified: no per-turn reset in PlayerCombatState; reset to 0 at
+  combat start). Per-character: 0 for non-Regent.
+- **Star-cost playability + spend** (`HasEnoughResourcesFor` / `SpendResources`,
+  CardModel.cs:146-165, 1397-1410): a card is playable iff `energy >= energy_cost
+  AND stars >= star_cost`; both are spent on play (stars first, firing
+  AfterStarsSpent before the card resolves). `CardDef.star_cost` carries each
+  card's CanonicalStarCost (FallingStar 2, GuidingStar 2, Comet 5, SevenStars 7,
+  …).
+- **Excess-energy-paid-with-stars** (`ShouldPayExcessEnergyCostWithStars`,
+  Hook.cs:1816): off by default (no obtainable Regent card/relic in the pool
+  grants it); when a power flags it, each missing energy is paid at **2 stars**
+  (`star_cost += (energy_cost - energy) * 2`, energy spend capped at current
+  energy) — modeled exactly and unit-tested via a fixture power.
+- **obs v5 star slot `[510..511)`** = stars / 10 (live; zero for non-Regent).
+
+### Cards: 50/88 faithful ; 38 by-type placeholders
+Start deck (Regent.cs): 4× StrikeRegent (6 dmg), 4× DefendRegent (5 block),
+1× FallingStar (0 energy / star 2, 8 dmg + Weak + Vuln), 1× Venerate (GainStars
+2). Implemented signature/star cards carry .cs-exact cost/star-cost/damage/block/
+star-gain/upgrade: SolarStrike, ShiningStrike, GuidingStar, KnockoutBlow,
+CelestialMight (×3), Comet (33 / star 5), SevenStars (7×7 / star 7), DyingStar,
+GammaBlast, AstralPulse, MeteorShower, CloakOfStars, GatherLight, Glow,
+HiddenCache (StarNextTurn 3), ChildOfTheStars, Tyranny, Stardust, etc.
+Placeholders (faithful cost/type/rarity, deferred — need an absent primitive:
+Forge upgrade-in-combat, card-select/retain, history-count scaling, colorless
+gen, SovereignBlade/Minion token): arsenal, beat_into_shape, begone, big_bang,
+black_hole, bundle_of_joy, charge, conqueror, convergence, crash_landing,
+decisions_decisions, foregone_conclusion, furnace, genesis, guards,
+i_am_invincible, know_thy_place, largesse, manifest_authority, monarchs_gaze,
+monologue, neutron_aegis, orbit, pale_blue_dot, parry, pillar_of_creation,
+prophesize, royal_gamble, royalties, seeking_edge, spectrum_shift, summon_forth,
+terraforming, the_sealed_throne, the_smith, void_form (cost-zero power partially
+modeled), + 2 more.
+
+### Relics: 8/8 (`RegentRelicPool.cs`)
+DivineRight (starter: GainStars 3 on combat enter), GalacticDust (every 10 stars
+spent -> 10 block), LunarPastry (+1 star at turn end), MiniRegent (first
+star-spend each turn -> +1 Strength), Regalite (+2 block whenever a card enters
+combat). FencingManual (Forge 10), OrangeDough (2 colorless cards turn 1), and
+VitruvianMinion (Minion-card ×2 dmg/block) are faithful no-op markers
+(Forge / colorless-gen / Minion-tag primitives absent). Gated to the Regent
+character-relic pool (7 droppable; DivineRight is the starter).
+
+### Powers (Regent-unique, decompiled)
+StarNextTurnPower (AfterEnergyReset -> GainStars + Remove), ChildOfTheStarsPower
+(AfterStarsSpent -> block per star spent), TyrannyPower (+draw + exhaust at turn
+start), VoidFormPower (first N cards/turn cost 0 energy AND 0 stars),
+ConquerorPower / RoyaltiesPower (registered, faithful-shaped; SovereignBlade /
+combat-end-gold paths partially modeled). DyingStar reuses Weak; FallingStar/
+Comet/GammaBlast reuse Weak/Vulnerable.
+
+### Tests
+`tests/test_regent_stars.py` (20) + `tests/test_regent_cards.py` (29): stars
+gain/lose/clamp/persistence, star-cost playability + spend with exact values,
+excess-energy-paid-in-stars (2/energy, partial), StarNextTurn / ChildOfTheStars /
+VoidForm powers, DivineRight 3-star starter, obs star slot (set / zero for
+Ironclad), start deck, signature + star cards (FallingStar/Venerate/SolarStrike/
+GuidingStar/Comet/SevenStars/DyingStar/GammaBlast/AstralPulse/KnockoutBlow/
+ShiningStrike/CelestialMight/CloakOfStars/GatherLight/Glow/HiddenCache/
+ChildOfTheStars/MeteorShower), the 88-card pool + reward keying, relic pool +
+GalacticDust/MiniRegent/LunarPastry/Regalite, and an A0 RunEnv(Regent)
+integration run reaching deep floors.
+
 ## Known TODOs flagged in code (next batches)
 
 - `P9.1 deferred` Silent: 22 cards needing a card-selection/transform primitive
@@ -242,8 +311,11 @@ RunEnv(Necrobinder) integration run reaching deep floors.
   damage scaling) + 4 relics that are faithful no-op markers (BigHat/FuneraryMask
   Soul/Ethereal gen, BookRepairKnife doom-death heal, Bookmark retain-cost,
   UndyingSigil incoming-damage ×0.5 — primitives absent).
-- `TODO(P9.4)` Regent: Star resource primitive, FallingStar/Venerate,
-  DivineRight, star powers, 88 cards, 8 relics, obs star slot.
+- `P9.4 deferred` Regent: 38 cards needing an absent primitive (Forge
+  upgrade-in-combat, card-select/retain, history-count damage scaling, colorless
+  card gen, SovereignBlade/Minion token) land as faithful by-type placeholders +
+  3 relics that are faithful no-op markers (FencingManual Forge, OrangeDough
+  colorless-gen, VitruvianMinion Minion-tag — primitives absent).
 
 ---
 

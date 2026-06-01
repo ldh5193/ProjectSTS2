@@ -1181,11 +1181,15 @@ class RunEnv(gym.Env):
             if rs is not None and rs.character is ch:
                 v[base + i] = 1.0
         cursor += _OBS_CHAR_ONEHOT          # -> 510
-        # [510..511) stars / 10        TODO(P9.4 Regent stars)
+        # [510..511) stars / 10 (P9.4 Regent — LIVE). Zero for non-Regent
+        # (their combat state's `stars` stays 0).
+        cs = rs.combat if (rs is not None and rs.in_combat()) else None
+        if cs is not None:
+            stars = getattr(cs, "stars", 0) or 0
+            v[cursor] = min(1.0, max(0.0, stars / 10.0))
         cursor += 1                          # -> 511
         # [511..533) Defect orb queue / focus (P9.2 — LIVE). Zero for non-Defect
         # (their orb_queue is None / capacity 0).
-        cs = rs.combat if (rs is not None and rs.in_combat()) else None
         q = getattr(cs, "orb_queue", None) if cs is not None else None
         focus = 0
         if cs is not None:

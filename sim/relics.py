@@ -141,6 +141,10 @@ class RelicDef:
     on_orb_channeled: Optional[Callable[[RunState, object, object], None]] = None  # (rs, cs, orb)
     # Orb passive trigger-count modifier (GoldPlatedCables: +1 for the front orb).
     modify_orb_passive_trigger_count: Optional[Callable[[RunState, object, object, int], int]] = None  # (rs, cs, orb, count)->int
+    # Phase 9.4 Regent: stars-spent hook — fired by combat.lose_stars after the
+    # player spends Stars (GalacticDust: every 10 stars spent -> 10 block;
+    # MiniRegent: first star-spend each turn -> +1 Strength).
+    on_stars_spent: Optional[Callable[[RunState, object, int], None]] = None  # (rs, cs, amount)
     # Obs category — see RELIC_CATEGORIES above.
     category: str = "misc"
 
@@ -239,6 +243,38 @@ def _bound_phylactery_turn_start(rs, combat) -> None:
     summon (turn 1) is handled by on_combat_start, so skip turn 1 here."""
     if getattr(combat, "turn_number", 1) > 1:
         _summon_osty(combat, 1)
+
+
+# --- Phase 9.4 Regent relic helpers (defined before RELIC_REGISTRY) ----------
+def _galactic_dust_stars_spent(rs, combat, amount: int) -> None:
+    """GalacticDust.cs (AfterStarsSpent): accumulate stars spent; every 10
+    cumulative stars spent, gain 10 block (× the multiples just crossed)."""
+    prev = getattr(combat, "_galactic_dust_spent", 0)
+    total = prev + amount
+    crossed = total // 10 - prev // 10
+    if crossed > 0:
+        _gain_block(combat, crossed * 10)
+    combat._galactic_dust_spent = total
+
+
+def _mini_regent_stars_spent(rs, combat, amount: int) -> None:
+    """MiniRegent.cs (AfterStarsSpent, !UsedThisTurn): the first star-spend each
+    turn grants +1 Strength. Reset per turn (turn-number key)."""
+    turn = getattr(combat, "turn_number", 0)
+    if getattr(combat, "_mini_regent_turn", -1) != turn:
+        combat._mini_regent_turn = turn
+        _apply_power_to_self(combat, "strength", 1)
+
+
+def _lunar_pastry_turn_end(rs, combat) -> None:
+    """LunarPastry.cs (AfterTurnEnd, owner side): gain 1 Star at end of turn."""
+    combat.gain_stars(1)
+
+
+def _regalite_card_drawn(rs, combat, card) -> None:
+    """Regalite.cs (AfterCardEnteredCombat, owner's card): gain 2 block whenever
+    a card enters combat (drawn / generated)."""
+    _gain_block(combat, 2)
 
 
 def _metronome_orb_channeled(rs, combat, orb) -> None:
@@ -2356,8 +2392,62 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     "DIVINE_RIGHT": RelicDef(
         id="DIVINE_RIGHT", name="Divine Right", rarity="starter",
         category="misc",
-        # TODO(P9.4): DivineRight.cs — Regent star starter (needs the Star
-        # resource primitive).
+        # DivineRight.cs (AfterRoomEntered, CombatRoom): GainStars(3) at the
+        # start of every combat (StarsVar(3)). on_combat_start fires after
+        # start_player_turn (turn 1), so the Regent enters combat with 3 stars.
+        on_combat_start=lambda rs, cs: cs.gain_stars(3),
+    ),
+    # --- Phase 9.4: Regent character relic pool (RegentRelicPool.cs, 8 relics:
+    # DivineRight (starter, above), FencingManual, GalacticDust, LunarPastry,
+    # MiniRegent, OrangeDough, Regalite, VitruvianMinion).
+    "FENCING_MANUAL": RelicDef(
+        id="FENCING_MANUAL", name="Fencing Manual", rarity="common",
+        pool="regent", merchant_cost=150, category="misc",
+        # FencingManual.cs (AfterSideTurnStart, RoundNumber<=1): Forge 10 — upgrade
+        # the cheapest 10 cards in hand for the combat. The card-upgrade-in-combat
+        # (Forge) primitive is absent; faithful no-op marker (no fabricated effect).
+    ),
+    "GALACTIC_DUST": RelicDef(
+        id="GALACTIC_DUST", name="Galactic Dust", rarity="uncommon",
+        pool="regent", merchant_cost=250, category="block_start",
+        resets_per_combat=True,
+        # GalacticDust.cs (AfterStarsSpent): every 10 Stars spent, gain 10 block.
+        on_stars_spent=_galactic_dust_stars_spent,
+    ),
+    "LUNAR_PASTRY": RelicDef(
+        id="LUNAR_PASTRY", name="Lunar Pastry", rarity="rare", pool="regent",
+        category="misc",
+        # LunarPastry.cs (AfterTurnEnd, owner side): gain 1 Star at end of turn.
+        on_player_turn_end=_lunar_pastry_turn_end,
+    ),
+    "MINI_REGENT": RelicDef(
+        id="MINI_REGENT", name="Mini Regent", rarity="rare", pool="regent",
+        category="misc", resets_per_combat=True,
+        # MiniRegent.cs (AfterStarsSpent, first per turn): +1 Strength.
+        on_stars_spent=_mini_regent_stars_spent,
+    ),
+    "ORANGE_DOUGH": RelicDef(
+        id="ORANGE_DOUGH", name="Orange Dough", rarity="rare", pool="regent",
+        category="misc",
+        # OrangeDough.cs (AfterSideTurnStart, RoundNumber<=1): add 2 random
+        # Colorless cards to hand on turn 1. The colorless-card-generation
+        # primitive is absent here; faithful no-op marker (no fabricated effect).
+    ),
+    "REGALITE": RelicDef(
+        id="REGALITE", name="Regalite", rarity="uncommon", pool="regent",
+        merchant_cost=250, category="block_start",
+        # Regalite.cs (AfterCardEnteredCombat, owner's card): gain 2 block
+        # whenever a card enters combat (drawn / generated). Modeled via the
+        # per-card-drawn relic hook.
+        on_card_drawn=_regalite_card_drawn,
+    ),
+    "VITRUVIAN_MINION": RelicDef(
+        id="VITRUVIAN_MINION", name="Vitruvian Minion", rarity="shop",
+        pool="regent", merchant_cost=250, category="misc",
+        # VitruvianMinion.cs (ModifyDamage/BlockMultiplicative): Minion-tagged
+        # cards (Osty cards) deal ×2 damage and ×2 block. The Minion card-tag is
+        # not tracked on Regent cards in the obtainable pool (Regent has no Osty
+        # cards); faithful no-op marker.
     ),
 }
 
@@ -2397,6 +2487,17 @@ def trigger_on_combat_start(rs: RunState, combat) -> None:
         rd = RELIC_REGISTRY.get(r.id)
         if rd and rd.on_combat_start:
             rd.on_combat_start(rs, combat)
+
+
+def trigger_on_stars_spent(rs: RunState, combat, amount: int) -> None:
+    """Fire each owned relic's on_stars_spent hook (GalacticDust / MiniRegent)."""
+    for r in rs.relics:
+        rd = RELIC_REGISTRY.get(r.id)
+        if rd and rd.on_stars_spent:
+            try:
+                rd.on_stars_spent(rs, combat, amount)
+            except Exception:
+                pass
 
 
 def trigger_on_orb_channeled(rs: RunState, combat, orb) -> None:
@@ -2680,7 +2781,12 @@ _NECROBINDER_POOL_IDS: frozenset[str] = frozenset({  # P9.3 (NecrobinderRelicPoo
     "BIG_HAT", "BONE_FLUTE", "BOOK_REPAIR_KNIFE", "BOOKMARK", "FUNERARY_MASK",
     "IVORY_TILE", "UNDYING_SIGIL",
 })
-_REGENT_POOL_IDS: frozenset[str] = frozenset()       # TODO(P9.4)
+_REGENT_POOL_IDS: frozenset[str] = frozenset({       # P9.4 (RegentRelicPool.cs)
+    # DivineRight is the starter (granted at run start, not a drop). The other 7
+    # in RegentRelicPool.cs are character-exclusive drops.
+    "FENCING_MANUAL", "GALACTIC_DUST", "LUNAR_PASTRY", "MINI_REGENT",
+    "ORANGE_DOUGH", "REGALITE", "VITRUVIAN_MINION",
+})
 
 # Character-keyed registry of the character-exclusive relic pools (by Character
 # enum value string). Used by the (future) character-aware relic-drop path.
