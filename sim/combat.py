@@ -61,6 +61,11 @@ class CombatState:
     # channels are no-ops). Created/sized by run_engine._start_combat from the
     # RunState's orb_slots, or directly in tests. See sim/orbs.py.
     orb_queue: object = None  # sim.orbs.OrbQueue | None
+    # Phase 9.3 Necrobinder: the persistent friendly minion (None when no Osty
+    # is summoned). A Creature on the player's side with its own HP/block; it
+    # never takes a turn (Osty.cs NOTHING_MOVE). Re-created per combat (does not
+    # carry between combats). See sim/osty.py.
+    osty: object = None  # sim.creatures.Creature | None
 
     def _sync_monsters(self) -> None:
         """Ensure `self.monsters` includes `self.monster` for legacy code."""
@@ -360,6 +365,13 @@ class CombatState:
                 self.player.block = 0
         # Poison ticks at the START of the owner's turn (PoisonPower.cs).
         apply_poison_tick(self.player)
+        # Osty block resets at the player's turn start (it shares the player's
+        # turn; it has no turn of its own — Osty.cs NOTHING_MOVE). Keep the
+        # player-side taunt back-ref current in case the queue was rebuilt.
+        if self.osty is not None and self.osty.alive:
+            self.osty.block = 0
+            self.osty._combat = self
+            self.player._osty_guardian = self.osty
         # Hand-draw modifiers (ModifyHandDraw): Demesne/Tyranny (+amount),
         # MindRot (−amount, floored at 0).
         hand_draw = HAND_SIZE
@@ -1153,6 +1165,67 @@ class CombatState:
             # DoubleEnergy: gain energy equal to current energy (double it).
             if self.player.get_power("no_energy_gain") is None:
                 self.player.energy += self.player.energy
+            return
+        # ---- Phase 9.3 Necrobinder / Osty effect ops --------------------
+        if eff.op is EffectOp.SUMMON_OSTY:
+            from .osty import summon_osty
+            summon_osty(self, max(0, eff.amount))
+            return
+        if eff.op is EffectOp.HEAL_OSTY:
+            from .osty import osty_alive
+            if osty_alive(self) and self.osty is not None:
+                self.osty.heal(max(0, eff.amount))
+            return
+        if eff.op is EffectOp.SACRIFICE_OSTY:
+            # Sacrifice.cs: block == Osty.MaxHp*2, then kill Osty.
+            from .osty import sacrifice_osty
+            block = sacrifice_osty(self)
+            if block > 0:
+                gain_block(self.player, block)
+            return
+        if eff.op is EffectOp.OSTY_ATTACK:
+            # Poke/Snap/SicEm/Flatten/etc.: deal `amount` from Osty iff alive.
+            # The player's powers (Strength/Lethality) apply (FromOsty == the
+            # player is the dealer for scaling). No-op while Osty is missing.
+            from .osty import osty_attack_damage
+            dmg = osty_attack_damage(self, eff.amount)
+            if dmg > 0:
+                base_amount, hit_count = self._resolve_damage_scaling(eff, targets, card)
+                for _ in range(max(1, hit_count)):
+                    for t in targets:
+                        if t.alive:
+                            deal_damage(base_amount, self.player, t)
+            return
+        if eff.op is EffectOp.OSTY_ATTACK_HP:
+            # Unleash/Protector: deal Osty.CurrentHp (FromOsty) iff Osty alive.
+            from .osty import osty_alive
+            if osty_alive(self) and self.osty is not None:
+                dmg = self.osty.hp
+                if dmg > 0:
+                    for t in targets:
+                        if t.alive:
+                            deal_damage(dmg, self.player, t)
+            return
+        if eff.op is EffectOp.SUMMON_NEXT_TURN:
+            self.player.add_or_stack_power(
+                make_power("summon_next_turn", max(0, eff.amount), self.player))
+            return
+        if eff.op is EffectOp.APPLY_DOOM:
+            for t in targets:
+                if t.alive:
+                    t.add_or_stack_power(make_power("doom", eff.amount, t))
+            return
+        if eff.op is EffectOp.DOOM_KILL:
+            # EndOfDays: apply Doom `amount`, then any enemy whose HP <= its Doom
+            # is killed immediately (DoomPower.DoomKill).
+            for t in targets:
+                if t.alive:
+                    t.add_or_stack_power(make_power("doom", eff.amount, t))
+            for t in list(self.alive_monsters()):
+                dp = t.get_power("doom")
+                if dp is not None and t.hp <= dp.amount:
+                    t.hp = 0
+                    t.alive = False
             return
 
     # Duration debuffs that decay by 1 at the END of the bearer's OWN turn.

@@ -79,6 +79,16 @@ def deal_damage(base_amount: int, dealer: Creature, target: Creature,
 
     `powered=False` mirrors AttackCommand.Unpowered() / DamageProps.nonCardUnpowered:
     the hit skips all Strength/Vulnerable/Weak/multiplier powers (see module docstring)."""
+    # Osty taunt (DieForYouPower.ModifyUnblockedDamageTarget): a POWERED attack
+    # aimed at the pet's owner (the player) is redirected to the living pet
+    # (Osty). The player carries `_osty_guardian` -> the Osty creature while a
+    # summon is up. Unpowered hits (Thorns/poison/orb passives) are NOT
+    # redirected (the .cs gates on props.IsPoweredAttack()).
+    if powered and dealer is not target:
+        guardian = getattr(target, "_osty_guardian", None)
+        if (guardian is not None and guardian is not target
+                and getattr(guardian, "alive", False) and guardian.hp > 0):
+            target = guardian
     modified = compute_modified_damage(base_amount, dealer, target, powered=powered)
     blocked = min(target.block, modified)
     target.block -= blocked
@@ -94,6 +104,15 @@ def deal_damage(base_amount: int, dealer: Creature, target: Creature,
             unblocked = p.modify_hp_lost(dealer, target, unblocked)
         unblocked = max(0, unblocked)
     hp_loss = target.lose_hp(unblocked)
+    # NecroMastery (NecroMasteryPower.AfterCurrentHpChanged on Osty, delta<0):
+    # when the pet (Osty) loses HP from any hit, deal hp_lost * stacks
+    # Unblockable|Unpowered to all enemies. Osty carries a `_combat` back-ref
+    # (set on summon) and the minion marker; the player holds NecroMastery.
+    if hp_loss > 0 and target.get_power("minion") is not None:
+        cs = getattr(target, "_combat", None)
+        if cs is not None:
+            from .osty import _fire_osty_hp_loss
+            _fire_osty_hp_loss(cs, hp_loss)
     # Thorns (ThornsPower.cs:17-24): triggers only on a POWERED attack
     # (props.IsPoweredAttack()), NOT on unpowered damage (Juggernaut/Combust/
     # potion/relic bursts). Dealer takes thorns damage, unblockable.

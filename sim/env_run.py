@@ -1214,7 +1214,15 @@ class RunEnv(gym.Env):
         # [532..533) focus / 10 (can be negative; clamp [0,1] like the rest)
         v[cursor] = min(1.0, max(0.0, focus / 10.0))
         cursor += 1                          # -> 533
-        # [533..537) osty present/hp/block/pad  TODO(P9.3 Necrobinder osty)
+        # [533..537) osty present / hp / block / pad (P9.3 Necrobinder — LIVE).
+        # present (0/1), osty_hp/40, osty_block/40, pad. Zero for non-Necrobinder
+        # (cs.osty is None). osty_hp can exceed 40 late-game; clamp to [0,1].
+        if cs is not None:
+            osty = getattr(cs, "osty", None)
+            if osty is not None and osty.alive and osty.hp > 0:
+                v[cursor] = 1.0
+                v[cursor + 1] = min(1.0, osty.hp / 40.0)
+                v[cursor + 2] = min(1.0, max(0.0, osty.block / 40.0))
         cursor += 4                          # -> 537
         # [537..541) per-enemy poison / 20      (P9.1 Silent poison — LIVE)
         # Poison stacks on each of up to 4 alive enemies, normalized /20, in

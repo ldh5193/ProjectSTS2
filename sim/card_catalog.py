@@ -368,6 +368,16 @@ _IMPLEMENTED[_DUALCAST_DEFECT.id] = _DUALCAST_DEFECT
 for _dc in _DEFECT_IMPLEMENTED:
     _IMPLEMENTED.setdefault(_dc.id, _dc)
 
+# Phase 9.3: register the fully-implemented Necrobinder cards. The scaffold
+# registered StrikeNecrobinder/DefendNecrobinder/Bodyguard/Unleash; Bodyguard/
+# Unleash now carry real Osty effects, so use plain assignment for those two.
+from .cards import _NECROBINDER_IMPLEMENTED as _NECROBINDER_IMPLEMENTED  # noqa: E402
+from .cards import BODYGUARD as _BODYGUARD_NB, UNLEASH as _UNLEASH_NB  # noqa: E402
+_IMPLEMENTED[_BODYGUARD_NB.id] = _BODYGUARD_NB
+_IMPLEMENTED[_UNLEASH_NB.id] = _UNLEASH_NB
+for _nc in _NECROBINDER_IMPLEMENTED:
+    _IMPLEMENTED.setdefault(_nc.id, _nc)
+
 
 def _build_registry() -> tuple[dict[str, CardDef], dict[str, CardRarity]]:
     by_id: dict[str, CardDef] = {}
@@ -774,6 +784,133 @@ DEFECT_RARE = _dedup([c for (c, _n, _co, _t, r) in _DEFECT_META
 
 
 # ===========================================================================
+# Phase 9.3 — NECROBINDER card metadata (NecrobinderCardPool.cs, 88 cards).
+# (id, name, cost, type, rarity), .cs-exact. Implemented effects live in
+# sim/cards.py (_NECROBINDER_IMPLEMENTED); cards needing an absent primitive
+# (Soul token gen, card-select-exhaust, Ethereal, X-cost loop, History-count
+# scaling) register as by-type placeholders with the right cost/type/rarity.
+# Basics (StrikeNecrobinder/DefendNecrobinder/Bodyguard/Unleash) come from the
+# scaffold. Ancients (ForbiddenGrimoire/Protector) are excluded from reward gen.
+# ===========================================================================
+_NECROBINDER_META: list[tuple[str, str, int, CardType, CardRarity]] = [
+    # --- Basics (registered via scaffold; here for rarity lookup) ---
+    ("strike_necrobinder", "Strike", 1, CardType.ATTACK, CardRarity.BASIC),
+    ("defend_necrobinder", "Defend", 1, CardType.SKILL, CardRarity.BASIC),
+    ("bodyguard", "Bodyguard", 1, CardType.SKILL, CardRarity.BASIC),
+    ("unleash", "Unleash", 1, CardType.ATTACK, CardRarity.BASIC),
+    # --- Common ---
+    ("blight_strike", "Blight Strike", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("sculpting_strike", "Sculpting Strike", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("graveblast", "Graveblast", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("defile", "Defile", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("reave", "Reave", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("drain_power", "Drain Power", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("fear_nb", "Fear", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("reap", "Reap", 3, CardType.ATTACK, CardRarity.COMMON),
+    ("poke", "Poke", 0, CardType.ATTACK, CardRarity.COMMON),
+    ("snap", "Snap", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("sow", "Sow", 1, CardType.ATTACK, CardRarity.COMMON),
+    ("afterlife", "Afterlife", 1, CardType.SKILL, CardRarity.COMMON),
+    ("defy", "Defy", 1, CardType.SKILL, CardRarity.COMMON),
+    ("grave_warden", "Grave Warden", 1, CardType.SKILL, CardRarity.COMMON),
+    ("pull_aggro", "Pull Aggro", 2, CardType.SKILL, CardRarity.COMMON),
+    ("scourge", "Scourge", 1, CardType.SKILL, CardRarity.COMMON),
+    ("invoke", "Invoke", 1, CardType.SKILL, CardRarity.COMMON),
+    ("negative_pulse", "Negative Pulse", 1, CardType.SKILL, CardRarity.COMMON),
+    ("flatten", "Flatten", 2, CardType.ATTACK, CardRarity.COMMON),
+    ("wisp", "Wisp", 0, CardType.SKILL, CardRarity.COMMON),
+    # --- Uncommon ---
+    ("severance", "Severance", 2, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("veilpiercer", "Veilpiercer", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("debilitate_nb", "Debilitate", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("bury", "Bury", 4, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("bone_shards", "Bone Shards", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("sic_em", "Sic 'Em", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("high_five", "High Five", 2, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("right_hand_hand", "Right Hand, Hand", 0, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("fetch", "Fetch", 0, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("rattle", "Rattle", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("death_march", "Death March", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("pull_from_below", "Pull from Below", 1, CardType.ATTACK, CardRarity.UNCOMMON),
+    ("enfeebling_touch", "Enfeebling Touch", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("putrefy", "Putrefy", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("spur", "Spur", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("deaths_door", "Death's Door", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("delay", "Delay", 2, CardType.SKILL, CardRarity.UNCOMMON),
+    ("melancholy", "Melancholy", 3, CardType.SKILL, CardRarity.UNCOMMON),
+    ("cleanse_nb", "Cleanse", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("dirge", "Dirge", 0, CardType.SKILL, CardRarity.UNCOMMON),
+    ("legion_of_bone", "Legion of Bone", 2, CardType.SKILL, CardRarity.UNCOMMON),
+    ("deathbringer", "Deathbringer", 2, CardType.SKILL, CardRarity.UNCOMMON),
+    ("borrowed_time", "Borrowed Time", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("capture_spirit", "Capture Spirit", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("dredge", "Dredge", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("no_escape", "No Escape", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("parse", "Parse", 1, CardType.SKILL, CardRarity.UNCOMMON),
+    ("haunt", "Haunt", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("calcify", "Calcify", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("friendship", "Friendship", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("lethality", "Lethality", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("danse_macabre", "Danse Macabre", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("countdown", "Countdown", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("pagestorm", "Pagestorm", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("shroud", "Shroud", 1, CardType.POWER, CardRarity.UNCOMMON),
+    ("sleight_of_flesh", "Sleight of Flesh", 2, CardType.POWER, CardRarity.UNCOMMON),
+    # --- Rare ---
+    ("eradicate", "Eradicate", 0, CardType.ATTACK, CardRarity.RARE),
+    ("hang", "Hang", 1, CardType.ATTACK, CardRarity.RARE),
+    ("misery", "Misery", 0, CardType.ATTACK, CardRarity.RARE),
+    ("the_scythe", "The Scythe", 2, CardType.ATTACK, CardRarity.RARE),
+    ("squeeze", "Squeeze", 3, CardType.ATTACK, CardRarity.RARE),
+    ("banshees_cry", "Banshee's Cry", 9, CardType.ATTACK, CardRarity.RARE),
+    ("times_up", "Time's Up", 2, CardType.ATTACK, CardRarity.RARE),
+    ("soul_storm", "Soul Storm", 1, CardType.ATTACK, CardRarity.RARE),
+    ("sacrifice", "Sacrifice", 1, CardType.SKILL, CardRarity.RARE),
+    ("reanimate", "Reanimate", 3, CardType.SKILL, CardRarity.RARE),
+    ("necro_mastery", "Necro Mastery", 2, CardType.POWER, CardRarity.RARE),
+    ("demesne", "Demesne", 3, CardType.POWER, CardRarity.RARE),
+    ("devour_life", "Devour Life", 1, CardType.POWER, CardRarity.RARE),
+    ("spirit_of_ash", "Spirit of Ash", 1, CardType.POWER, CardRarity.RARE),
+    ("shared_fate", "Shared Fate", 0, CardType.SKILL, CardRarity.RARE),
+    ("oblivion", "Oblivion", 0, CardType.SKILL, CardRarity.RARE),
+    ("end_of_days", "End of Days", 3, CardType.SKILL, CardRarity.RARE),
+    ("eidolon", "Eidolon", 2, CardType.SKILL, CardRarity.RARE),
+    ("call_of_the_void", "Call of the Void", 1, CardType.POWER, CardRarity.RARE),
+    ("glimpse_beyond", "Glimpse Beyond", 1, CardType.SKILL, CardRarity.RARE),
+    ("neurosurge", "Neurosurge", 0, CardType.POWER, CardRarity.RARE),
+    ("reaper_form", "Reaper Form", 3, CardType.POWER, CardRarity.RARE),
+    ("seance", "Seance", 1, CardType.SKILL, CardRarity.RARE),
+    ("sentry_mode", "Sentry Mode", 2, CardType.POWER, CardRarity.RARE),
+    ("transfigure", "Transfigure", 1, CardType.SKILL, CardRarity.RARE),
+    ("undeath", "Undeath", 0, CardType.SKILL, CardRarity.RARE),
+    # --- Ancient (excluded from reward gen) ---
+    ("forbidden_grimoire", "Forbidden Grimoire", 2, CardType.POWER, CardRarity.ANCIENT),
+    ("protector", "Protector", 1, CardType.ATTACK, CardRarity.ANCIENT),
+]
+
+
+def _build_necrobinder_registry() -> None:
+    seen: set[str] = set()
+    for cid, name, cost, ctype, rarity in _NECROBINDER_META:
+        if cid in seen:
+            continue
+        seen.add(cid)
+        RARITY_OF.setdefault(cid, rarity)
+        if cid not in CARDS:
+            CARDS[cid] = _placeholder(cid, name, cost, ctype, rarity)
+
+
+_build_necrobinder_registry()
+
+NECROBINDER_COMMON = _dedup([c for (c, _n, _co, _t, r) in _NECROBINDER_META
+                             if r is CardRarity.COMMON])
+NECROBINDER_UNCOMMON = _dedup([c for (c, _n, _co, _t, r) in _NECROBINDER_META
+                               if r is CardRarity.UNCOMMON])
+NECROBINDER_RARE = _dedup([c for (c, _n, _co, _t, r) in _NECROBINDER_META
+                           if r is CardRarity.RARE])
+
+
+# ===========================================================================
 # Phase 9.0 — per-character card-reward POOL registry (SCAFFOLD).
 # ===========================================================================
 #
@@ -804,8 +941,12 @@ CHARACTER_CARD_POOLS: dict[str, dict[CardRarity, list[str]]] = {
         CardRarity.UNCOMMON: list(DEFECT_UNCOMMON),
         CardRarity.RARE: list(DEFECT_RARE),
     },
-    # TODO(P9.3): Necrobinder 88 cards.
-    "necrobinder": {CardRarity.COMMON: [], CardRarity.UNCOMMON: [], CardRarity.RARE: []},
+    # P9.3: Necrobinder 88-card pool (NecrobinderCardPool.cs).
+    "necrobinder": {
+        CardRarity.COMMON: list(NECROBINDER_COMMON),
+        CardRarity.UNCOMMON: list(NECROBINDER_UNCOMMON),
+        CardRarity.RARE: list(NECROBINDER_RARE),
+    },
     # TODO(P9.4): Regent 88 cards.
     "regent": {CardRarity.COMMON: [], CardRarity.UNCOMMON: [], CardRarity.RARE: []},
     # Deprived (debug): borrows nothing real; falls back to Ironclad.

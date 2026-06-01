@@ -73,6 +73,15 @@ class EffectOp(str, Enum):
     DAMAGE_X_CHANNEL_LIGHTNING = "damage_x_channel_lightning"  # (reserved)
     DAMAGE_HITS_PER_ORB = "damage_hits_per_orb"  # Barrage: hit count == orb count
     GAIN_ENERGY_PER_CURRENT = "gain_energy_per_current"  # DoubleEnergy: +current energy
+    # Phase 9.3 Necrobinder / Osty ops. `amount` carries the summon/attack value.
+    SUMMON_OSTY = "summon_osty"            # Bodyguard/Afterlife/Reanimate/…: Summon(amount)
+    SACRIFICE_OSTY = "sacrifice_osty"      # Sacrifice: kill Osty, gain MaxHp*2 block
+    OSTY_ATTACK = "osty_attack"            # Unleash/Poke/Snap/…: deal `amount` iff Osty alive
+    OSTY_ATTACK_HP = "osty_attack_hp"      # Unleash/Protector: deal Osty.CurrentHp iff alive
+    HEAL_OSTY = "heal_osty"                # Spur: heal Osty by `amount`
+    SUMMON_NEXT_TURN = "summon_next_turn"  # Invoke: SummonNextTurn power (amount)
+    APPLY_DOOM = "apply_doom"              # Scourge/Deathbringer/…: Doom `amount` to target(s)
+    DOOM_KILL = "doom_kill"                # EndOfDays: apply Doom then immediately doom-kill
 
 
 class ScalingKind(str, Enum):

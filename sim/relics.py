@@ -192,6 +192,55 @@ def _channel_orbs(combat, orb_type: str, n: int) -> None:
         combat.channel_orb(orb_type)
 
 
+def _summon_osty(combat, amount: int) -> None:
+    """Summon (or grow) the Necrobinder's Osty pet by `amount` (BoundPhylactery
+    BeforeCombatStart / AfterEnergyResetLate). No-op if amount <= 0."""
+    if amount <= 0:
+        return
+    from .osty import summon_osty
+    summon_osty(combat, amount)
+
+
+def _bone_flute_osty_attack(combat, card) -> None:
+    """BoneFlute.cs AfterAttack (attacker is Osty): gain 2 Unpowered block.
+    Fires on any OstyAttack-tagged card play (the card directs Osty to attack)."""
+    if card is None:
+        return
+    if "osty_attack" in getattr(card, "id", "") or _card_is_osty_attack(card):
+        _gain_block(combat, 2)
+
+
+def _card_is_osty_attack(card) -> bool:
+    """A card is an OstyAttack if any of its effects drive Osty to attack."""
+    from .dsl import EffectOp
+    for e in getattr(card, "effects", ()):
+        if e.op in (EffectOp.OSTY_ATTACK, EffectOp.OSTY_ATTACK_HP):
+            return True
+    return False
+
+
+def _ivory_tile_card_played(combat, card) -> None:
+    """IvoryTile.cs AfterCardPlayed: if the card spent >= 3 energy, gain 1
+    energy. Uses the card's effective cost at play time (X-cost cards spend all
+    remaining energy, which the engine resolves before this hook fires)."""
+    if card is None:
+        return
+    try:
+        cost = combat.effective_cost(card)
+    except Exception:
+        cost = getattr(card, "cost", 0) or 0
+    if cost >= 3 and combat.player.get_power("no_energy_gain") is None:
+        combat.player.energy += 1
+
+
+def _bound_phylactery_turn_start(rs, combat) -> None:
+    """BoundPhylactery.cs AfterEnergyResetLate: re-summon a 1-HP Osty at the
+    start of every round AFTER the first (RoundNumber != 1). The combat-start
+    summon (turn 1) is handled by on_combat_start, so skip turn 1 here."""
+    if getattr(combat, "turn_number", 1) > 1:
+        _summon_osty(combat, 1)
+
+
 def _metronome_orb_channeled(rs, combat, orb) -> None:
     """Metronome.cs (AfterOrbChanneled): every 7th orb channeled this combat,
     deal 30 Unpowered damage to all enemies. Counter on the RelicInstance,
@@ -2241,8 +2290,68 @@ RELIC_REGISTRY: dict[str, RelicDef] = {
     "BOUND_PHYLACTERY": RelicDef(
         id="BOUND_PHYLACTERY", name="Bound Phylactery", rarity="starter",
         category="misc",
-        # TODO(P9.3): BoundPhylactery.cs — Necrobinder osty/summon starter
-        # (needs the Osty primitive).
+        # BoundPhylactery.cs (SpawnsPets): summon a 1-HP Osty at combat start
+        # (BeforeCombatStart -> Summon(1)) and re-summon a 1-HP Osty at the
+        # start of every round after the first (AfterEnergyResetLate,
+        # RoundNumber != 1). on_combat_start fires after start_player_turn (turn
+        # 1); on_player_turn_start re-summons on turns > 1.
+        on_combat_start=lambda rs, cs: _summon_osty(cs, 1),
+        on_player_turn_start=_bound_phylactery_turn_start,
+    ),
+    # --- Phase 9.3: Necrobinder character relic pool (NecrobinderRelicPool.cs,
+    # 8 relics: BigHat, BoneFlute, BookRepairKnife, Bookmark, BoundPhylactery
+    # (starter, above), FuneraryMask, IvoryTile, UndyingSigil).
+    "BONE_FLUTE": RelicDef(
+        id="BONE_FLUTE", name="Bone Flute", rarity="common", pool="necrobinder",
+        merchant_cost=150, category="misc",
+        # BoneFlute.cs AfterAttack: whenever OSTY lands an attack, gain 2
+        # Unpowered block. Modeled as +2 block on each OstyAttack card play via
+        # the on_card_played counter (the card's OstyAttack tag is the signal).
+        on_card_played=lambda rs, cs, card: _bone_flute_osty_attack(cs, card),
+    ),
+    "BIG_HAT": RelicDef(
+        id="BIG_HAT", name="Big Hat", rarity="rare", pool="necrobinder",
+        category="misc",
+        # BigHat.cs AfterSideTurnStart (RoundNumber<=1): add 2 Ethereal cards
+        # from the pool to hand on turn 1. The Ethereal card-generation
+        # primitive is absent; faithful no-op marker (no fabricated effect).
+    ),
+    "BOOK_REPAIR_KNIFE": RelicDef(
+        id="BOOK_REPAIR_KNIFE", name="Book Repair Knife", rarity="uncommon",
+        pool="necrobinder", merchant_cost=200, category="misc",
+        # BookRepairKnife.cs AfterDiedToDoom: heal 3 HP per enemy that died to
+        # Doom. The Doom-death hook is not yet surfaced as a relic event;
+        # faithful no-op marker (Doom kills are modeled, the heal payoff is
+        # deferred).
+    ),
+    "BOOKMARK": RelicDef(
+        id="BOOKMARK", name="Bookmark", rarity="rare", pool="necrobinder",
+        category="misc",
+        # Bookmark.cs AfterTurnEnd: reduce the cost of a random retained card by
+        # 1 until played. The retain-card-cost-modifier primitive is absent;
+        # faithful no-op marker.
+    ),
+    "FUNERARY_MASK": RelicDef(
+        id="FUNERARY_MASK", name="Funerary Mask", rarity="uncommon",
+        pool="necrobinder", merchant_cost=200, category="misc",
+        # FuneraryMask.cs AfterSideTurnStart (RoundNumber<=1): shuffle 3 Soul
+        # tokens into the draw pile on turn 1. The Soul token-card primitive is
+        # absent; faithful no-op marker.
+    ),
+    "IVORY_TILE": RelicDef(
+        id="IVORY_TILE", name="Ivory Tile", rarity="rare", pool="necrobinder",
+        category="misc",
+        # IvoryTile.cs AfterCardPlayed: when a card is played spending >= 3
+        # energy, gain 1 energy. Modeled via the on_card_played hook reading the
+        # card's effective cost at play time.
+        on_card_played=lambda rs, cs, card: _ivory_tile_card_played(cs, card),
+    ),
+    "UNDYING_SIGIL": RelicDef(
+        id="UNDYING_SIGIL", name="Undying Sigil", rarity="shop",
+        pool="necrobinder", merchant_cost=250, category="misc",
+        # UndyingSigil.cs ModifyDamageMultiplicative: incoming damage to the
+        # player is ×0.5. The incoming-damage-reduction relic hook is absent;
+        # faithful no-op marker (no fabricated effect).
     ),
     "DIVINE_RIGHT": RelicDef(
         id="DIVINE_RIGHT", name="Divine Right", rarity="starter",
@@ -2565,7 +2674,12 @@ _DEFECT_POOL_IDS: frozenset[str] = frozenset({       # P9.2 (DefectRelicPool.cs)
     "DATA_DISK_DEFECT", "EMOTION_CHIP", "GOLD_PLATED_CABLES", "POWER_CELL",
     "METRONOME", "RUNIC_CAPACITOR", "SYMBIOTIC_VIRUS",
 })
-_NECROBINDER_POOL_IDS: frozenset[str] = frozenset()  # TODO(P9.3)
+_NECROBINDER_POOL_IDS: frozenset[str] = frozenset({  # P9.3 (NecrobinderRelicPool.cs)
+    # BoundPhylactery is the starter (granted at run start, not a drop). The
+    # other 7 in NecrobinderRelicPool.cs are character-exclusive drops.
+    "BIG_HAT", "BONE_FLUTE", "BOOK_REPAIR_KNIFE", "BOOKMARK", "FUNERARY_MASK",
+    "IVORY_TILE", "UNDYING_SIGIL",
+})
 _REGENT_POOL_IDS: frozenset[str] = frozenset()       # TODO(P9.4)
 
 # Character-keyed registry of the character-exclusive relic pools (by Character

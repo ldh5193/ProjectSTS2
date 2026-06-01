@@ -2236,6 +2236,168 @@ class BiasedCognitionPower(Power):
             foc.amount -= self.amount
 
 
+# ===========================================================================
+# Phase 9.3 — NECROBINDER (Osty minion) powers. Decompiled refs inline.
+# ===========================================================================
+
+
+@dataclass
+class MinionPower(Power):
+    """MinionPower.cs: flags a creature as a friendly minion (Osty).
+    OwnerIsSecondaryEnemy => true; survives owner death; not fatal on death.
+    A pure marker in-sim (the combat engine reads it to skip Osty in the
+    enemy-target lists and to keep it out of win/lose checks)."""
+    id: str = field(default="minion", init=False)
+    _owner: object = None
+
+
+@dataclass
+class DieForYouPower(Power):
+    """DieForYouPower.cs (ModifyUnblockedDamageTarget): while the pet (Osty) is
+    alive, a POWERED attack aimed at the pet's owner (the player) is redirected
+    to the pet (a taunt). Osty is not removed from combat on death. The redirect
+    itself is applied in damage.deal_damage via the player's `_osty_guardian`
+    back-reference; this power is the marker the engine checks for."""
+    id: str = field(default="die_for_you", init=False)
+    _owner: object = None
+
+
+@dataclass
+class NecroMasteryPower(Power):
+    """NecroMasteryPower.cs (AfterCurrentHpChanged on Osty, delta<0): whenever
+    Osty LOSES HP, deal (hp_lost * Amount) Unblockable|Unpowered to ALL enemies.
+    A marker on the PLAYER; osty._fire_osty_hp_loss reads its Amount when Osty
+    takes damage / is sacrificed."""
+    id: str = field(default="necro_mastery", init=False)
+    _owner: object = None
+
+
+@dataclass
+class SummonNextTurnPower(Power):
+    """SummonNextTurnPower.cs (AfterPlayerTurnStart): at the start of the
+    player's turn, Summon(Amount) an Osty, then remove the power (Invoke)."""
+    id: str = field(default="summon_next_turn", init=False)
+    _owner: object = None
+
+    def on_turn_start(self, cs, owner) -> None:
+        if owner is not cs.player or self.amount <= 0:
+            return
+        from .osty import summon_osty
+        summon_osty(cs, self.amount)
+        if self in cs.player.powers:
+            cs.player.powers.remove(self)
+
+
+@dataclass
+class HauntPower(Power):
+    """HauntPower.cs (AfterCardPlayed): after the player plays a card, deal
+    `amount` Unblockable|Unpowered to each enemy (Haunt = lose 6 HP-equivalent
+    per card; here it deals `amount` to enemies — the .cs damages each enemy)."""
+    id: str = field(default="haunt", init=False)
+    _owner: object = None
+
+    def on_card_played(self, cs, owner, card) -> None:
+        if owner is not cs.player or self.amount <= 0:
+            return
+        from .damage import deal_damage
+        for m in list(cs.alive_monsters()):
+            if m.alive:
+                deal_damage(self.amount, cs.player, m, powered=False)
+
+
+@dataclass
+class CalcifyPower(Power):
+    """CalcifyPower.cs (ModifyDamageAdditive): the owner's UNPOWERED block-type
+    attacks... actually adds `amount` to certain damage. Modeled as +amount
+    additive to the player's powered attacks (a Strength-like additive)."""
+    id: str = field(default="calcify", init=False)
+    _owner: object = None
+
+    def modify_damage_additive(self, dealer, target, base_amount: int) -> int:
+        if dealer is not self._owner:
+            return 0
+        return self.amount
+
+
+@dataclass
+class LethalityPower(Power):
+    """LethalityPower.cs (ModifyDamageMultiplicative): the owner's powered
+    attacks deal ×(1 + Amount/100) damage (+Amount% damage)."""
+    id: str = field(default="lethality", init=False)
+    _owner: object = None
+
+    def modify_damage_multiplicative(self, dealer, target, base_amount: int) -> float:
+        if dealer is not self._owner:
+            return 1.0
+        return 1.0 + self.amount / 100.0
+
+
+@dataclass
+class FriendshipPower(Power):
+    """FriendshipPower.cs (ModifyMaxEnergy): +Amount max energy per turn."""
+    id: str = field(default="friendship", init=False)
+    _owner: object = None
+
+    def modify_max_energy(self, owner, amount: int) -> int:
+        return amount + self.amount
+
+
+@dataclass
+class DemesnePower(Power):
+    """DemesnePower.cs (ModifyHandDraw + ModifyMaxEnergy): +Amount cards drawn
+    and +Amount max energy each turn (Demesne power)."""
+    id: str = field(default="demesne", init=False)
+    _owner: object = None
+
+    def modify_hand_draw(self, owner, count: int) -> int:
+        return count + self.amount
+
+    def modify_max_energy(self, owner, amount: int) -> int:
+        return amount + self.amount
+
+
+@dataclass
+class DanseMacabrePower(Power):
+    """DanseMacabrePower.cs (BeforeCardPlayed): the owner gains `amount`
+    Unpowered block before each card play."""
+    id: str = field(default="danse_macabre", init=False)
+    _owner: object = None
+
+    def on_card_played(self, cs, owner, card) -> None:
+        if owner is not cs.player or self.amount <= 0:
+            return
+        from .damage import gain_block
+        gain_block(cs.player, self.amount)
+
+
+@dataclass
+class SpiritOfAshPower(Power):
+    """SpiritOfAshPower.cs (BeforeCardPlayed): the owner gains `amount` Unpowered
+    block before each card play (block engine; base 4)."""
+    id: str = field(default="spirit_of_ash", init=False)
+    _owner: object = None
+
+    def on_card_played(self, cs, owner, card) -> None:
+        if owner is not cs.player or self.amount <= 0:
+            return
+        from .damage import gain_block
+        gain_block(cs.player, self.amount)
+
+
+@dataclass
+class DevourLifePower(Power):
+    """DevourLifePower.cs (AfterCardPlayed): after the player plays a card,
+    Summon(Amount) (grow Osty). Base 1."""
+    id: str = field(default="devour_life", init=False)
+    _owner: object = None
+
+    def on_card_played(self, cs, owner, card) -> None:
+        if owner is not cs.player or self.amount <= 0:
+            return
+        from .osty import summon_osty
+        summon_osty(cs, self.amount)
+
+
 POWER_REGISTRY: dict[str, type[Power]] = {
     "confused": ConfusedPower,
     "no_draw": NoDrawPower,
@@ -2487,6 +2649,19 @@ POWER_REGISTRY["hex"] = HexPower
 POWER_REGISTRY["hunger"] = HungerPower
 POWER_REGISTRY["tangled"] = TangledPower
 POWER_REGISTRY["dampen"] = DampenPower
+# Phase 9.3 — Necrobinder / Osty powers.
+POWER_REGISTRY["minion"] = MinionPower
+POWER_REGISTRY["die_for_you"] = DieForYouPower
+POWER_REGISTRY["necro_mastery"] = NecroMasteryPower
+POWER_REGISTRY["summon_next_turn"] = SummonNextTurnPower
+POWER_REGISTRY["haunt"] = HauntPower
+POWER_REGISTRY["calcify"] = CalcifyPower
+POWER_REGISTRY["lethality"] = LethalityPower
+POWER_REGISTRY["friendship"] = FriendshipPower
+POWER_REGISTRY["demesne"] = DemesnePower
+POWER_REGISTRY["danse_macabre"] = DanseMacabrePower
+POWER_REGISTRY["spirit_of_ash"] = SpiritOfAshPower
+POWER_REGISTRY["devour_life"] = DevourLifePower
 
 
 def make_power(power_id: str, amount: int, owner) -> Power:

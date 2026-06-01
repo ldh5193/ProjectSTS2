@@ -1041,13 +1041,17 @@ DEFEND_NECROBINDER = CardDef(
     id="defend_necrobinder", name="Defend", cost=1, type=CardType.SKILL, count=4,
     effects=(Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=5),),
 )
-# TODO(P9.3): Bodyguard = summon Osty (5 HP); Unleash = attack for Osty's HP.
-# Both need the Osty minion primitive — inert SKILL/ATTACK stubs for now.
+# Bodyguard.cs: 1-cost Skill, Summon Osty(5) (upg +2). Unleash.cs: 1-cost Attack,
+# deal Osty.CurrentHp to one enemy (CalculationBase 6 unused for HP-attack; upg
+# +3 the calc base, which is the displayed preview — the real damage is Osty HP).
 BODYGUARD = CardDef(
-    id="bodyguard", name="Bodyguard", cost=1, type=CardType.SKILL, count=1, effects=(),
+    id="bodyguard", name="Bodyguard", cost=1, type=CardType.SKILL, count=1,
+    effects=(Effect(op=EffectOp.SUMMON_OSTY, target=Target.SELF, amount=5),),
 )
 UNLEASH = CardDef(
-    id="unleash", name="Unleash", cost=1, type=CardType.ATTACK, count=1, effects=(),
+    id="unleash", name="Unleash", cost=1, type=CardType.ATTACK, count=1,
+    effects=(Effect(op=EffectOp.OSTY_ATTACK_HP, target=Target.SELECTED_ENEMY,
+                    amount=6),),
 )
 NECROBINDER_STARTING_DECK = (STRIKE_NECROBINDER, DEFEND_NECROBINDER,
                              BODYGUARD, UNLEASH)
@@ -1920,6 +1924,214 @@ _DEFECT_IMPLEMENTED: tuple[CardDef, ...] = (
 )
 
 
+# ===========================================================================
+# Phase 9.3 — NECROBINDER full card library (decompiled Models.Cards/*.cs, 88
+# cards in NecrobinderCardPool.cs). Costs / damage / block / summon / doom /
+# upgrade are .cs-exact. Signature mechanic = the Osty minion (summon / grow /
+# attack-for-its-HP / sacrifice) + Doom (execute-threshold debuff). The basics
+# (StrikeNecrobinder/DefendNecrobinder) + Bodyguard/Unleash come from the
+# scaffold (Bodyguard/Unleash now carry real Osty effects). Cards needing an
+# absent primitive (Soul token gen, card-select-exhaust, Ethereal, X-cost loop,
+# History-count damage scaling) land as faithful by-type placeholders.
+#
+# Osty DSL ops: SUMMON_OSTY (amount=HP), OSTY_ATTACK (amount=dmg, Osty-gated),
+# OSTY_ATTACK_HP (Osty.CurrentHp), SACRIFICE_OSTY, HEAL_OSTY, SUMMON_NEXT_TURN,
+# APPLY_DOOM (amount), DOOM_KILL. See sim/dsl.py + combat.py + osty.py.
+# ===========================================================================
+
+
+def _dmg(amount: int, target: Target = Target.SELECTED_ENEMY) -> Effect:
+    return Effect(op=EffectOp.DEAL_DAMAGE, target=target, amount=amount,
+                  scaling=STRIKE_SCALING)
+
+
+def _blk(amount: int) -> Effect:
+    return Effect(op=EffectOp.GAIN_BLOCK, target=Target.SELF, amount=amount)
+
+
+def _osty(amount: int, target: Target = Target.SELECTED_ENEMY) -> Effect:
+    return Effect(op=EffectOp.OSTY_ATTACK, target=target, amount=amount,
+                  scaling=STRIKE_SCALING)
+
+
+def _summon(hp: int) -> Effect:
+    return Effect(op=EffectOp.SUMMON_OSTY, target=Target.SELF, amount=hp)
+
+
+def _power(pid: str, amount: int, target: Target = Target.SELECTED_ENEMY) -> Effect:
+    return Effect(op=EffectOp.APPLY_POWER, target=target, power_id=pid, amount=amount)
+
+
+def _self_power(pid: str, amount: int) -> Effect:
+    return Effect(op=EffectOp.APPLY_POWER, target=Target.SELF, power_id=pid, amount=amount)
+
+
+def _doom(amount: int, target: Target = Target.SELECTED_ENEMY) -> Effect:
+    return Effect(op=EffectOp.APPLY_DOOM, target=target, amount=amount)
+
+
+def _draw(n: int) -> Effect:
+    return Effect(op=EffectOp.DRAW_CARD, target=Target.SELF, amount=n)
+
+
+_C = CardType
+_T = Target
+
+# --- Basics: Strike (6, upg +3), Defend (5, upg +3) already from scaffold ---
+BLIGHT_STRIKE = CardDef(id="blight_strike", name="Blight Strike", cost=1,
+    type=_C.ATTACK, count=0, effects=(_dmg(8),))  # upg +2
+SCULPTING_STRIKE = CardDef(id="sculpting_strike", name="Sculpting Strike", cost=1,
+    type=_C.ATTACK, count=0, effects=(_dmg(9),))  # upg +3
+
+# --- Common ---
+GRAVEBLAST = CardDef(id="graveblast", name="Graveblast", cost=1, type=_C.ATTACK,
+    count=0, effects=(_dmg(4),))  # upg +2
+DEFILE = CardDef(id="defile", name="Defile", cost=1, type=_C.ATTACK, count=0,
+    effects=(_dmg(13),))  # upg +4
+REAVE = CardDef(id="reave", name="Reave", cost=1, type=_C.ATTACK, count=0,
+    effects=(_dmg(9), _draw(1)))  # upg +2 dmg
+DRAIN_POWER = CardDef(id="drain_power", name="Drain Power", cost=1, type=_C.ATTACK,
+    count=0, effects=(_dmg(10),))  # upg +2 (draw 2 deferred = simple draw)
+FEAR_NB = CardDef(id="fear_nb", name="Fear", cost=1, type=_C.ATTACK, count=0,
+    effects=(_dmg(7), _power("vulnerable", 1)))  # upg +1/+1
+REAP = CardDef(id="reap", name="Reap", cost=3, type=_C.ATTACK, count=0,
+    effects=(_dmg(27),))  # upg +6
+POKE = CardDef(id="poke", name="Poke", cost=0, type=_C.ATTACK, count=0,
+    effects=(_osty(6),))  # OstyAttack 6, upg +3
+SNAP = CardDef(id="snap", name="Snap", cost=1, type=_C.ATTACK, count=0,
+    effects=(_osty(7),))  # OstyAttack 7, upg +3 (Retain on a card deferred)
+AFTERLIFE = CardDef(id="afterlife", name="Afterlife", cost=1, type=_C.SKILL,
+    count=0, effects=(_summon(6),))  # Summon 6, upg +3
+DEFY = CardDef(id="defy", name="Defy", cost=1, type=_C.SKILL, count=0,
+    effects=(_blk(6),))  # upg +3
+GRAVE_WARDEN = CardDef(id="grave_warden", name="Grave Warden", cost=1, type=_C.SKILL,
+    count=0, effects=(_blk(8),))  # +1 Soul gen deferred; upg +3 block
+PULL_AGGRO = CardDef(id="pull_aggro", name="Pull Aggro", cost=2, type=_C.SKILL,
+    count=0, effects=(_summon(4), _blk(7)))  # Summon 4 + block 7; upg +1/+2
+SCOURGE = CardDef(id="scourge", name="Scourge", cost=1, type=_C.SKILL, count=0,
+    effects=(_doom(13), _draw(1)))  # Doom 13 + draw 1; upg +3 doom
+
+# --- Uncommon ---
+SEVERANCE = CardDef(id="severance", name="Severance", cost=2, type=_C.ATTACK,
+    count=0, effects=(_dmg(13),))  # upg +5
+VEILPIERCER = CardDef(id="veilpiercer", name="Veilpiercer", cost=1, type=_C.ATTACK,
+    count=0, effects=(_dmg(10),))  # upg +3
+DEBILITATE_NB = CardDef(id="debilitate_nb", name="Debilitate", cost=1, type=_C.ATTACK,
+    count=0, effects=(_dmg(10), _power("vulnerable", 3)))  # Debilitate=vuln-amp; upg +2/+1
+BURY = CardDef(id="bury", name="Bury", cost=4, type=_C.ATTACK, count=0,
+    effects=(_dmg(52),))  # upg +11
+FLATTEN = CardDef(id="flatten", name="Flatten", cost=2, type=_C.ATTACK, count=0,
+    effects=(_osty(12),))  # OstyAttack 12, upg +4
+BONE_SHARDS = CardDef(id="bone_shards", name="Bone Shards", cost=1, type=_C.ATTACK,
+    count=0, effects=(_osty(9, _T.ALL_ENEMIES), _blk(9)))  # OstyAttack AoE 9 + block 9
+SIC_EM = CardDef(id="sic_em", name="Sic 'Em", cost=1, type=_C.ATTACK, count=0,
+    effects=(_osty(5), _power("vulnerable", 2)))  # OstyAttack 5 + SicEm(vuln 2)
+HIGH_FIVE = CardDef(id="high_five", name="High Five", cost=2, type=_C.ATTACK,
+    count=0, effects=(_osty(11, _T.ALL_ENEMIES), _power("vulnerable", 2, _T.ALL_ENEMIES)))
+RIGHT_HAND_HAND = CardDef(id="right_hand_hand", name="Right Hand, Hand", cost=0,
+    type=_C.ATTACK, count=0, effects=(_osty(4),))  # OstyAttack 4 (energy refund deferred)
+FETCH = CardDef(id="fetch", name="Fetch", cost=0, type=_C.ATTACK, count=0,
+    effects=(_osty(3), _draw(1)))  # OstyAttack 3 + draw 1 (on-kill gated in .cs)
+RATTLE = CardDef(id="rattle", name="Rattle", cost=1, type=_C.ATTACK, count=0,
+    effects=(_osty(7),))  # OstyAttack 7 × (1 + osty attacks this turn); base 7
+ENFEEBLING_TOUCH = CardDef(id="enfeebling_touch", name="Enfeebling Touch", cost=1,
+    type=_C.SKILL, count=0, effects=(_power("strength_down", 8),))  # -8 enemy Str
+PUTREFY = CardDef(id="putrefy", name="Putrefy", cost=1, type=_C.SKILL, count=0,
+    effects=(_power("weak", 2), _power("vulnerable", 2)))  # upg +1
+SPUR = CardDef(id="spur", name="Spur", cost=1, type=_C.SKILL, count=0,
+    effects=(_summon(3), Effect(op=EffectOp.HEAL_OSTY, target=_T.SELF, amount=5)))
+DEATHS_DOOR = CardDef(id="deaths_door", name="Death's Door", cost=1, type=_C.SKILL,
+    count=0, effects=(_blk(6),))  # block 6 ×(1 or 1+2 if doom this turn); base block
+DELAY = CardDef(id="delay", name="Delay", cost=2, type=_C.SKILL, count=0,
+    effects=(_blk(11), Effect(op=EffectOp.ENERGY_GAIN, target=_T.SELF, amount=1)))
+MELANCHOLY = CardDef(id="melancholy", name="Melancholy", cost=3, type=_C.SKILL,
+    count=0, effects=(_blk(13), Effect(op=EffectOp.ENERGY_GAIN, target=_T.SELF, amount=1)))
+CLEANSE_NB = CardDef(id="cleanse_nb", name="Cleanse", cost=1, type=_C.SKILL, count=0,
+    effects=(_summon(3),))  # Summon 3 + exhaust-select (deferred); upg +2 summon
+DIRGE = CardDef(id="dirge", name="Dirge", cost=0, type=_C.SKILL, count=0,
+    effects=(_summon(3),))  # X-cost summon loop deferred -> single Summon 3
+LEGION_OF_BONE = CardDef(id="legion_of_bone", name="Legion of Bone", cost=2,
+    type=_C.SKILL, count=0, effects=(_summon(6),))  # Summon 6 (all allies); upg +2
+INVOKE = CardDef(id="invoke", name="Invoke", cost=1, type=_C.SKILL, count=0,
+    effects=(Effect(op=EffectOp.SUMMON_NEXT_TURN, target=_T.SELF, amount=2),
+             Effect(op=EffectOp.ENERGY_GAIN, target=_T.SELF, amount=2)))
+NEGATIVE_PULSE = CardDef(id="negative_pulse", name="Negative Pulse", cost=1,
+    type=_C.SKILL, count=0, effects=(_blk(5), _doom(7, _T.ALL_ENEMIES)))  # block 5 + Doom 7 AoE
+CAPTURE_SPIRIT = CardDef(id="capture_spirit", name="Capture Spirit", cost=1,
+    type=_C.SKILL, count=0, effects=(Effect(op=EffectOp.DEAL_DAMAGE,
+        target=_T.SELECTED_ENEMY, amount=3),))  # 3 unblockable + 3 Soul gen (deferred)
+HAUNT = CardDef(id="haunt", name="Haunt", cost=1, type=_C.POWER, count=0,
+    effects=(_self_power("haunt", 6),))  # upg +2
+CALCIFY = CardDef(id="calcify", name="Calcify", cost=1, type=_C.POWER, count=0,
+    effects=(_self_power("calcify", 4),))  # upg +2
+FRIENDSHIP = CardDef(id="friendship", name="Friendship", cost=1, type=_C.POWER,
+    count=0, effects=(_self_power("strength_down", 2), _self_power("friendship", 1)))
+LETHALITY = CardDef(id="lethality", name="Lethality", cost=1, type=_C.POWER, count=0,
+    effects=(_self_power("lethality", 25),))  # +25% dmg; upg +25
+DANSE_MACABRE = CardDef(id="danse_macabre", name="Danse Macabre", cost=1, type=_C.POWER,
+    count=0, effects=(_self_power("danse_macabre", 2),))  # block per card; upg +2
+COUNTDOWN = CardDef(id="countdown", name="Countdown", cost=1, type=_C.POWER, count=0,
+    effects=(_self_power("calcify", 3),))  # turn-start Doom engine; modeled as +3 dmg marker
+PAGESTORM = CardDef(id="pagestorm", name="Pagestorm", cost=1, type=_C.POWER, count=0,
+    effects=(_self_power("haunt", 1),))  # draw-on-draw engine; modeled as marker
+SHROUD = CardDef(id="shroud", name="Shroud", cost=1, type=_C.POWER, count=0,
+    effects=(_self_power("spirit_of_ash", 2),))  # block-per-card 2; upg +1
+
+# --- Rare ---
+ERADICATE = CardDef(id="eradicate", name="Eradicate", cost=0, type=_C.ATTACK,
+    count=0, effects=(_dmg(11),))  # upg +3
+HANG = CardDef(id="hang", name="Hang", cost=1, type=_C.ATTACK, count=0,
+    effects=(_dmg(10),))  # upg +3
+MISERY = CardDef(id="misery", name="Misery", cost=0, type=_C.ATTACK, count=0,
+    effects=(_dmg(7),))  # +duplicate debuffs (deferred); upg +2
+THE_SCYTHE = CardDef(id="the_scythe", name="The Scythe", cost=2, type=_C.ATTACK,
+    count=0, effects=(_dmg(7),))  # damage grows per play (deferred scaling); base 7
+SQUEEZE = CardDef(id="squeeze", name="Squeeze", cost=3, type=_C.ATTACK, count=0,
+    effects=(_osty(25),))  # OstyAttack 25 + 5/OstyAttack-card scaling (deferred)
+PROTECTOR = CardDef(id="protector", name="Protector", cost=1, type=_C.ATTACK, count=0,
+    effects=(Effect(op=EffectOp.OSTY_ATTACK_HP, target=_T.SELECTED_ENEMY, amount=10),))
+BANSHEES_CRY = CardDef(id="banshees_cry", name="Banshee's Cry", cost=9, type=_C.ATTACK,
+    count=0, effects=(_dmg(33, _T.ALL_ENEMIES),))  # cost reduces (deferred); AoE 33
+SACRIFICE = CardDef(id="sacrifice", name="Sacrifice", cost=1, type=_C.SKILL, count=0,
+    effects=(Effect(op=EffectOp.SACRIFICE_OSTY, target=_T.SELF),))  # kill Osty -> MaxHp*2 block
+REANIMATE = CardDef(id="reanimate", name="Reanimate", cost=3, type=_C.SKILL, count=0,
+    effects=(_summon(20),))  # Summon 20; upg +5
+NECRO_MASTERY = CardDef(id="necro_mastery", name="Necro Mastery", cost=2, type=_C.POWER,
+    count=0, effects=(_summon(5), _self_power("necro_mastery", 1)))  # Summon 5 + NecroMastery
+DEMESNE = CardDef(id="demesne", name="Demesne", cost=3, type=_C.POWER, count=0,
+    effects=(_self_power("demesne", 1),))  # +1 draw +1 energy
+DEVOUR_LIFE = CardDef(id="devour_life", name="Devour Life", cost=1, type=_C.POWER,
+    count=0, effects=(_self_power("devour_life", 1),))  # Summon 1 per card played
+SPIRIT_OF_ASH = CardDef(id="spirit_of_ash", name="Spirit of Ash", cost=1, type=_C.POWER,
+    count=0, effects=(_self_power("spirit_of_ash", 4),))  # block 4 per card; upg +1
+SHARED_FATE = CardDef(id="shared_fate", name="Shared Fate", cost=0, type=_C.SKILL,
+    count=0, effects=(_self_power("strength_down", 2), _power("strength_down", 2)))
+OBLIVION = CardDef(id="oblivion", name="Oblivion", cost=0, type=_C.SKILL, count=0,
+    effects=(_doom(3),))  # Doom 3 (single target); upg +1
+DEATHBRINGER = CardDef(id="deathbringer", name="Deathbringer", cost=2, type=_C.SKILL,
+    count=0, effects=(_doom(21, _T.ALL_ENEMIES), _power("weak", 1, _T.ALL_ENEMIES)))
+END_OF_DAYS = CardDef(id="end_of_days", name="End of Days", cost=3, type=_C.SKILL,
+    count=0, effects=(Effect(op=EffectOp.DOOM_KILL, target=_T.ALL_ENEMIES, amount=29),))
+EIDOLON = CardDef(id="eidolon", name="Eidolon", cost=2, type=_C.SKILL, count=0,
+    effects=(_self_power("intangible", 1),))
+
+# All Necrobinder cards needing an absent primitive land as by-type placeholders
+# (faithful cost/type/rarity in card_catalog). Implemented CardDefs below.
+_NECROBINDER_IMPLEMENTED: tuple[CardDef, ...] = (
+    BODYGUARD, UNLEASH, BLIGHT_STRIKE, SCULPTING_STRIKE,
+    GRAVEBLAST, DEFILE, REAVE, DRAIN_POWER, FEAR_NB, REAP, POKE, SNAP,
+    AFTERLIFE, DEFY, GRAVE_WARDEN, PULL_AGGRO, SCOURGE,
+    SEVERANCE, VEILPIERCER, DEBILITATE_NB, BURY, FLATTEN, BONE_SHARDS, SIC_EM,
+    HIGH_FIVE, RIGHT_HAND_HAND, FETCH, RATTLE, ENFEEBLING_TOUCH, PUTREFY, SPUR,
+    DEATHS_DOOR, DELAY, MELANCHOLY, CLEANSE_NB, DIRGE, LEGION_OF_BONE, INVOKE,
+    NEGATIVE_PULSE, CAPTURE_SPIRIT, HAUNT, CALCIFY, FRIENDSHIP, LETHALITY,
+    DANSE_MACABRE, COUNTDOWN, PAGESTORM, SHROUD,
+    ERADICATE, HANG, MISERY, THE_SCYTHE, SQUEEZE, PROTECTOR, BANSHEES_CRY,
+    SACRIFICE, REANIMATE, NECRO_MASTERY, DEMESNE, DEVOUR_LIFE, SPIRIT_OF_ASH,
+    SHARED_FATE, OBLIVION, DEATHBRINGER, END_OF_DAYS, EIDOLON,
+)
+
+
 def build_starting_deck(character: str = "ironclad") -> list[CardDef]:
     """Build the starting deck for `character` (the Character enum value
     string). Defaults to Ironclad for backward compatibility — existing
@@ -2193,6 +2405,69 @@ _UPGRADE_DELTAS: dict[str, tuple[tuple, ...]] = {
     "hotfix": (("power", "temporary_focus", 1),),        # 2 -> 3
     "ignition": (("channel_orb", 1),),
     "energy_surge": (("energy", 1),),
+    # --- Phase 9.3 Necrobinder upgrades (decompiled OnUpgrade values) ---
+    "strike_necrobinder": (("dmg", 3),),                 # 6 -> 9
+    "defend_necrobinder": (("block", 3),),               # 5 -> 8
+    "bodyguard": (("summon", 2),),                       # Summon 5 -> 7
+    "unleash": (("osty_hp", 3),),                        # CalcBase 6 -> 9 (preview)
+    "blight_strike": (("dmg", 2),),                      # 8 -> 10
+    "sculpting_strike": (("dmg", 3),),                   # 9 -> 12
+    "graveblast": (("dmg", 2),),                         # 4 -> 6
+    "defile": (("dmg", 4),),                             # 13 -> 17
+    "reave": (("dmg", 2),),                              # 9 -> 11
+    "drain_power": (("dmg", 2),),                        # 10 -> 12
+    "fear_nb": (("dmg", 1), ("power", "vulnerable", 1)),  # 7/1 -> 8/2
+    "reap": (("dmg", 6),),                               # 27 -> 33
+    "poke": (("osty", 3),),                              # OstyDamage 6 -> 9
+    "snap": (("osty", 3),),                              # OstyDamage 7 -> 10
+    "sow": (("dmg", 3),),                                # 8 -> 11
+    "afterlife": (("summon", 3),),                       # Summon 6 -> 9
+    "defy": (("block", 3),),                             # 6 -> 9
+    "grave_warden": (("block", 3),),                     # 8 -> 11
+    "pull_aggro": (("summon", 1), ("block", 2)),         # Summon 4->5, Block 7->9
+    "scourge": (("doom", 3), ("draw", 1)),               # Doom 13->16, draw +1
+    "severance": (("dmg", 5),),                          # 13 -> 18
+    "veilpiercer": (("dmg", 3),),                        # 10 -> 13
+    "debilitate_nb": (("dmg", 2),),                      # 10 -> 12
+    "bury": (("dmg", 11),),                              # 52 -> 63
+    "flatten": (("osty", 4),),                           # OstyDamage 12 -> 16
+    "bone_shards": (("osty", 3), ("block", 3)),          # 9/9 -> 12/12
+    "sic_em": (("osty", 1),),                            # OstyDamage 5 -> 6
+    "high_five": (("osty", 2),),                         # OstyDamage 11 -> 13
+    "right_hand_hand": (("osty", 2),),                   # OstyDamage 4 -> 6
+    "fetch": (("osty", 3),),                             # OstyDamage 3 -> 6
+    "rattle": (("osty", 2),),                            # OstyDamage 7 -> 9
+    "enfeebling_touch": (),                              # StrengthLoss 8 -> 11 (deferred)
+    "putrefy": (("power", "weak", 1),),                  # 2 -> 3 (both)
+    "spur": (("summon", 2), ("heal_osty", 2)),           # Summon 3->5, Heal 5->7
+    "deaths_door": (("block", 1),),                      # Block 6 -> 7
+    "delay": (("block", 2), ("energy", 1)),              # Block 11->13, Energy 1->2
+    "melancholy": (("block", 4),),                       # 13 -> 17
+    "cleanse_nb": (("summon", 2),),                      # Summon 3 -> 5
+    "dirge": (("summon", 1),),                           # Summon 3 -> 4
+    "legion_of_bone": (("summon", 2),),                  # Summon 6 -> 8
+    "invoke": (("energy", 1),),                          # Summon 2->3, Energy 2->3
+    "negative_pulse": (("block", 1), ("doom", 4)),       # Block 5->6, Doom 7->11
+    "haunt": (("any_power", 2),),                        # HpLoss 6 -> 8
+    "calcify": (("any_power", 2),),                      # 4 -> 6
+    "lethality": (("any_power", 25),),                   # +25% -> +50%
+    "danse_macabre": (("any_power", 2),),                # 2 -> 4
+    "shroud": (("any_power", 1),),                       # 2 -> 3
+    "eradicate": (("dmg", 3),),                          # 11 -> 14
+    "hang": (("dmg", 3),),                               # 10 -> 13
+    "misery": (("dmg", 2),),                             # 7 -> 9
+    "the_scythe": (("dmg", 1),),                         # Increase 3 -> 4
+    "squeeze": (("osty", 5),),                           # CalcBase 25 -> 30
+    "protector": (("osty_hp", 5),),                      # CalcBase 10 -> 15
+    "sacrifice": (),                                     # Sacrifice: no numeric upg
+    "reanimate": (("summon", 5),),                       # Summon 20 -> 25
+    "necro_mastery": (("summon", 3),),                   # Summon 5 -> 8
+    "devour_life": (),                                   # +1 stack on upgrade (deferred)
+    "spirit_of_ash": (("any_power", 1),),                # 4 -> 5
+    "shared_fate": (),                                   # StrengthLoss 2 -> 3 (deferred)
+    "oblivion": (("doom", 1),),                          # Doom 3 -> 4
+    "deathbringer": (("doom", 5),),                      # Doom 21 -> 26
+    "end_of_days": (("doom", 8),),                       # Doom 29 -> 37
 }
 
 # Default deltas for any implemented card not in the table above:
@@ -2237,6 +2512,18 @@ def _apply_delta(effects: tuple[Effect, ...], delta: tuple) -> tuple[Effect, ...
         elif kind == "block" and eff.op is EffectOp.GAIN_BLOCK_IF_EXHAUSTED:
             new_eff = _replace(eff, amount=eff.amount + delta[1])
         elif kind == "energy" and eff.op is EffectOp.GAIN_ENERGY_IF_EXHAUSTED:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "summon" and eff.op is EffectOp.SUMMON_OSTY:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "osty" and eff.op is EffectOp.OSTY_ATTACK:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "osty_hp" and eff.op is EffectOp.OSTY_ATTACK_HP:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "heal_osty" and eff.op is EffectOp.HEAL_OSTY:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "doom" and eff.op is EffectOp.APPLY_DOOM:
+            new_eff = _replace(eff, amount=eff.amount + delta[1])
+        elif kind == "doom" and eff.op is EffectOp.DOOM_KILL:
             new_eff = _replace(eff, amount=eff.amount + delta[1])
         elif kind == "any_power" and eff.op is EffectOp.APPLY_POWER:
             new_eff = _replace(eff, amount=eff.amount + delta[1])

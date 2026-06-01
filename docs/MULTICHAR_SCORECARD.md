@@ -1,9 +1,10 @@
 # Multi-Character Fidelity Scorecard
 
 Date: 2026-06-01
-Status: **Phase 9.2 (Defect + orb system) complete.** Ironclad (100%), Silent
-(P9.1), and Defect (P9.2, orb system) are faithful; Necrobinder/Regent remain
-scaffold-only. obs v5 (504 -> 560) with the orb/focus slots now live.
+Status: **Phase 9.3 (Necrobinder + Osty minion) complete.** Ironclad (100%),
+Silent (P9.1), Defect (P9.2, orbs), and Necrobinder (P9.3, Osty) are faithful;
+Regent remains scaffold-only. obs v5 (504 -> 560) with the orb/focus/osty slots
+now live.
 
 See `docs/MULTICHAR_FIDELITY_PLAN.md` for the authoritative plan (roster,
 obs v5 layout, primitives, batch order) and `docs/FIDELITY_AUDIT.md` for the
@@ -18,7 +19,7 @@ Ironclad critical-path audit.
 | Ironclad    | done | done (87) | done | n/a | **100%** (Ironclad audit) | shipped |
 | Silent      | done | **65/88 faithful** (+Shiv token; 22 by-type placeholders) | **8/8** | **poison/shiv/discard DONE** | faithful | **P9.1 shipped** |
 | Defect      | done | **86/88 faithful** (2 transform/persistent-block placeholders) | **8/8** | **orb system DONE** | faithful | **P9.2 shipped** |
-| Necrobinder | scaffold | TODO (88) | TODO (8) | **osty** TODO | scaffold-only | P9.3 |
+| Necrobinder | done | **66/88 faithful** (22 by-type placeholders) | **8/8** | **osty minion DONE** | faithful | **P9.3 shipped** |
 | Regent      | scaffold | TODO (88) | TODO (8) | **stars** TODO | scaffold-only | P9.4 |
 | Deprived    | fixture | fallback | fallback | n/a | debug fixture (not a target) | n/a |
 
@@ -44,7 +45,7 @@ anchor on `OBS_DIM_V4_4 = 504`). The new tail `[504..560)`:
 | `[521..531)` | 10 | orb-queue evoke values / 30 | **P9.2 (live)** |
 | `[531..532)` | 1 | orb capacity / 10 | **P9.2 (live)** |
 | `[532..533)` | 1 | focus / 10 | **P9.2 (live)** |
-| `[533..537)` | 4 | osty present / hp / block / pad | P9.3 |
+| `[533..537)` | 4 | osty present / hp / block / pad | **P9.3 (live)** |
 | `[537..541)` | 4 | per-enemy poison / 20 | P9.1 |
 | `[541..560)` | 19 | pad to a clean 560 | — |
 
@@ -174,14 +175,73 @@ DoubleEnergy/Rainbow), powers (Thunder/Storm/Loop/Hailstorm/BiasedCognition),
 upgrades, CrackedCore + relic pool, the 88-card pool, and an A0 RunEnv(Defect)
 integration run reaching deep floors.
 
+## P9.3 (Necrobinder) — what shipped
+
+### Osty minion (new primitive, faithful — `sim/osty.py` + `sim/combat.py`)
+- **Osty** (`Osty.cs`): a persistent FRIENDLY creature on `cs.osty` with its own
+  HP/block; MinInitialHp==MaxInitialHp==1; NOTHING_MOVE (never acts on its own).
+  Re-created per combat (does NOT carry between combats — verified: Player.Osty
+  is the combat pet, reset each encounter).
+- **Summon** (`OstyCmd.Summon`): amount 0 = no-op; if Osty ALIVE -> GainMaxHp
+  (raise maxHp + heal by amount); if MISSING -> SetMaxHp(amount); Heal(amount) +
+  attach DieForYou. **Sacrifice** (`Sacrifice.cs`): block == Osty.MaxHp*2, then
+  kill Osty. **Attack-for-HP** (`Unleash.cs`/`Protector.cs`): deal Osty.CurrentHp.
+  **OstyAttack** cards (`Poke`/`Snap`/`SicEm`/`Flatten`/`BoneShards`/`HighFive`/
+  `Rattle`/`Fetch`/`RightHandHand`): deal a base value, gated on Osty alive.
+- **DieForYou taunt** (`DieForYouPower.cs`): a POWERED enemy attack aimed at the
+  player is redirected to the living Osty (wired in `damage.deal_damage` via the
+  player's `_osty_guardian`); unpowered hits are not redirected.
+- **NecroMastery** (`NecroMasteryPower.cs`): when Osty loses HP, deal hp_lost ×
+  stacks Unblockable to ALL enemies (fired from `deal_damage` + on sacrifice).
+- **Doom** (`DoomPower`, reused): execute-threshold debuff; an enemy at HP <= its
+  Doom dies at its turn end (Scourge 13 / Oblivion 3 / Deathbringer 21 / End of
+  Days 29 immediate / NegativePulse 7). obs v5 osty slots `[533..537)` live.
+
+### Cards: 66/88 faithful ; 22 by-type placeholders
+Start deck (Necrobinder.cs): 4× StrikeNecrobinder, 4× DefendNecrobinder, 1×
+Bodyguard (Summon 5), 1× Unleash (deal Osty HP). Placeholders need an absent
+primitive (Soul token gen, card-select-exhaust, Ethereal gen, X-cost summon
+loop, History-count scaling): borrowed_time, call_of_the_void, death_march,
+dredge, forbidden_grimoire, glimpse_beyond, neurosurge, no_escape, pagestorm,
+parse, pull_from_below, reaper_form, seance, sentry_mode, sleight_of_flesh,
+soul_storm, the_scythe (partial), times_up, transfigure, undeath, wisp, sow.
+All others carry exact cost/damage/block/summon/doom/upgrade.
+
+### Relics: 8/8 (`NecrobinderRelicPool.cs`)
+BoundPhylactery (starter: Summon 1 at combat start + every round after 1),
+BoneFlute (+2 block on Osty attack), IvoryTile (+1 energy when a card spends >=3
+energy), BigHat / FuneraryMask / BookRepairKnife / Bookmark / UndyingSigil
+(faithful no-op markers — Soul/Ethereal gen, doom-death heal, retain-cost,
+incoming-damage ×0.5 primitives absent). Gated OUT of cross-character pools.
+
+### Powers (Necrobinder-unique, decompiled)
+MinionPower, DieForYouPower, NecroMasteryPower, SummonNextTurnPower (Invoke),
+HauntPower (per-card AoE), CalcifyPower (+dmg), LethalityPower (+% dmg),
+FriendshipPower (+max energy), DemesnePower (+draw/+energy), DanseMacabrePower /
+SpiritOfAshPower (block per card), DevourLifePower (Summon per card). Doom
+reuses the shared DoomPower; Eidolon reuses IntangiblePower.
+
+### Tests
+`tests/test_necrobinder_osty.py` (24) + `tests/test_necrobinder_cards.py` (20):
+summon/persist/grow/revive, DieForYou taunt (powered redirect, unpowered not),
+NecroMastery scaling, sacrifice (MaxHp*2 + kill), SummonNextTurn, BoundPhylactery
+combat-start + per-round summon, obs osty slots (present/hp; zero for Ironclad),
+signature cards (Bodyguard/Unleash/Poke/Snap/BoneShards/SicEm/Reanimate/Spur/
+PullAggro/Sacrifice/NecroMastery), Doom cards (Scourge/EndOfDays/turn-end kill),
+the 88-card pool + reward keying, relic pool + BoneFlute/IvoryTile, and an A0
+RunEnv(Necrobinder) integration run reaching deep floors.
+
 ## Known TODOs flagged in code (next batches)
 
 - `P9.1 deferred` Silent: 22 cards needing a card-selection/transform primitive
   (see list above) + PaperKrane's Weak-multiplier modifier.
 - `P9.2 deferred` Defect: 2 cards (modded transform-status, genetic_algorithm
   persistent-block) need an absent primitive.
-- `TODO(P9.3)` Necrobinder: Osty minion primitive, Bodyguard/Unleash,
-  BoundPhylactery, MinionPower, 88 cards, 8 relics, obs osty slots.
+- `P9.3 deferred` Necrobinder: 22 cards needing an absent primitive (Soul token
+  gen, card-select-exhaust, Ethereal card gen, X-cost summon loop, History-count
+  damage scaling) + 4 relics that are faithful no-op markers (BigHat/FuneraryMask
+  Soul/Ethereal gen, BookRepairKnife doom-death heal, Bookmark retain-cost,
+  UndyingSigil incoming-damage ×0.5 — primitives absent).
 - `TODO(P9.4)` Regent: Star resource primitive, FallingStar/Venerate,
   DivineRight, star powers, 88 cards, 8 relics, obs star slot.
 
